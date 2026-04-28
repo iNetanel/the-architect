@@ -1,0 +1,375 @@
+"""Tests for helper functions in the_architect.cli."""
+
+from pathlib import Path
+from unittest.mock import patch
+
+from the_architect.core.tasks import Task, TaskStatus
+
+
+class TestFmtDuration:
+    """Tests for _fmt_duration duration formatting function."""
+
+    def test_fmt_duration_zero(self) -> None:
+        """Should format 0 seconds as '0:00'."""
+        from the_architect.cli import _fmt_duration
+
+        result = _fmt_duration(0)
+        assert result == "0:00"
+
+    def test_fmt_duration_less_than_minute(self) -> None:
+        """Should format 59 seconds as '0:59'."""
+        from the_architect.cli import _fmt_duration
+
+        result = _fmt_duration(59)
+        assert result == "0:59"
+
+    def test_fmt_duration_one_minute(self) -> None:
+        """Should format 65 seconds as '1:05'."""
+        from the_architect.cli import _fmt_duration
+
+        result = _fmt_duration(65)
+        assert result == "1:05"
+
+    def test_fmt_duration_one_hour(self) -> None:
+        """Should format 3600 seconds as '1:00:00'."""
+        from the_architect.cli import _fmt_duration
+
+        result = _fmt_duration(3600)
+        assert result == "1:00:00"
+
+    def test_fmt_duration_over_one_hour(self) -> None:
+        """Should format 3661 seconds as '1:01:01'."""
+        from the_architect.cli import _fmt_duration
+
+        result = _fmt_duration(3661)
+        assert result == "1:01:01"
+
+
+class TestFilterAndSetStatus:
+    """Tests for _filter_and_set_status task filtering function."""
+
+    def test_filter_and_set_status_with_progress(self, tmp_path: Path) -> None:
+        """Should update task statuses based on PROGRESS.md."""
+        from the_architect.cli import _filter_and_set_status
+
+        # PROGRESS.md format is the canonical Markdown table that
+        # ``_task_status_pattern`` in progress.py parses.
+        progress_file = tmp_path / "PROGRESS.md"
+        progress_file.write_text(
+            """# The Architect — Progress Tracker
+
+**Tasks completed:** 2
+**Next task to run:** T03
+
+| Task | Title | Status | Completed |
+|------|-------|--------|-----------|
+| T01  | First  | Done    | 2024-01-01 |
+| T02  | Second | Done    | 2024-01-02 |
+| T03  | Third  | Pending | — |
+| T04  | Fourth | Pending | — |
+""",
+            encoding="utf-8",
+        )
+
+        # Create task objects
+        task1 = Task(name="T01", prefix="T01", number=1, path=tmp_path / "T01.md")
+        task2 = Task(name="T02", prefix="T02", number=2, path=tmp_path / "T02.md")
+        task3 = Task(name="T03", prefix="T03", number=3, path=tmp_path / "T03.md")
+        task4 = Task(name="T04", prefix="T04", number=4, path=tmp_path / "T04.md")
+
+        # Call the function
+        result = _filter_and_set_status([task1, task2, task3, task4], progress_file)
+
+        # Check results
+        assert result[0].status == TaskStatus.DONE
+        assert result[1].status == TaskStatus.DONE
+        assert result[2].status == TaskStatus.PENDING
+        assert result[3].status == TaskStatus.PENDING
+
+    def test_filter_and_set_status_empty_list(self, tmp_path: Path) -> None:
+        """Should return empty list when tasks list is empty."""
+        from the_architect.cli import _filter_and_set_status
+
+        progress_file = tmp_path / "PROGRESS.md"
+        result = _filter_and_set_status([], progress_file)
+        assert result == []
+
+    def test_filter_and_set_status_no_matching_prefixes(self, tmp_path: Path) -> None:
+        """Should keep all tasks PENDING when no prefix matches in progress."""
+        from the_architect.cli import _filter_and_set_status
+
+        progress_file = tmp_path / "PROGRESS.md"
+        progress_file.write_text(
+            """# Progress
+
+**Tasks completed:** 0
+**Next task to run:** 
+
+Some other text but no task prefixes.
+""",
+            encoding="utf-8",
+        )
+
+        task = Task(name="T01", prefix="T01", number=1, path=tmp_path / "T01.md")
+        result = _filter_and_set_status([task], progress_file)
+        assert result[0].status == TaskStatus.PENDING
+
+
+class TestSetupLoguru:
+    """Tests for _setup_loguru logging configuration."""
+
+    def test_setup_loguru_configures_logger(self) -> None:
+        """Should configure loguru without raising and be safe to re-run."""
+        from the_architect.cli import _setup_loguru
+
+        # Loguru's Logger object does not expose a public handler list; the
+        # contract here is simply that the function runs cleanly and can be
+        # invoked repeatedly without side effects leaking between tests.
+        _setup_loguru()
+        _setup_loguru()
+
+    def test_setup_loguru_is_idempotent(self) -> None:
+        """Should be safe to call multiple times."""
+        from the_architect.cli import _setup_loguru
+
+        _setup_loguru()
+        _setup_loguru()
+        # Should not raise any errors
+
+
+class TestOpencodeHasAnyModels:
+    """Tests for _opencode_has_any_models OpenCode model checking."""
+
+    def test_opencode_has_models_returns_true(self) -> None:
+        """Should return True when provider has models."""
+        from the_architect.cli import _opencode_has_any_models
+
+        with patch("the_architect.core.opencode_provider.OpenCodeProvider") as mock_provider:
+            mock_provider.return_value.has_any_models.return_value = True
+            result = _opencode_has_any_models()
+            assert result is True
+
+    def test_opencode_has_models_returns_false(self) -> None:
+        """Should return False when provider has no models."""
+        from the_architect.cli import _opencode_has_any_models
+
+        with patch("the_architect.core.opencode_provider.OpenCodeProvider") as mock_provider:
+            mock_provider.return_value.has_any_models.return_value = False
+            result = _opencode_has_any_models()
+            assert result is False
+
+    def test_opencode_has_models_exception_returns_false(self) -> None:
+        """Should return False when provider raises exception."""
+        from the_architect.cli import _opencode_has_any_models
+
+        with patch("the_architect.core.opencode_provider.OpenCodeProvider") as mock_provider:
+            mock_provider.return_value.has_any_models.side_effect = Exception("test error")
+            result = _opencode_has_any_models()
+            assert result is False
+
+
+class TestReadGoalFromInstructions:
+    """Tests for _read_goal_from_instructions goal extraction."""
+
+    def test_read_goal_from_instructions_with_goal(self, tmp_path: Path) -> None:
+        """Should extract goal from INSTRUCTIONS.md."""
+        from the_architect.cli import _read_goal_from_instructions
+
+        instructions = tmp_path / "INSTRUCTIONS.md"
+        instructions.write_text(
+            """# Instructions
+
+## Goal
+
+My goal text
+
+## Other section
+
+Some other text.
+""",
+            encoding="utf-8",
+        )
+
+        result = _read_goal_from_instructions(tmp_path)
+        assert result == "My goal text"
+
+    def test_read_goal_from_instructions_without_goal(self, tmp_path: Path) -> None:
+        """Should return empty string when no Goal section exists."""
+        from the_architect.cli import _read_goal_from_instructions
+
+        instructions = tmp_path / "INSTRUCTIONS.md"
+        instructions.write_text(
+            """# Instructions
+
+## Some other section
+
+Some other text.
+""",
+            encoding="utf-8",
+        )
+
+        result = _read_goal_from_instructions(tmp_path)
+        assert result == ""
+
+    def test_read_goal_from_instructions_nonexistent_dir(self, tmp_path: Path) -> None:
+        """Should return empty string when directory doesn't exist."""
+        from the_architect.cli import _read_goal_from_instructions
+
+        result = _read_goal_from_instructions(tmp_path / "nonexistent")
+        assert result == ""
+
+    def test_read_goal_from_instructions_goal_without_following_section(
+        self, tmp_path: Path
+    ) -> None:
+        """Should extract goal text even without following section."""
+        from the_architect.cli import _read_goal_from_instructions
+
+        instructions = tmp_path / "INSTRUCTIONS.md"
+        instructions.write_text(
+            """# Instructions
+
+## Goal
+
+My goal text without following section.
+""",
+            encoding="utf-8",
+        )
+
+        result = _read_goal_from_instructions(tmp_path)
+        assert result == "My goal text without following section."
+
+
+class TestAlternateScreenTTY:
+    """Tests for alternate_screen context manager in TTY mode."""
+
+    def test_alternate_screen_tty_path(self) -> None:
+        """Should write ANSI codes for entering and exiting alternate screen."""
+        from the_architect.cli import alternate_screen
+
+        with (
+            patch("sys.stdout.isatty", return_value=True),
+            patch("sys.stdout.write") as mock_write,
+            patch("sys.stdout.flush"),
+        ):
+            with alternate_screen():
+                pass
+
+            # Check that enter/exit codes were written
+            assert mock_write.call_count == 2
+            enter_call = mock_write.call_args_list[0]
+            exit_call = mock_write.call_args_list[1]
+            assert enter_call[0][0] == "\033[?1049h"
+            assert exit_call[0][0] == "\033[?1049l"
+
+
+class TestCountdownANSI:
+    """Tests for _countdown with ANSI support."""
+
+    def test_countdown_ansi_path(self) -> None:
+        """Should display countdown with ANSI codes when supported."""
+        from the_architect.cli import _countdown
+
+        with (
+            patch("the_architect.cli._ansi_supported", return_value=True),
+            patch("sys.stdout.write") as mock_write,
+            patch("sys.stdout.flush"),
+            patch("time.sleep"),
+        ):
+            _countdown(2)
+
+            # Should write 3 times: tick 2, tick 1, and clear line
+            assert mock_write.call_count == 3
+            # Check that ticks contain the countdown text
+            assert "2s" in mock_write.call_args_list[0][0][0]
+            assert "1s" in mock_write.call_args_list[1][0][0]
+
+
+class TestSpinANSI:
+    """Tests for _spin with ANSI support."""
+
+    def test_spin_ansi_path(self) -> None:
+        """Should display spinner with ANSI codes when supported."""
+        from the_architect.cli import _spin
+
+        # Use time.sleep as the "tick"; duration=0.24 at interval=0.08 yields
+        # roughly 3 iterations through the real infinite ``itertools.cycle``
+        # of spinner frames plus the final erase write.
+        with (
+            patch("the_architect.cli._ansi_supported", return_value=True),
+            patch("sys.stdout.write") as mock_write,
+            patch("sys.stdout.flush"),
+            patch("time.sleep"),
+        ):
+            _spin("test", duration=0.24)
+
+            # Must have written at least one spinner frame plus the erase.
+            assert mock_write.call_count >= 2
+            outputs = [call.args[0] for call in mock_write.call_args_list]
+            spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+            has_spinner = any(frame in output for frame in spinner_frames for output in outputs)
+            has_label = any("test" in output for output in outputs)
+            assert has_spinner and has_label
+
+
+class TestMaybeKillOwnTmuxSession:
+    """Tests for _maybe_kill_own_tmux_session tmux cleanup."""
+
+    def test_maybe_kill_no_tmux_env_var(self) -> None:
+        """Should do nothing when TMUX env var is not set."""
+        from the_architect.cli import _maybe_kill_own_tmux_session
+
+        with patch.dict("os.environ", {}, clear=True):
+            _maybe_kill_own_tmux_session(Path("/tmp"))
+            # No exception raised
+
+    def test_maybe_kill_tmux_subprocess_failure(self) -> None:
+        """Should handle subprocess failure gracefully."""
+        from the_architect.cli import _maybe_kill_own_tmux_session
+
+        with (
+            patch.dict("os.environ", {"TMUX": "test"}),
+            patch("subprocess.run") as mock_run,
+        ):
+            mock_run.return_value.returncode = 1
+            _maybe_kill_own_tmux_session(Path("/tmp"))
+            # No exception raised
+
+    def test_maybe_kill_different_session_name(self) -> None:
+        """Should not kill session with different name."""
+        from the_architect.cli import _maybe_kill_own_tmux_session
+
+        with (
+            patch.dict("os.environ", {"TMUX": "test"}),
+            patch("subprocess.run") as mock_run,
+            patch("the_architect.core.tmux.get_session_name") as mock_get_name,
+            patch("the_architect.core.tmux.session_exists") as mock_exists,
+        ):
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stdout = "different-session"
+            mock_get_name.return_value = "architect-test"
+
+            _maybe_kill_own_tmux_session(Path("/tmp"))
+
+            # Should not check if session exists
+            mock_exists.assert_not_called()
+
+    def test_maybe_kill_matches_session(self) -> None:
+        """Should kill session when names match."""
+        from the_architect.cli import _maybe_kill_own_tmux_session
+
+        with (
+            patch.dict("os.environ", {"TMUX": "test"}),
+            patch("subprocess.run") as mock_run,
+            patch("the_architect.core.tmux.get_session_name") as mock_get_name,
+            patch("the_architect.core.tmux.session_exists") as mock_exists,
+            patch("the_architect.core.tmux.kill_session") as mock_kill,
+        ):
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stdout = "architect-test"
+            mock_get_name.return_value = "architect-test"
+            mock_exists.return_value = True
+
+            _maybe_kill_own_tmux_session(Path("/tmp"))
+
+            # Should kill the matching session
+            mock_kill.assert_called_once_with("architect-test")

@@ -1,0 +1,382 @@
+"""Success summary writer — writes SUCCESS.md and prints terminal summary.
+
+Called after all tasks complete.  Mirrors the bash runner's final log block.
+"""
+
+from __future__ import annotations
+
+import datetime
+from pathlib import Path
+
+from loguru import logger
+from pydantic import BaseModel, Field
+
+from the_architect.core.runner import TaskResult, TokenUsage
+
+# ---------------------------------------------------------------------------
+# Retrospective summary model
+# ---------------------------------------------------------------------------
+
+
+class RetrospectiveRound(BaseModel):
+    """Summary of a single retrospective review round."""
+
+    round_number: int = Field(description="Which retrospective round (1-based)")
+    issues_found: int = Field(default=0, description="Number of issues identified")
+    fixes_planned: int = Field(default=0, description="Number of fix-up tasks created")
+    tasks_created: list[str] = Field(
+        default_factory=list, description="R-prefixed task names created"
+    )
+    duration_seconds: float = Field(
+        default=0.0, description="Wall-clock duration of the review in seconds"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Formatting helpers (shared with terminal output and SUCCESS.md)
+# ---------------------------------------------------------------------------
+
+
+def _fmt_duration(seconds: float) -> str:
+    """Format seconds as M:SS or H:MM:SS.
+
+    Args:
+        seconds: Duration in seconds.
+
+    Returns:
+        Formatted duration string.
+    """
+    if seconds < 0:
+        return "—"
+    total = int(seconds)
+    h, remainder = divmod(total, 3600)
+    m, s = divmod(remainder, 60)
+    if h > 0:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m}:{s:02d}"
+
+
+def _fmt_tokens(count: int) -> str:
+    """Format token count as K (thousands) or raw number.
+
+    Args:
+        count: Number of tokens.
+
+    Returns:
+        Formatted token string like ``"12.3K"`` or ``"842"``.
+    """
+    if count >= 1000:
+        return f"{count / 1000:.1f}K"
+    return str(count)
+
+
+def _fmt_model(model: str) -> str:
+    """Format model name for display — shorten long provider prefixes.
+
+    Args:
+        model: Full model identifier (e.g. ``"anthropic/claude-sonnet-4"``).
+
+    Returns:
+        Shortened model name for table display.
+    """
+    if not model:
+        return "—"
+    # Strip common provider prefixes for readability
+    for prefix in ("anthropic/", "openai/", "openrouter/"):
+        if model.startswith(prefix):
+            return model[len(prefix) :]
+    return model
+
+
+# ---------------------------------------------------------------------------
+# SUCCESS.md writer
+# ---------------------------------------------------------------------------
+
+
+def write_success_md(
+    project_dir: Path,
+    results: list[TaskResult],
+    total_duration: float,
+    total_tokens: TokenUsage,
+    retrospective_rounds: list[RetrospectiveRound] | None = None,
+) -> Path:
+    """Write a SUCCESS.md file summarising the completed run.
+
+    Args:
+        project_dir: The project root directory.
+        results: Per-task results.
+        total_duration: Total wall-clock duration in seconds.
+        total_tokens: Cumulative token usage across all tasks.
+        retrospective_rounds: Optional list of retrospective round summaries.
+
+    Returns:
+        Path to the written SUCCESS.md file.
+    """
+    done_count = sum(1 for r in results if r.status == "done")
+    failed_count = sum(1 for r in results if r.status == "failed")
+    total_count = len(results)
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    lines: list[str] = []
+    lines.append("# The Architect — Run Summary")
+    lines.append("")
+    lines.append(f"**Date:** {timestamp}")
+    lines.append(f"**Duration:** {_fmt_duration(total_duration)}")
+    lines.append(
+        f"**Result:** "
+        f"{'✓ All tasks completed' if failed_count == 0 else f'✗ {failed_count} task(s) failed'}"
+    )
+    lines.append("")
+
+    # Task table — includes attempts and model columns
+    lines.append("## Tasks")
+    lines.append("")
+    lines.append("| Task | Title | Status | Attempts | Model | Duration | Tokens |")
+    lines.append("|------|-------|--------|----------|-------|----------|--------|")
+
+    for r in results:
+        status_str = (
+            "✓ Done"
+            if r.status == "done"
+            else ("✗ Failed" if r.status == "failed" else "○ Skipped")
+        )
+        attempts_str = str(r.attempts) if r.attempts > 0 else "—"
+        model_str = _fmt_model(r.model)
+        duration_str = _fmt_duration(r.duration_seconds) if r.duration_seconds > 0 else "—"
+        tokens_str = _fmt_tokens(r.tokens.total) if r.tokens.total > 0 else "—"
+        lines.append(
+            f"| {r.prefix} | {r.title} | {status_str} | {attempts_str} | "
+            f"{model_str} | {duration_str} | {tokens_str} |"
+        )
+
+    lines.append("")
+
+    # Totals
+    lines.append("## Totals")
+    lines.append("")
+    lines.append(f"- **Tasks:** {done_count}/{total_count} done")
+    lines.append(f"- **Duration:** {_fmt_duration(total_duration)}")
+    lines.append(f"- **Total tokens:** {_fmt_tokens(total_tokens.total)}")
+
+    if total_tokens.total > 0:
+        parts = [f"input {_fmt_tokens(total_tokens.input_tokens)}"]
+        parts.append(f"output {_fmt_tokens(total_tokens.output_tokens)}")
+        if total_tokens.cache_read_tokens > 0:
+            parts.append(f"cache read {_fmt_tokens(total_tokens.cache_read_tokens)}")
+        if total_tokens.cache_write_tokens > 0:
+            parts.append(f"cache write {_fmt_tokens(total_tokens.cache_write_tokens)}")
+        lines.append(f"- **Token breakdown:** {' · '.join(parts)}")
+
+    # Models used
+    models = sorted({r.model for r in results if r.model})
+    if models:
+        lines.append(f"- **Models:** {', '.join(models)}")
+
+    # Retry count
+    total_attempts = sum(r.attempts for r in results)
+    total_retries = total_attempts - len(results)
+    if total_retries > 0:
+        lines.append(f"- **Retries:** {total_retries} across {len(results)} tasks")
+
+    # Rate limit hits
+    rate_limit_hits = sum(1 for r in results if r.rate_limit_hit)
+    if rate_limit_hits > 0:
+        hit_tasks = [r.prefix for r in results if r.rate_limit_hit]
+        lines.append(f"- **Rate limits hit:** {rate_limit_hits} ({', '.join(hit_tasks)})")
+
+    lines.append("")
+
+    # Retrospective section
+    if retrospective_rounds:
+        lines.append("## Retrospective")
+        lines.append("")
+        lines.append("| Round | Issues Found | Fix-up Tasks | Duration |")
+        lines.append("|-------|-------------|-------------|----------|")
+        for rr in retrospective_rounds:
+            tasks_str = ", ".join(rr.tasks_created) if rr.tasks_created else "—"
+            dur_str = _fmt_duration(rr.duration_seconds) if rr.duration_seconds > 0 else "—"
+            lines.append(f"| {rr.round_number} | {rr.issues_found} | {tasks_str} | {dur_str} |")
+        lines.append("")
+
+    # Insights
+    timed = [r for r in results if r.status == "done" and r.duration_seconds > 0]
+    done_tasks = [r for r in results if r.status == "done"]
+
+    if timed or done_tasks:
+        lines.append("## Insights")
+        lines.append("")
+
+        if timed:
+            avg_dur = sum(r.duration_seconds for r in timed) / len(timed)
+            lines.append(f"- **Avg duration per task:** {_fmt_duration(avg_dur)}")
+            slowest = max(timed, key=lambda r: r.duration_seconds)
+            lines.append(
+                f"- **Slowest task:** {slowest.prefix} {slowest.title} "
+                f"({_fmt_duration(slowest.duration_seconds)})"
+            )
+
+        if done_tasks and total_tokens.total > 0:
+            avg_tokens = total_tokens.total / len(done_tasks)
+            lines.append(f"- **Avg tokens per task:** {_fmt_tokens(int(avg_tokens))}")
+
+        if total_duration > 0 and total_tokens.total > 0:
+            tpm = total_tokens.total / (total_duration / 60)
+            lines.append(f"- **Throughput:** {_fmt_tokens(int(tpm))} tokens/min")
+
+        if done_tasks:
+            heaviest = max(done_tasks, key=lambda r: r.tokens.total)
+            if heaviest.tokens.total > 0:
+                lines.append(
+                    f"- **Most tokens:** {heaviest.prefix} {heaviest.title} "
+                    f"({_fmt_tokens(heaviest.tokens.total)})"
+                )
+
+        # Most retries insight
+        if done_tasks:
+            most_retries = max(done_tasks, key=lambda r: r.attempts)
+            if most_retries.attempts > 1:
+                lines.append(
+                    f"- **Most retries:** {most_retries.prefix} {most_retries.title} "
+                    f"({most_retries.attempts} attempts)"
+                )
+
+        lines.append("")
+
+    out_path = project_dir / "SUCCESS.md"
+    out_path.write_text("\n".join(lines), encoding="utf-8")
+    logger.info(f"Written success summary: {out_path}")
+    return out_path
+
+
+# ---------------------------------------------------------------------------
+# Terminal summary printer
+# ---------------------------------------------------------------------------
+
+
+def print_success_summary(
+    results: list[TaskResult],
+    total_duration: float,
+    total_tokens: TokenUsage,
+    success_md_path: Path | None = None,
+    retrospective_rounds: list[RetrospectiveRound] | None = None,
+) -> None:
+    """Print a clean terminal summary after all tasks complete.
+
+    Uses Rich for colour output.
+
+    Args:
+        results: Per-task results.
+        total_duration: Total wall-clock duration in seconds.
+        total_tokens: Cumulative token usage across all tasks.
+        success_md_path: Path to the written SUCCESS.md (shown in footer).
+        retrospective_rounds: Optional list of retrospective round summaries.
+    """
+    from rich import box
+    from rich.console import Console
+    from rich.table import Table
+
+    console = Console()
+    done_count = sum(1 for r in results if r.status == "done")
+    failed_count = sum(1 for r in results if r.status == "failed")
+    total_count = len(results)
+
+    console.print()
+
+    # Header
+    if failed_count == 0:
+        console.print(f"[bold #7cc800]✓ All {done_count} tasks completed[/bold #7cc800]")
+    else:
+        console.print(
+            f"[bold red]✗ {failed_count} task(s) failed[/bold red]  "
+            f"[dim]{done_count}/{total_count} done[/dim]"
+        )
+
+    # Build summary line with retries and rate limits
+    summary_parts: list[str] = [f"Duration {_fmt_duration(total_duration)}"]
+    if total_tokens.total > 0:
+        summary_parts.append(f"{_fmt_tokens(total_tokens.total)} tokens")
+
+    total_attempts = sum(r.attempts for r in results)
+    total_retries = total_attempts - len(results)
+    if total_retries > 0:
+        summary_parts.append(f"{total_retries} retries")
+
+    rate_limit_hits = sum(1 for r in results if r.rate_limit_hit)
+    if rate_limit_hits > 0:
+        summary_parts.append(f"{rate_limit_hits} rate-limited")
+
+    console.print(f"[dim]{'  ·  '.join(summary_parts)}[/dim]")
+    console.print()
+
+    # Task table — includes attempts and model columns
+    table = Table(box=box.SIMPLE, show_header=True, header_style="dim", padding=(0, 1))
+    table.add_column("Task", style="dim", width=6)
+    table.add_column("Title", no_wrap=False)
+    table.add_column("Status", width=10)
+    table.add_column("Attempts", justify="right", width=5)
+    table.add_column("Model", width=18)
+    table.add_column("Time", justify="right", width=6)
+    table.add_column("Tokens", justify="right", width=8)
+
+    for r in results:
+        if r.status == "done":
+            status_str = "[#7cc800]✓ Done[/#7cc800]"
+        elif r.status == "failed":
+            status_str = "[red]✗ Failed[/red]"
+        else:
+            status_str = "[dim]○ Skip[/dim]"
+
+        duration_str = _fmt_duration(r.duration_seconds) if r.duration_seconds > 0 else "—"
+        tokens_str = _fmt_tokens(r.tokens.total) if r.tokens.total > 0 else "—"
+        attempts_str = str(r.attempts) if r.attempts > 1 else "[dim]1[/dim]"
+        model_str = _fmt_model(r.model)
+
+        # Highlight retries in yellow
+        if r.attempts > 1:
+            attempts_str = f"[yellow]{r.attempts}[/yellow]"
+
+        # Highlight rate-limited tasks
+        if r.rate_limit_hit:
+            status_str += " [dim yellow]⚡[/dim yellow]"
+
+        table.add_row(
+            r.prefix,
+            r.title,
+            status_str,
+            attempts_str,
+            f"[dim]{model_str}[/dim]",
+            f"[dim]{duration_str}[/dim]",
+            f"[dim]{tokens_str}[/dim]",
+        )
+
+    console.print(table)
+
+    # Retrospective summary
+    if retrospective_rounds:
+        console.print()
+        for rr in retrospective_rounds:
+            if rr.issues_found == 0:
+                console.print(f"[dim]  Retrospective {rr.round_number}: no issues found[/dim]")
+            else:
+                tasks_str = ", ".join(rr.tasks_created) if rr.tasks_created else "—"
+                console.print(
+                    f"[yellow]  Retrospective {rr.round_number}: "
+                    f"{rr.issues_found} issue(s) → {tasks_str}[/yellow]"
+                )
+
+    # Totals line
+    count_str = f"{done_count}/{total_count} done"
+    if failed_count:
+        count_str += f", [red]{failed_count} failed[/red]"
+    console.print(
+        f"[bold]TOTAL[/bold]  {count_str}  [dim]·  {_fmt_duration(total_duration)}"
+        + (f"  ·  {_fmt_tokens(total_tokens.total)} tokens" if total_tokens.total > 0 else "")
+        + (f"  ·  {total_retries} retries" if total_retries > 0 else "")
+        + "[/dim]"
+    )
+
+    if success_md_path:
+        console.print()
+        console.print(f"[dim]Summary written to {success_md_path}[/dim]")
+
+    console.print()

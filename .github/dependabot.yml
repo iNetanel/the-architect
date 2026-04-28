@@ -1,0 +1,56 @@
+# Dependabot configuration for The Architect
+#
+# Opens PRs when dependencies have updates. Every PR runs through the normal
+# CI pipeline (lint -> test -> build) via the existing `pull_request` trigger
+# in .github/workflows/ci.yml, so nothing merges without passing tests.
+#
+# Dependabot NEVER publishes to PyPI. Releases are human-only, triggered by
+# pushing a `v*` tag. See the `publish` job in ci.yml.
+#
+# Docs: https://docs.github.com/en/code-security/dependabot/dependabot-version-updates
+
+version: 2
+updates:
+  # Python package dependencies (from pyproject.toml).
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: UTC
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - python
+    commit-message:
+      prefix: chore
+      include: scope
+    # Group minor and patch updates into a single PR to reduce noise.
+    # Major updates still come as individual PRs for manual review.
+    groups:
+      python-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  # GitHub Actions versions used in .github/workflows/.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: UTC
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: ci
+      include: scope
+    groups:
+      actions-minor-and-patch:
+        update-types:
+          - minor
+          - patch

@@ -1,0 +1,101 @@
+                                                                    
+  ████████╗██╗  ██╗███████╗     █████╗ ██████╗  ██████╗██╗  ██╗   
+  ╚══██╔══╝██║  ██║██╔════╝    ██╔══██╗██╔══██╗██╔════╝██║  ██║   
+     ██║   ███████║█████╗      ███████║██████╔╝██║     ███████║   
+     ██║   ██╔══██║██╔══╝      ██╔══██║██╔══██╗██║     ██╔══██║   
+     ██║   ██║  ██║███████╗    ██║  ██║██║  ██║╚██████╗██║  ██║   
+     ╚═╝   ╚═╝  ╚═╝╚══════╝   ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝   
+                                                                    
+         An autonomous development lifecycle layer for
+         agentic AI coding tools.
+         ─────────────────────────────────────────────────────
+         Original Author : Netanel Eliav
+         Email           : inetanel@me.com
+         Website         : https://inetanel.com/projects/the-architect
+         Repository      : https://github.com/inetanel/the-architect
+         License         : Apache License 2.0
+         Version         : 1.0.0 (build 10000)
+         Created         : 2026
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  THE ARCHITECT — NOTICE FILE
+  Copyright 2026 Netanel Eliav. All rights reserved.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ATTRIBUTION REQUIREMENT (Apache License 2.0, Section 4d)
+
+  This NOTICE file is legally required under Section 4(d) of the
+  Apache License, Version 2.0. Any distribution, fork, or derivative
+  of this software MUST:
+
+    1. Retain this NOTICE file in its entirety, without modification
+    2. Include a complete copy of the Apache License 2.0
+    3. Clearly state all modifications made to the original source
+    4. Not use "The Architect", the author's name, or the original
+       repository URL to endorse derivative products without explicit
+       written permission from Netanel Eliav
+
+  The canonical home of this project is:
+    https://github.com/inetanel/the-architect
+    https://inetanel.com/projects/the-architect
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  GENESIS FINGERPRINT
+
+  This block establishes the cryptographic origin of The Architect.
+  Inspired by the Bitcoin genesis block — a timestamped,
+  tamper-evident record of original authorship.
+
+    Project    : The Architect
+    Author     : Netanel Eliav <inetanel@me.com>
+    Origin     : https://github.com/inetanel/the-architect
+    Version    : 1.0.0 (build 10000)
+    Date       : 2026
+
+    SHA256 (v1.0.0 source tarball):
+    [ Fill after first release:
+      sha256sum the-architect-1.0.0.tar.gz ]
+
+    SHA256 (v1.0.0 wheel):
+    [ Fill after first release:
+      sha256sum the_architect-1.0.0-py3-none-any.whl ]
+
+    To verify authenticity of any distribution, compare its SHA256
+    against the signed releases published at:
+    https://github.com/inetanel/the-architect/releases
+
+    "The Architect was built to give developers their time back.
+     Describe a goal. Walk away. Come back to results."
+                                    — Netanel Eliav, 2026
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  THIRD-PARTY COMPONENTS
+
+  This software uses the following open-source libraries:
+
+    questionary  (MIT)    https://github.com/tmbo/questionary
+    loguru       (MIT)    https://github.com/Delgan/loguru
+    rich         (MIT)    https://github.com/Textualize/rich
+    click        (BSD-3)  https://github.com/pallets/click
+    pydantic     (MIT)    https://github.com/pydantic/pydantic
+    httpx        (BSD-3)  https://github.com/encode/httpx
+
+  This software optionally integrates with (not bundled):
+
+    OpenCode     https://opencode.ai  (https://github.com/anomalyco/opencode)
+    Claude Code  https://docs.anthropic.com/en/docs/claude-code
+
+  These are independent products with their own licenses and terms.
+  The Architect does not include, bundle, or redistribute them.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  "Any sufficiently advanced automation is indistinguishable
+   from having a really good senior engineer on call 24/7."
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

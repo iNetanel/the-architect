@@ -1,0 +1,37 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "autoupdate": true,
+  "compaction": {
+    "auto": true,
+    "prune": true,
+    "reserved": 15000
+  },
+  "permission": {
+    "edit": "allow",
+    "bash": {
+      "git push*": "ask",
+      "git commit*": "ask",
+      "git add*": "ask",
+      "rm -rf*": "ask",
+      "rm -r /*": "ask",
+      "sudo*": "ask",
+      "curl*|*>> /etc/*": "ask",
+      "curl*|*>> /usr/*": "ask",
+      "*": "allow"
+    }
+  },
+  "agent": {
+    "architect": {
+      "mode": "primary",
+      "steps": 100,
+      "description": "Planning agent — decomposes goals into atomic task files.",
+      "prompt": "{file:.architect/prompts/architect.md}"
+    },
+    "reviewer": {
+      "mode": "primary",
+      "steps": 100,
+      "description": "Retrospective reviewer — assesses completed work and creates fix-up tasks.",
+      "prompt": "{file:.architect/prompts/reviewer.md}"
+    }
+  }
+}
