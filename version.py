@@ -20,17 +20,22 @@
 # CLI shows  : The Architect v1.0.0 (build 10000)
 #
 # To release:
-#   1. Bump __version__ and/or __build__ here
-#   2. Add entry to CHANGELOG.md
-#   3. git tag v1.0.0 && git push origin v1.0.0
-#   4. After PyPI upload — record SHA256 hashes in NOTICE (first release only)
+#   1. Bump __version__ here and version in pyproject.toml
+#   2. Bump __build__ here
+#   3. Add entry to CHANGELOG.md
+#   4. Push to main — CI auto-creates GitHub release + tag
+#   5. If new SemVer detected — CI publishes to PyPI (after your approval)
+#   6. After PyPI upload — record SHA256 hashes in NOTICE (first release only)
+#
+# Build-only pushes (same __version__, new __build__) create a GitHub
+# pre-release but do NOT publish to PyPI.
 #
 # For every PR — including docs and maintenance — increment __build__.
 # If using an AI agent to contribute, instruct it to increment __build__
 # for every file operation it performs. This is the intended workflow.
 
 __version__ = "1.0.0"
-__build__ = 10004
+__build__ = 10005
 __author__ = "Netanel Eliav"
 __email__ = "inetanel@me.com"
 __repo__ = "https://github.com/inetanel/the-architect"

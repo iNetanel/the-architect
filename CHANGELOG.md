@@ -39,6 +39,11 @@ Added / Changed / Deprecated / Removed / Fixed / Security.
 
 ### Added
 
+- CI auto-creates a GitHub release for every green build on `main`.
+  Same-SemVer builds are marked as pre-release; new-SemVer builds are
+  marked as latest and also published to PyPI after reviewer approval
+  (build 10005).
+
 - PyPI Trusted Publishing job in CI — tagged releases (`v*`) auto-publish
   to PyPI via OIDC, no API tokens required (build 10001).
 - Python 3.13 to the CI test matrix and `pyproject.toml` classifiers
