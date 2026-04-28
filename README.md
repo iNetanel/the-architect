@@ -5,8 +5,8 @@
 **An autonomous development lifecycle layer for agentic AI coding tools.**  
 Describe a goal. Walk away. Come back to results.
 
-[![PyPI version](https://img.shields.io/pypi/v/the-architect?color=blue&label=PyPI)](https://pypi.org/project/the-architect/)
-[![Python](https://img.shields.io/pypi/pyversions/the-architect)](https://pypi.org/project/the-architect/)
+[![PyPI version](https://img.shields.io/pypi/v/the-architect?color=blue&label=PyPI&v=1)](https://pypi.org/project/the-architect/)
+[![Python](https://img.shields.io/pypi/pyversions/the-architect?v=1)](https://pypi.org/project/the-architect/)
 [![CI](https://github.com/inetanel/the-architect/actions/workflows/ci.yml/badge.svg)](https://github.com/inetanel/the-architect/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/inetanel/the-architect?style=social)](https://github.com/inetanel/the-architect)
