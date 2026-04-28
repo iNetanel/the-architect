@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/the_architect.jpg" alt="The Architect" width="70%">
+<img src="https://raw.githubusercontent.com/inetanel/the-architect/main/assets/the_architect.jpg" alt="The Architect" width="70%">
 
 **An autonomous development lifecycle layer for agentic AI coding tools.**  
 Describe a goal. Walk away. Come back to results.

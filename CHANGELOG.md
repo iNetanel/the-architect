@@ -20,6 +20,9 @@ Added / Changed / Deprecated / Removed / Fixed / Security.
 
 ### Fixed
 
+- README banner image now uses absolute GitHub URL so it renders correctly
+  on PyPI (relative `assets/` path is not resolvable on pypi.org) (build 10004).
+
 - `.gitignore` no longer excludes `the_architect/resources/prompts/architect.md`
   from version control. The previous rule `ARCHITECT.md` was intended to ignore
   the runtime-generated project memory file but matched case-insensitively on
