@@ -18,6 +18,22 @@ empty [Unreleased] above it. Use Keep a Changelog section headings:
 Added / Changed / Deprecated / Removed / Fixed / Security.
 -->
 
+### Fixed
+
+- `.gitignore` no longer excludes `the_architect/resources/prompts/architect.md`
+  from version control. The previous rule `ARCHITECT.md` was intended to ignore
+  the runtime-generated project memory file but matched case-insensitively on
+  macOS/Windows filesystems, silently dropping the lowercase resource file
+  from the initial commit and breaking 60+ tests on CI (build 10002).
+- Circuit-breaker replan tests (`test_replan_resets_circuit_state_on_success`,
+  `test_replan_discovers_new_task_files`) now patch `stream_provider` instead
+  of the removed `stream_opencode` symbol. The tests passed locally on dev
+  machines where `opencode` is installed (because the real call succeeded)
+  but failed on CI where it is not (build 10002).
+- Retry-command tests accept both legacy wording ("not marked Done") and
+  current wording ("not in a terminal state") so the assertions survive the
+  terminal-status vocabulary change (build 10002).
+
 ### Added
 
 - PyPI Trusted Publishing job in CI — tagged releases (`v*`) auto-publish

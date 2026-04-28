@@ -2043,8 +2043,12 @@ class TestRetryCommandMore:
             mock_prov.return_value.ensure_setup.return_value = None
             runner = CliRunner()
             result = runner.invoke(main, ["retry", "-t", "T01", "-p", str(tmp_path)])
-            # Should say task is not Done, then run it
-            assert "not marked Done" in result.output or result.exit_code == 0
+            # Should say task is not Done (or not in a terminal state), then run it
+            assert (
+                "not marked Done" in result.output
+                or "not in a terminal state" in result.output
+                or result.exit_code == 0
+            )
 
 
 class TestResetCommandMore:
@@ -4084,8 +4088,12 @@ class TestRetryCommandBranches:
         ):
             runner = CliRunner()
             result = runner.invoke(main, ["retry", "-t", "T01", "-p", str(tmp_path)])
-            # Should say "not marked Done — running now"
-            assert "not marked Done" in result.output or result.exit_code == 0
+            # Should say "not marked Done" or "not in a terminal state" then run it
+            assert (
+                "not marked Done" in result.output
+                or "not in a terminal state" in result.output
+                or result.exit_code == 0
+            )
 
     def test_retry_no_progress_file(self, tmp_path: Path) -> None:
         """Should handle retry when PROGRESS.md doesn't exist."""

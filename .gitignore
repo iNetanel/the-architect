@@ -58,13 +58,18 @@ tests/*.corrupted
 # ---------------------------------------------------------------------------
 # The Architect runtime — generated when `architect` runs inside a project
 # These are written into the user's project, not part of this repo.
+# Leading slash anchors each pattern to the repo root so we do not accidentally
+# exclude identically-named files that live inside the package (e.g. the
+# lowercase resource file `the_architect/resources/prompts/architect.md`,
+# which Git matches case-insensitively against the runtime `ARCHITECT.md`
+# on macOS and Windows filesystems).
 # ---------------------------------------------------------------------------
-.architect/
-architect.toml
-tasks/
-ARCHITECT.md
-PROGRESS.md
-SUCCESS.md
+/.architect/
+/architect.toml
+/tasks/
+/ARCHITECT.md
+/PROGRESS.md
+/SUCCESS.md
 
 # ---------------------------------------------------------------------------
 # Runtime logs
