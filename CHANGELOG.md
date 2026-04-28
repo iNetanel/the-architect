@@ -39,6 +39,9 @@ Added / Changed / Deprecated / Removed / Fixed / Security.
 
 ### Added
 
+- `more_things.md` — post-style writeup covering design philosophy and
+  non-obvious insights not found in the technical documentation (build 10006).
+
 - CI auto-creates a GitHub release for every green build on `main`.
   Same-SemVer builds are marked as pre-release; new-SemVer builds are
   marked as latest and also published to PyPI after reviewer approval
