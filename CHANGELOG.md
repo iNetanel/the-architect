@@ -18,7 +18,14 @@ empty [Unreleased] above it. Use Keep a Changelog section headings:
 Added / Changed / Deprecated / Removed / Fixed / Security.
 -->
 
+## [1.0.1] (build 10011) — 2026-04-28
+
 ### Fixed
+
+- Provider update-required and misconfiguration errors are now surfaced
+  immediately with actionable messages instead of silently retrying 3 times
+  with a generic "no tasks created" message. OpenCode and Claude Code can
+  now be proactively checked for updates before planning starts (build 10010).
 
 - README banner image now uses absolute GitHub URL so it renders correctly
   on PyPI (relative `assets/` path is not resolvable on pypi.org) (build 10004).

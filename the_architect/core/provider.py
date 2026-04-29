@@ -114,6 +114,21 @@ class ArchitectProvider(Protocol):
         """Return a human-readable install command for this platform."""
         ...
 
+    def check_update_available(self) -> str:
+        """Return an actionable message if a provider update is available.
+
+        Checks whether the installed version of the provider is outdated.
+        Returns a human-readable message with the update command when an
+        update is available, or an empty string when the provider is
+        up-to-date or the check cannot be performed.
+
+        This is a lightweight check that should complete quickly — it may
+        involve running ``provider --version`` or checking a remote
+        endpoint.  When the provider is not installed, returns an empty
+        string (the ``is_installed()`` check handles that case).
+        """
+        ...
+
     # ── Model / agent discovery ───────────────────────────────────────────
 
     def list_models(self) -> list[str]:

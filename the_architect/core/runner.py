@@ -2250,6 +2250,25 @@ async def run_task(
                 logger.warning(f"Retry pause cancelled for task {task.prefix}")
                 break
 
+            # Check for actionable provider errors (update required, etc.)
+            # Retrying won't fix these — fail fast with a clear message.
+            from the_architect.core.circuit import ProviderErrorKind, detect_provider_error
+
+            provider_error = detect_provider_error(
+                result.accumulated_text,
+                result.exit_code,
+            )
+            if (
+                provider_error is not None
+                and provider_error.kind == ProviderErrorKind.UPDATE_REQUIRED
+                and provider is not None
+            ):
+                update_msg = provider.check_update_available()
+                msg = update_msg or provider_error.action
+                logger.error(f"Task {task.prefix} aborted — provider update required: {msg}")
+                # Don't waste retry attempts on something the user must fix
+                break
+
     logger.error(f"Task {task.prefix} failed after {config.max_retries} attempts")
     # Return failed result with accumulated tokens
     return TaskResult(

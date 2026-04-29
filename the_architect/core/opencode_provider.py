@@ -782,6 +782,65 @@ class OpenCodeProvider:
         except Exception:
             return False
 
+    def check_update_available(self) -> str:
+        """Check if an opencode update is available.
+
+        Runs ``opencode --version`` to get the installed version, then
+        checks the npm registry for the latest version.  If a newer
+        version exists, returns a message with the update command.
+
+        Returns:
+            Empty string if up-to-date or check fails; otherwise an
+            actionable message like "OpenCode 1.14.28 is installed, but
+            1.14.30 is available. Update with: opencode upgrade"
+        """
+        import re
+        import urllib.request
+
+        if not self.is_installed():
+            return ""
+
+        # Get installed version
+        installed = self.get_version()
+        if not installed or installed == "unknown":
+            return ""
+
+        # Extract semver from the version string (may include extra text)
+        m = re.search(r"(\d+\.\d+\.\d+)", installed)
+        if not m:
+            return ""
+        installed_ver = m.group(1)
+
+        # Check npm registry for latest version
+        try:
+            req = urllib.request.Request(
+                "https://registry.npmjs.org/opencode-ai/latest",
+                headers={"Accept": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                latest = data.get("version", "")
+                if not latest:
+                    return ""
+        except Exception:
+            # Network error, DNS failure, etc. — can't check, don't block
+            return ""
+
+        # Compare versions using tuple comparison
+        try:
+            inst_tuple = tuple(int(x) for x in installed_ver.split("."))
+            latest_tuple = tuple(int(x) for x in latest.split("."))
+        except (ValueError, AttributeError):
+            return ""
+
+        if inst_tuple < latest_tuple:
+            return (
+                f"OpenCode {installed_ver} is installed, but {latest} is available. "
+                f"Update with: opencode upgrade"
+            )
+
+        return ""
+
 
 # ---------------------------------------------------------------------------
 # Tool call line builder (shared between v1.4+ and legacy formats)

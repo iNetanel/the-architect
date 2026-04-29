@@ -1039,3 +1039,105 @@ class TestRunPlannerAdditional:
         ):
             with pytest.raises(PlanningFailedError):
                 await run_planner(request, config)
+
+
+class TestRunPlannerProviderError:
+    """Tests for provider error detection in run_planner()."""
+
+    @pytest.mark.asyncio
+    async def test_run_planner_update_required_fails_immediately(self, tmp_path: Path) -> None:
+        """Planning should fail immediately with a clear message when provider needs update."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+
+        config = ArchitectConfig().resolve(tmp_path)
+        request = PlanningRequest(
+            goal="Test goal",
+            scope=TaskScope.STANDARD,
+            project_dir=tmp_path,
+        )
+
+        provider = Mock()
+        provider.name = "opencode"
+        provider.display_name = "OpenCode"
+        provider.supports_agents.return_value = True
+        provider.ensure_setup.return_value = None
+        provider.check_update_available.return_value = (
+            "OpenCode 1.14.28 is installed, but 1.14.30 is available. Update with: opencode upgrade"
+        )
+
+        async def fake_stream(**kwargs: object) -> StreamResult:  # type: ignore[misc]
+            return StreamResult(
+                exit_code=1,
+                tokens=TokenUsage(),
+                accumulated_text="A new version of opencode is available. Please update.",
+            )
+
+        with patch("the_architect.core.planner.stream_provider", side_effect=fake_stream):
+            with pytest.raises(PlanningFailedError, match="[Uu]pdate"):
+                await run_planner(request, config, provider=provider)
+
+    @pytest.mark.asyncio
+    async def test_run_planner_misconfigured_fails_immediately(self, tmp_path: Path) -> None:
+        """Planning should fail immediately when provider is misconfigured."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+
+        config = ArchitectConfig().resolve(tmp_path)
+        request = PlanningRequest(
+            goal="Test goal",
+            scope=TaskScope.STANDARD,
+            project_dir=tmp_path,
+        )
+
+        provider = Mock()
+        provider.name = "opencode"
+        provider.display_name = "OpenCode"
+        provider.supports_agents.return_value = True
+        provider.ensure_setup.return_value = None
+
+        async def fake_stream(**kwargs: object) -> StreamResult:  # type: ignore[misc]
+            return StreamResult(
+                exit_code=1,
+                tokens=TokenUsage(),
+                accumulated_text="Error: Invalid API key provided",
+            )
+
+        with patch("the_architect.core.planner.stream_provider", side_effect=fake_stream):
+            with pytest.raises(PlanningFailedError, match="misconfigured"):
+                await run_planner(request, config, provider=provider)
+
+    @pytest.mark.asyncio
+    async def test_run_planner_unknown_error_surfaces_output(self, tmp_path: Path) -> None:
+        """Planning should surface unknown provider errors as dim output but still retry."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+
+        config = ArchitectConfig().resolve(tmp_path)
+        request = PlanningRequest(
+            goal="Test goal",
+            scope=TaskScope.STANDARD,
+            project_dir=tmp_path,
+        )
+
+        provider = Mock()
+        provider.name = "opencode"
+        provider.display_name = "OpenCode"
+        provider.supports_agents.return_value = True
+        provider.ensure_setup.return_value = None
+
+        async def fake_stream(**kwargs: object) -> StreamResult:  # type: ignore[misc]
+            return StreamResult(
+                exit_code=1,
+                tokens=TokenUsage(),
+                accumulated_text="Something went wrong with the provider internals",
+            )
+
+        # Unknown errors should still allow retries (they may be transient),
+        # but will eventually fail after all retries are exhausted
+        with (
+            patch("the_architect.core.planner.stream_provider", side_effect=fake_stream),
+            patch("asyncio.sleep", side_effect=lambda _: None),
+        ):
+            with pytest.raises(PlanningFailedError):
+                await run_planner(request, config, provider=provider)

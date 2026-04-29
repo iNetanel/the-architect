@@ -1254,6 +1254,23 @@ def run_planning_mode(
 
     provider.ensure_setup(project, config)
 
+    # Proactive update check before planning starts
+    update_msg = provider.check_update_available()
+    if update_msg:
+        console.print(f"\n[bold yellow]⚠  {update_msg}[/bold yellow]")
+        if not headless:
+            import questionary as _q
+
+            confirmed = _q.confirm(
+                "Continue with outdated provider anyway?",
+                default=False,
+                style=_questionary_style(),
+            ).ask()
+            if confirmed is not True:
+                console.print("[dim]Aborted by user.[/dim]")
+                raise SystemExit(0)
+        console.print()
+
     request = PlanningRequest(
         goal=goal,
         scope=scope,
@@ -3746,14 +3763,14 @@ def config_cmd(project: Path | None, set_values: tuple[str, ...]) -> None:
             # Coerce to the right Python type
             annotation = field.annotation
             try:
-                if annotation is bool or annotation == "bool":
+                if isinstance(annotation, type) and annotation is bool:
                     if raw_val.lower() in ("true", "1", "yes"):
                         updates[key] = True
                     elif raw_val.lower() in ("false", "0", "no"):
                         updates[key] = False
                     else:
                         raise ValueError(f"Expected true/false for '{key}'")
-                elif annotation is int or annotation == "int":
+                elif isinstance(annotation, type) and annotation is int:
                     updates[key] = int(raw_val)
                 else:
                     updates[key] = raw_val

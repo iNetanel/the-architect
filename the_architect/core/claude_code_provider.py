@@ -18,6 +18,7 @@ Key differences from OpenCode:
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -670,6 +671,56 @@ class ClaudeCodeProvider:
             Always False.
         """
         return False
+
+    def check_update_available(self) -> str:
+        """Check if a Claude Code update is available.
+
+        Returns:
+            Empty string if up-to-date or check fails; otherwise an
+            actionable message with the update command.
+        """
+        import re
+        import urllib.request
+
+        if not self.is_installed():
+            return ""
+
+        installed = self.get_version()
+        if not installed or installed == "unknown":
+            return ""
+
+        m = re.search(r"(\d+\.\d+\.\d+)", installed)
+        if not m:
+            return ""
+        installed_ver = m.group(1)
+
+        # Claude Code uses npm too
+        try:
+            req = urllib.request.Request(
+                "https://registry.npmjs.org/@anthropic-ai/claude-code/latest",
+                headers={"Accept": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                latest = data.get("version", "")
+                if not latest:
+                    return ""
+        except Exception:
+            return ""
+
+        try:
+            inst_tuple = tuple(int(x) for x in installed_ver.split("."))
+            latest_tuple = tuple(int(x) for x in latest.split("."))
+        except (ValueError, AttributeError):
+            return ""
+
+        if inst_tuple < latest_tuple:
+            return (
+                f"Claude Code {installed_ver} is installed, but {latest} is available. "
+                f"Update with: claude update"
+            )
+
+        return ""
 
 
 # ---------------------------------------------------------------------------

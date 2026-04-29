@@ -301,6 +301,136 @@ def detect_cooldown_signal(text: str, exit_code: int) -> tuple[bool, int, str]:
 
 
 # ---------------------------------------------------------------------------
+# Provider error detection — actionable errors that require user intervention
+# ----------------------------------------------------------------- ----------
+
+
+class ProviderErrorKind(StrEnum):
+    """Categories of actionable provider errors."""
+
+    UPDATE_REQUIRED = "UPDATE_REQUIRED"
+    """Provider needs an update before it can run."""
+
+    MISCONFIGURED = "MISCONFIGURED"
+    """Provider is installed but not properly configured."""
+
+    UNKNOWN = "UNKNOWN"
+    """Provider exited with an error but the cause is unclear."""
+
+
+class ProviderError(BaseModel):
+    """An actionable error detected from provider output."""
+
+    kind: ProviderErrorKind = Field(description="Category of the error")
+    message: str = Field(description="Human-readable error description")
+    action: str = Field(description="Suggested action the user should take")
+    raw_text: str = Field(default="", description="Raw text that triggered detection")
+
+
+# Text patterns that indicate the provider needs an update.
+# OpenCode patterns:
+#   "A new version of opencode is available"
+#   "please update opencode"
+#   "update required"
+#   "you must update"
+#   "version is outdated"
+# Claude Code patterns:
+#   "please update claude code"
+#   "A new version of Claude Code is available"
+_UPDATE_REQUIRED_PATTERNS: list[str] = [
+    "new version",
+    "update required",
+    "please update",
+    "must update",
+    "version is outdated",
+    "outdated version",
+    "needs to be updated",
+    "must be updated",
+    "upgrade required",
+    "please upgrade",
+]
+
+# Text patterns that indicate the provider is misconfigured
+# (not an update issue, not a rate limit — something else is wrong).
+_MISCONFIGURED_PATTERNS: list[str] = [
+    "api key",
+    "authentication failed",
+    "unauthorized",
+    "invalid api key",
+    "no api key",
+    "missing api key",
+    "not authenticated",
+    "login required",
+    "please sign in",
+]
+
+
+def detect_provider_error(text: str, exit_code: int) -> ProviderError | None:
+    """Detect actionable provider errors from accumulated output.
+
+    Unlike ``detect_cooldown_signal`` which finds transient rate-limit
+    issues that resolve with waiting, this function finds errors that
+    require *user action* — the provider will keep failing until the
+    user fixes something (updates, reconfigures, etc.).
+
+    Args:
+        text: Accumulated text output from the provider run.
+        exit_code: The provider subprocess exit code.
+
+    Returns:
+        A :class:`ProviderError` if an actionable error is detected, or
+        ``None`` if no actionable error is found (the failure may be
+        transient or the cause is unknown).
+    """
+    if exit_code == 0:
+        return None
+
+    text_lower = text.lower()
+
+    # Check for update-required patterns first (most actionable)
+    for pattern in _UPDATE_REQUIRED_PATTERNS:
+        if pattern in text_lower:
+            # Determine which provider based on text content
+            if "opencode" in text_lower:
+                action = "Run: opencode upgrade"
+            elif "claude" in text_lower:
+                action = "Run: claude update"
+            else:
+                action = "Update your AI CLI tool to the latest version"
+
+            return ProviderError(
+                kind=ProviderErrorKind.UPDATE_REQUIRED,
+                message=f'Provider requires an update (matched: "{pattern}")',
+                action=action,
+                raw_text=text[:500],
+            )
+
+    # Check for misconfiguration patterns
+    for pattern in _MISCONFIGURED_PATTERNS:
+        if pattern in text_lower:
+            return ProviderError(
+                kind=ProviderErrorKind.MISCONFIGURED,
+                message=f'Provider is misconfigured (matched: "{pattern}")',
+                action="Check your API key configuration and provider authentication",
+                raw_text=text[:500],
+            )
+
+    # Non-zero exit code but no recognized pattern — return a generic error
+    # so the caller can at least show *something* useful instead of "no tasks created"
+    if text.strip():
+        # Show a snippet of the error output so the user isn't blind
+        snippet = text.strip()[:200]
+        return ProviderError(
+            kind=ProviderErrorKind.UNKNOWN,
+            message=f"Provider exited with code {exit_code}",
+            action=f"Provider output: {snippet}",
+            raw_text=text[:500],
+        )
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Circuit breaker logic
 # ---------------------------------------------------------------------------
 

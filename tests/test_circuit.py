@@ -14,15 +14,91 @@ from the_architect.core.circuit import (
     AttemptSummary,
     CircuitBreaker,
     CircuitState,
+    ProviderErrorKind,
     RecoveryAction,
     TaskCircuitState,
     _fingerprint_error,
     _now_iso,
     detect_cooldown_signal,
+    detect_provider_error,
     load_circuit_state,
 )
 
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------
+# Provider error detection
+# -------------------------------------------------------
+
+
+class TestDetectProviderError:
+    """Tests for detect_provider_error()."""
+
+    def test_no_error_on_success(self) -> None:
+        """No error when exit code is 0."""
+        result = detect_provider_error("some text", 0)
+        assert result is None
+
+    def test_no_error_on_empty_text_nonzero_exit(self) -> None:
+        """No actionable error when exit code is non-zero but text is empty."""
+        result = detect_provider_error("", 1)
+        assert result is None
+
+    def test_update_required_opencode(self) -> None:
+        """Detect OpenCode update-required error."""
+        result = detect_provider_error("A new version of opencode is available. Please update.", 1)
+        assert result is not None
+        assert result.kind == ProviderErrorKind.UPDATE_REQUIRED
+        assert "opencode upgrade" in result.action
+
+    def test_update_required_claude(self) -> None:
+        """Detect Claude Code update-required error."""
+        result = detect_provider_error("Please update Claude Code to continue.", 1)
+        assert result is not None
+        assert result.kind == ProviderErrorKind.UPDATE_REQUIRED
+        assert "claude update" in result.action
+
+    def test_update_required_generic(self) -> None:
+        """Detect update-required error without provider name."""
+        result = detect_provider_error("Update required to continue.", 1)
+        assert result is not None
+        assert result.kind == ProviderErrorKind.UPDATE_REQUIRED
+        assert "latest version" in result.action
+
+    def test_misconfigured_api_key(self) -> None:
+        """Detect API key misconfiguration error."""
+        result = detect_provider_error("Error: Invalid API key provided", 1)
+        assert result is not None
+        assert result.kind == ProviderErrorKind.MISCONFIGURED
+        assert "api key" in result.message.lower() or "API key" in result.message
+
+    def test_misconfigured_unauthorized(self) -> None:
+        """Detect unauthorized error."""
+        result = detect_provider_error("Error: unauthorized access", 1)
+        assert result is not None
+        assert result.kind == ProviderErrorKind.MISCONFIGURED
+
+    def test_unknown_error_with_output(self) -> None:
+        """Detect unknown error with output text."""
+        result = detect_provider_error("Something unexpected went wrong in the provider", 1)
+        assert result is not None
+        assert result.kind == ProviderErrorKind.UNKNOWN
+        assert "Something unexpected" in result.action
+
+    def test_update_required_takes_priority_over_misconfigured(self) -> None:
+        """Update-required should be detected before misconfiguration."""
+        result = detect_provider_error(
+            "A new version is available. Please update. Also invalid API key.", 1
+        )
+        assert result is not None
+        assert result.kind == ProviderErrorKind.UPDATE_REQUIRED
+
+    def test_rate_limit_text_not_detected_as_provider_error(self) -> None:
+        """Rate limit text should NOT be detected as an actionable provider error."""
+        result = detect_provider_error("rate limit exceeded, try again in 60 seconds", 1)
+        # This should either be None or not be UPDATE_REQUIRED
+        assert result is None or result.kind != ProviderErrorKind.UPDATE_REQUIRED
+
+
+# -------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 

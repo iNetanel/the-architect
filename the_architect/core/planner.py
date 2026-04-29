@@ -975,7 +975,11 @@ async def run_planner(
 
     from rich.console import Console as _Console
 
-    from the_architect.core.circuit import detect_cooldown_signal
+    from the_architect.core.circuit import (
+        ProviderErrorKind,
+        detect_cooldown_signal,
+        detect_provider_error,
+    )
 
     _console = _Console()
 
@@ -1083,7 +1087,41 @@ async def run_planner(
             attempt -= 1
             continue
 
-        # ── Transient failure ────────────────────────────────────────────
+        # ── Actionable provider error detection ────────────────────────────────
+        # Check for errors that require user action (update required,
+        # misconfiguration, etc.). Retrying won't help — show the user
+        # what's wrong and what to do.
+        provider_error = detect_provider_error(
+            stream_result.accumulated_text,
+            stream_result.exit_code,
+        )
+        if provider_error is not None and provider_error.kind in (
+            ProviderErrorKind.UPDATE_REQUIRED,
+            ProviderErrorKind.MISCONFIGURED,
+        ):
+            if provider_error.kind == ProviderErrorKind.UPDATE_REQUIRED:
+                # Also check the provider for a precise version message
+                update_msg = provider.check_update_available()
+                if update_msg:
+                    error_msg = update_msg
+                else:
+                    error_msg = f"{provider_error.message}\n  → {provider_error.action}"
+                _console.print(f"\n[bold red]⛔  {error_msg}[/bold red]")
+                logger.error(
+                    f"Planning aborted — provider update required: {provider_error.message}"
+                )
+            elif provider_error.kind == ProviderErrorKind.MISCONFIGURED:
+                error_msg = f"{provider_error.message}\n  → {provider_error.action}"
+                _console.print(f"\n[bold yellow]⚠  {error_msg}[/bold yellow]")
+                logger.error(f"Planning aborted — provider misconfigured: {provider_error.message}")
+            raise PlanningFailedError(error_msg)
+        elif provider_error is not None and provider_error.kind == ProviderErrorKind.UNKNOWN:
+            # Unknown error — surface the output snippet for visibility but
+            # still allow retries (the error may be transient).
+            logger.warning(f"Provider error detected (attempt {attempt}): {provider_error.message}")
+            _console.print(f"[dim]  Provider output: {provider_error.action}[/dim]")
+
+        # ── Transient failure ─────────────────────────────────────────────────
         # No tasks created and no cooldown signal — transient failure.
         # Consume a retry slot and pause briefly before the next attempt.
         if attempt < _PLANNING_MAX_ATTEMPTS:
