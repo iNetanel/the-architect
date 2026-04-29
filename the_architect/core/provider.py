@@ -1,19 +1,20 @@
 """Provider abstraction for The Architect.
 
-Defines the ArchitectProvider protocol — a common interface that both
-OpenCode and Claude Code CLI implementations satisfy.  All provider-specific
+Defines the ArchitectProvider protocol — a common interface that OpenCode,
+Claude Code, and Codex CLI implementations satisfy.  All provider-specific
 logic lives in the concrete implementations; the rest of The Architect calls
 only this interface.
 
 Auto-detection order (when preference is "auto"):
-  1. If only OpenCode is installed → use OpenCode
-  2. If only Claude Code is installed → use Claude Code
-  3. If both are installed → return both so the CLI can prompt the user
-  4. If neither is installed → raise ProviderNotFoundError
+  1. If OpenCode is installed → use OpenCode
+  2. If Codex CLI is installed → use Codex CLI
+  3. If Claude Code is installed → use Claude Code
+  4. If none are installed → raise ProviderNotFoundError
 
 Preference values (from architect.toml ``provider`` field):
   "auto"        — detect as above
   "opencode"    — require OpenCode, raise if not found
+  "codex"       — require Codex CLI, raise if not found
   "claude-code" — require Claude Code, raise if not found
 """
 
@@ -278,7 +279,8 @@ def detect_provider(preference: str = "auto") -> ArchitectProvider:
     to offer the user a choice.
 
     Args:
-        preference: One of ``"auto"``, ``"opencode"``, or ``"claude-code"``.
+        preference: One of ``"auto"``, ``"opencode"``, ``"codex"``,
+            or ``"claude-code"``.
 
     Returns:
         An :class:`ArchitectProvider` instance.
@@ -288,10 +290,12 @@ def detect_provider(preference: str = "auto") -> ArchitectProvider:
         ValueError: When ``preference`` is not a recognised value.
     """
     from the_architect.core.claude_code_provider import ClaudeCodeProvider
+    from the_architect.core.codex_cli_provider import CodexCliProvider
     from the_architect.core.opencode_provider import OpenCodeProvider
 
     oc = OpenCodeProvider()
     cc = ClaudeCodeProvider()
+    codex = CodexCliProvider()
 
     pref = preference.lower().strip()
 
@@ -302,6 +306,13 @@ def detect_provider(preference: str = "auto") -> ArchitectProvider:
             )
         return oc
 
+    if pref == "codex":
+        if not codex.is_installed():
+            raise ProviderNotFoundError(
+                f"Codex CLI is not installed. Install it with: {codex.install_hint()}"
+            )
+        return codex
+
     if pref == "claude-code":
         if not cc.is_installed():
             raise ProviderNotFoundError(
@@ -311,21 +322,25 @@ def detect_provider(preference: str = "auto") -> ArchitectProvider:
 
     if pref == "auto":
         oc_ok = oc.is_installed()
+        codex_ok = codex.is_installed()
         cc_ok = cc.is_installed()
 
         if oc_ok:
-            return oc  # OpenCode preferred when both present
+            return oc  # OpenCode preferred when present
+        if codex_ok:
+            return codex  # Codex preferred over Claude Code
         if cc_ok:
             return cc
         raise ProviderNotFoundError(
             "No supported AI CLI found. Install one of:\n"
             f"  OpenCode:    {oc.install_hint()}\n"
+            f"  Codex CLI:   {codex.install_hint()}\n"
             f"  Claude Code: {cc.install_hint()}"
         )
 
     raise ValueError(
         f"Unknown provider preference: {preference!r}. "
-        "Valid values: 'auto', 'opencode', 'claude-code'."
+        "Valid values: 'auto', 'opencode', 'codex', 'claude-code'."
     )
 
 
@@ -337,18 +352,22 @@ def detect_available_providers() -> list[ArchitectProvider]:
 
     Returns:
         List of installed :class:`ArchitectProvider` instances.
-        OpenCode comes first when both are installed.
+        OpenCode comes first when present, followed by Codex, then Claude Code.
         Empty list when nothing is installed.
     """
     from the_architect.core.claude_code_provider import ClaudeCodeProvider
+    from the_architect.core.codex_cli_provider import CodexCliProvider
     from the_architect.core.opencode_provider import OpenCodeProvider
 
     available: list[ArchitectProvider] = []
     oc = OpenCodeProvider()
     cc = ClaudeCodeProvider()
+    codex = CodexCliProvider()
 
     if oc.is_installed():
         available.append(oc)
+    if codex.is_installed():
+        available.append(codex)
     if cc.is_installed():
         available.append(cc)
 

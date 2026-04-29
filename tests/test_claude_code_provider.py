@@ -309,7 +309,11 @@ class TestClaudeCodeProviderFindUserConfig:
         finally:
             # Cleanup
             global_claude.unlink(missing_ok=True)
-            global_claude.parent.rmdir()
+            # Only remove the directory if it's empty (may contain other files)
+            try:
+                global_claude.parent.rmdir()
+            except OSError:
+                pass
 
     def test_find_user_config_no_file(self, provider, tmp_path):
         """Test that None is returned when no CLAUDE.md exists."""
@@ -674,7 +678,7 @@ class TestClaudeCodeProviderCommandBuilding:
     def test_command_building_basic(self, provider):
         """Test basic command building."""
         cmd = provider.build_command("test instruction")
-        assert "claude" in cmd
+        assert "claude" in cmd[0]
         assert "--dangerously-skip-permissions" in cmd
         assert "--print" in cmd
         assert "test instruction" in cmd

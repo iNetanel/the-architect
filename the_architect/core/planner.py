@@ -973,15 +973,14 @@ async def run_planner(
     _PLANNING_MAX_ATTEMPTS = 3
     _PLANNING_RETRY_PAUSE = 30  # seconds between transient-failure retries
 
-    from rich.console import Console as _Console
-
     from the_architect.core.circuit import (
         ProviderErrorKind,
         detect_cooldown_signal,
         detect_provider_error,
     )
+    from the_architect.core.tmux import PaddedConsole
 
-    _console = _Console()
+    _console = PaddedConsole()
 
     attempt = 0
     task_names: list[str] = []

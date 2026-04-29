@@ -23,7 +23,7 @@ from datetime import UTC
 
 import click
 from loguru import logger
-from rich.console import Console
+from prompt_toolkit.layout.dimension import D
 
 from the_architect import __version__
 from the_architect.config import ArchitectConfig, load_config, write_config
@@ -51,8 +51,9 @@ from the_architect.core.retrospective import RetrospectiveRequest, run_retrospec
 from the_architect.core.runner import TaskResult, TokenUsage, run_all, run_task, setup_logging
 from the_architect.core.success import RetrospectiveRound, print_success_summary, write_success_md
 from the_architect.core.tasks import Task, TaskPlan, TaskScope, TaskStatus, discover_tasks
+from the_architect.core.tmux import PaddedConsole
 
-console = Console()
+console = PaddedConsole()
 
 
 # ---------------------------------------------------------------------------
@@ -112,18 +113,24 @@ def _setup_loguru() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _opencode_has_any_models() -> bool:
+def _provider_has_any_models() -> bool:
     """Check whether the active provider can list at least one model.
+
+    Uses auto-detection to find the installed provider.
 
     Returns:
         True if the provider has at least one model available.
     """
     try:
-        from the_architect.core.opencode_provider import OpenCodeProvider
+        from the_architect.core.provider import detect_provider
 
-        return OpenCodeProvider().has_any_models()
+        return detect_provider("auto").has_any_models()
     except Exception:
         return False
+
+
+# Backward-compatible alias — tests import this name
+_opencode_has_any_models = _provider_has_any_models
 
 
 def _filter_and_set_status(tasks: list[Task], progress_file: Path) -> list[Task]:
@@ -202,6 +209,87 @@ ARCHITECT_GREEN = "#7cc800"
 
 # Shared questionary style — The Architect green for user input and selections
 _QUESTIONARY_STYLE = None
+_PROMPT_LEFT_PAD = 2
+_PROMPT_RIGHT_PAD = 2
+
+
+def _padded_window(content: Any) -> Any:
+    """Wrap prompt_toolkit content in a horizontally padded layout."""
+    from prompt_toolkit.layout import Layout, VSplit, Window
+
+    return Layout(
+        VSplit(
+            [
+                Window(width=D.exact(_PROMPT_LEFT_PAD), dont_extend_width=True),
+                Window(content=content),
+                Window(width=D.exact(_PROMPT_RIGHT_PAD), dont_extend_width=True),
+            ]
+        )
+    )
+
+
+def _prompt_text_input(
+    title: str,
+    instruction: str,
+    default: str = "",
+) -> str | None:
+    """Prompt for free text with right-side padding in the main pane."""
+    from prompt_toolkit import Application
+    from prompt_toolkit.buffer import Buffer
+    from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
+    from prompt_toolkit.layout.controls import BufferControl
+    from prompt_toolkit.styles import Style as PtStyle
+
+    cancelled = False
+    buffer = Buffer(multiline=True)
+    if default:
+        buffer.text = default
+
+    kb = KeyBindings()
+
+    @kb.add("c-c")
+    def _(event: KeyPressEvent) -> None:
+        nonlocal cancelled
+        cancelled = True
+        event.app.exit()
+
+    @kb.add("c-m")
+    def _(event: KeyPressEvent) -> None:
+        event.app.exit()
+
+    console.print(
+        f"[bold {ARCHITECT_GREEN}]{title}[/bold {ARCHITECT_GREEN}]  [grey62]{instruction}[/grey62]"
+    )
+    from prompt_toolkit.layout import Layout, VSplit, Window
+
+    layout = Layout(
+        VSplit(
+            [
+                Window(content=BufferControl(buffer=buffer), wrap_lines=True),
+                Window(width=D.exact(_PROMPT_RIGHT_PAD), dont_extend_width=True),
+            ]
+        )
+    )
+
+    pt_style = PtStyle(
+        [
+            ("", f"fg:{ARCHITECT_GREEN} bold"),
+            ("header", f"fg:{ARCHITECT_GREEN} bold"),
+            ("instruction", "fg:#666666"),
+        ]
+    )
+
+    app: Application[object] = Application(
+        layout=layout,
+        key_bindings=kb,
+        style=pt_style,
+        full_screen=False,
+    )
+    app.run()
+
+    if cancelled:
+        return None
+    return buffer.text
 
 
 def _questionary_style() -> PromptStyle:
@@ -259,8 +347,9 @@ def _questionary_style() -> PromptStyle:
 def _prompt_provider_selection(available: list[ArchitectProvider]) -> ArchitectProvider:
     """Show an interactive provider selection screen when multiple providers are installed.
 
-    Presented only when both OpenCode and Claude Code are detected and the
+    Presented when multiple providers are detected and the
     user has not specified a preference in ``architect.toml``.
+
 
     Args:
         available: List of installed providers (at least 2).
@@ -270,7 +359,7 @@ def _prompt_provider_selection(available: list[ArchitectProvider]) -> ArchitectP
     """
     from prompt_toolkit import Application
     from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
-    from prompt_toolkit.layout import FormattedTextControl, HSplit, Layout, Window
+    from prompt_toolkit.layout import FormattedTextControl
     from prompt_toolkit.styles import Style as PtStyle
 
     selected_idx = 0
@@ -312,7 +401,7 @@ def _prompt_provider_selection(available: list[ArchitectProvider]) -> ArchitectP
         lines: list[tuple[str, str]] = []
         lines.append(("class:header", "\n The Architect  "))
         lines.append(("class:dim", "select provider\n\n"))
-        lines.append(("class:dim", "  Both OpenCode and Claude Code are installed.\n"))
+        lines.append(("class:dim", "  Multiple AI CLI providers are installed.\n"))
         lines.append(("class:dim", "  Select which provider to use for this run.\n\n"))
 
         for i, p in enumerate(available):
@@ -336,7 +425,7 @@ def _prompt_provider_selection(available: list[ArchitectProvider]) -> ArchitectP
         return lines
 
     content = FormattedTextControl(_render)
-    layout = Layout(HSplit([Window(content=content)]))
+    layout = _padded_window(content)
 
     pt_style = PtStyle(
         [
@@ -390,7 +479,7 @@ def _prompt_mode_selection(
 
     from prompt_toolkit import Application
     from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
-    from prompt_toolkit.layout import FormattedTextControl, HSplit, Layout, Window
+    from prompt_toolkit.layout import FormattedTextControl
     from prompt_toolkit.styles import Style as PtStyle
 
     # Determine which options are available for this provider.
@@ -531,7 +620,7 @@ def _prompt_mode_selection(
         return lines
 
     content = FormattedTextControl(_render)
-    layout = Layout(HSplit([Window(content=content)]))
+    layout = _padded_window(content)
 
     pt_style = PtStyle(
         [
@@ -598,7 +687,7 @@ def _prompt_resume_screen(
 
     from prompt_toolkit import Application
     from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
-    from prompt_toolkit.layout import FormattedTextControl, HSplit, Layout, Window
+    from prompt_toolkit.layout import FormattedTextControl
     from prompt_toolkit.styles import Style as PtStyle
 
     # Determine which options are available for this provider.
@@ -792,7 +881,7 @@ def _prompt_resume_screen(
         return lines
 
     content = FormattedTextControl(_render)
-    layout = Layout(HSplit([Window(content=content)]))
+    layout = _padded_window(content)
 
     pt_style = PtStyle(
         [
@@ -843,8 +932,6 @@ def _prompt_goal() -> str:
     Returns:
         The goal string (non-empty).
     """
-    import questionary
-
     console.print()
     console.print(
         f"[bold {ARCHITECT_GREEN}]The Architect[/bold {ARCHITECT_GREEN}]  "
@@ -852,11 +939,10 @@ def _prompt_goal() -> str:
     )
     console.print()
 
-    goal = questionary.text(
+    goal = _prompt_text_input(
         "What do you want to build?",
-        instruction="(describe the feature, component, or goal)",
-        style=_questionary_style(),
-    ).ask()
+        "(describe the feature, component, or goal)",
+    )
 
     if goal is None:
         console.print("[dim]Cancelled.[/dim]")
@@ -916,7 +1002,7 @@ def _prompt_architect_model(
 
     Args:
         project_dir: The project root directory.
-        provider: The active provider.  Defaults to OpenCode when not specified.
+        provider: The active provider.  Defaults to auto-detection when not specified.
 
     Returns:
         Selected model string, or None to use provider default.
@@ -924,9 +1010,9 @@ def _prompt_architect_model(
     import questionary
 
     if provider is None:
-        from the_architect.core.opencode_provider import OpenCodeProvider
+        from the_architect.core.provider import detect_provider
 
-        provider = OpenCodeProvider()
+        provider = detect_provider("auto")
 
     provider_name = provider.display_name
     console.print(f"[dim]Loading models from {provider_name}...[/dim]", end="\r")
@@ -947,12 +1033,10 @@ def _prompt_architect_model(
 
     if not models and not current:
         # Can't list models — fall back to free text
-        typed = questionary.text(
+        typed = _prompt_text_input(
             "Architect model",
-            instruction="(opencode model string, or leave blank for default)",
-            default="",
-            style=_questionary_style(),
-        ).ask()
+            f"({provider.display_name} model string, or leave blank for default)",
+        )
         return typed.strip() if typed and typed.strip() else None
 
     # Build choices list — current model first so the cursor starts on it.
@@ -1014,7 +1098,7 @@ def _prompt_exec_agent(
 
     Args:
         project_dir: The project root directory.
-        provider: The active provider.  Defaults to OpenCode when not specified.
+        provider: The active provider.  Defaults to auto-detection when not specified.
 
     Returns:
         Selected agent string, or empty string for provider default.
@@ -1022,11 +1106,11 @@ def _prompt_exec_agent(
     import questionary
 
     if provider is None:
-        from the_architect.core.opencode_provider import OpenCodeProvider
+        from the_architect.core.provider import detect_provider
 
-        provider = OpenCodeProvider()
+        provider = detect_provider("auto")
 
-    # Claude Code has no named-agent system — skip the prompt
+    # Providers without named-agent support — skip the prompt
     if not provider.supports_agents():
         return ""
 
@@ -1089,12 +1173,12 @@ def run_planning_mode(
             means the user explicitly chose the provider default (no override).
         _skip_pending_guard: If True, skip the pending-task guard (already ran
             in ``_collect_planning_prompts`` before the alternate screen).
-        provider: The AI CLI provider to use.  Defaults to OpenCode when not specified.
+        provider: The AI CLI provider to use.  Defaults to auto-detection when not specified.
     """
     if provider is None:
-        from the_architect.core.opencode_provider import OpenCodeProvider
+        from the_architect.core.provider import detect_provider
 
-        provider = OpenCodeProvider()
+        provider = detect_provider("auto")
     # ── Pending task guard ─────────────────────────────────────────────
     # Check for unfinished tasks before asking for a new goal.
     # This prevents users from accidentally starting a new goal on top of
@@ -1529,7 +1613,7 @@ async def _run_tasks_raw(
         tasks: The tasks to run.
         free_rotator: Optional FreeModelRotator for --free mode.
         monitor_writer: Optional MonitorStateWriter for dashboard state updates.
-        provider: The AI CLI provider to use.  Defaults to OpenCode.
+        provider: The AI CLI provider to use.  Defaults to auto-detection.
 
     Returns:
         Tuple of (all_succeeded, results, total_duration).
@@ -1790,15 +1874,24 @@ def _maybe_kill_own_tmux_session(project_dir: Path) -> None:
         pass
 
 
-def _opencode_install_hint() -> str:
-    """Return the most likely opencode install command for the current platform.
+def _provider_install_hint() -> str:
+    """Return the install command for the detected provider.
 
     Returns:
         Human-readable install command string.
     """
-    from the_architect.core.opencode_provider import OpenCodeProvider
+    from the_architect.core.provider import detect_provider
 
-    return OpenCodeProvider().install_hint()
+    try:
+        return detect_provider("auto").install_hint()
+    except Exception:
+        from the_architect.core.opencode_provider import OpenCodeProvider
+
+        return OpenCodeProvider().install_hint()
+
+
+# Backward-compatible alias — tests import this name
+_opencode_install_hint = _provider_install_hint
 
 
 # ---------------------------------------------------------------------------
@@ -1918,7 +2011,7 @@ def main(
     architect_model: str,
     execution_model: str,
 ) -> None:
-    """The Architect — fire-and-forget autonomous development powered by OpenCode."""
+    """The Architect — fire-and-forget autonomous development."""
     _setup_loguru()
 
     if ctx.invoked_subcommand is not None:
@@ -1994,7 +2087,7 @@ def main(
                 _write_cfg(resolved_project, {"standalone_mode": ""})
 
     # ── Phase 1 — Provider binary check (BEFORE tmux, no interactive UI) ──
-    # Only check that at least one provider is installed.  If both are
+    # Only check that at least one provider is installed.  If multiple are
     # installed the interactive selection is deferred until AFTER tmux
     # launches (Phase 2 below), so the prompt appears inside the left pane.
     #
@@ -2016,20 +2109,23 @@ def main(
             _available_pre = detect_available_providers()
             if not _available_pre:
                 from the_architect.core.claude_code_provider import ClaudeCodeProvider
+                from the_architect.core.codex_cli_provider import CodexCliProvider
                 from the_architect.core.opencode_provider import OpenCodeProvider
 
                 oc = OpenCodeProvider()
+                codex = CodexCliProvider()
                 cc = ClaudeCodeProvider()
                 console.print("[red]Error: No supported AI CLI found.[/red]")
                 console.print()
                 console.print("[dim]Install one of:[/dim]")
                 console.print(f"[dim]  OpenCode:    {oc.install_hint()}[/dim]")
+                console.print(f"[dim]  Codex CLI:   {codex.install_hint()}[/dim]")
                 console.print(f"[dim]  Claude Code: {cc.install_hint()}[/dim]")
                 raise SystemExit(1)
             elif len(_available_pre) == 1:
                 # Only one provider — resolve now, no prompt needed
                 _active_provider = _available_pre[0]
-            # else: both installed → defer selection to Phase 2 (post-tmux)
+            # else: multiple installed → defer selection to Phase 2 (post-tmux)
     except ProviderNotFoundError as _pnfe:
         console.print(f"[red]Error: {_pnfe}[/red]")
         raise SystemExit(1)
@@ -2060,9 +2156,18 @@ def main(
                 console.print("[dim]  • opencode.json / opencode.jsonc in the project root[/dim]")
                 console.print("[dim]  • ~/.config/opencode/opencode.json (global)[/dim]")
                 console.print("[dim]  • Built-in free models (no config needed)[/dim]")
+            elif _active_provider.name == "codex":
+                console.print(
+                    "The Architect uses Codex CLI to run AI agents. "
+                    "Set CODEX_API_KEY or run [bold]codex[/bold] to configure."
+                )
+                console.print()
+                console.print("[dim]Codex CLI looks for config in:[/dim]")
+                console.print("[dim]  • CODEX_API_KEY env var[/dim]")
+                console.print("[dim]  • ~/.codex/config.toml (global)[/dim]")
             else:
                 console.print(
-                    "The Architect uses Claude Code to run AI agents. "
+                    f"The Architect uses {_active_provider.display_name} to run AI agents. "
                     "Set ANTHROPIC_API_KEY or run [bold]claude[/bold] to configure."
                 )
                 console.print()
@@ -2191,8 +2296,8 @@ def main(
     # _maybe_kill_own_tmux_session fires on ANY exit path.
 
     # ── Phase 2 — Provider selection (scroll buffer, after tmux) ─────────
-    # If _active_provider is still None here, both OpenCode and Claude Code
-    # are installed and the user hasn't chosen yet.  Show the selection
+    # If _active_provider is still None here, multiple providers are
+    # installed and the user hasn't chosen yet.  Show the selection
     # prompt now — inside the tmux left pane scroll buffer — exactly where
     # all other pre-execution prompts (welcome, goal, scope, model) live.
     # Also persist the selection via env var so sub-processes inherit it.
@@ -2228,6 +2333,8 @@ def main(
                     console.print(
                         "Run [bold]opencode[/bold] once to set up a provider, then come back."
                     )
+                elif _active_provider.name == "codex":
+                    console.print("Set CODEX_API_KEY or run [bold]codex[/bold] to configure.")
                 else:
                     console.print("Set ANTHROPIC_API_KEY or run [bold]claude[/bold] to configure.")
                 raise SystemExit(1)
@@ -2828,9 +2935,9 @@ def _run_main(
     if provider is not None:
         provider.ensure_setup(project, config)
     else:
-        from the_architect.core.opencode_provider import OpenCodeProvider
+        from the_architect.core.provider import detect_provider
 
-        OpenCodeProvider().ensure_setup(project, config)
+        detect_provider("auto").ensure_setup(project, config)
     setup_logging(config.log_dir)
 
     # ── Monitor state writer (feeds the tmux dashboard) ─────────────────
@@ -3142,9 +3249,13 @@ def retry(task: str, project: Path | None) -> None:
         console.print(f"[red]Task {task} not found in tasks/.[/red]")
         raise SystemExit(1)
 
-    from the_architect.core.opencode_provider import OpenCodeProvider
+    from the_architect.core.provider import ProviderNotFoundError, detect_provider
 
-    _run_provider = OpenCodeProvider()
+    try:
+        _run_provider = detect_provider("auto")
+    except ProviderNotFoundError:
+        console.print("[red]Error: No supported AI CLI found.[/red]")
+        raise SystemExit(1)
     _run_provider.ensure_setup(proj, config)
     setup_logging(config.log_dir)
     asyncio.run(run_task(task_obj, config))

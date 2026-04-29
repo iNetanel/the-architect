@@ -101,6 +101,34 @@ class TestMoreHelperFunctions:
         style2 = _questionary_style()
         assert style1 is style2
 
+    def test_padded_window_adds_side_margins(self) -> None:
+        """Prompt-toolkit layouts should reserve left and right prompt padding."""
+        from prompt_toolkit.layout import FormattedTextControl, VSplit, Window
+
+        from the_architect.cli import _PROMPT_LEFT_PAD, _PROMPT_RIGHT_PAD, _padded_window
+
+        layout = _padded_window(FormattedTextControl(lambda: []))
+        root = layout.container
+        assert isinstance(root, VSplit)
+        assert len(root.children) == 3
+        assert isinstance(root.children[0], Window)
+        assert isinstance(root.children[2], Window)
+        assert root.children[0].width.preferred == _PROMPT_LEFT_PAD
+        assert root.children[2].width.preferred == _PROMPT_RIGHT_PAD
+
+    def test_prompt_text_input_builds_layout(self) -> None:
+        """Custom text prompt should build a right-padded prompt-toolkit layout."""
+        import the_architect.cli as cli_mod
+
+        with (
+            patch("prompt_toolkit.application.application.Application.run", return_value=None),
+            patch("the_architect.cli.console.print") as mock_print,
+        ):
+            result = cli_mod._prompt_text_input("Title", "Instruction")
+
+        assert result == ""
+        mock_print.assert_called_once()
+
     def test_alternate_screen_non_tty(self) -> None:
         """Should be a no-op when stdout is not a TTY."""
         from the_architect.cli import alternate_screen

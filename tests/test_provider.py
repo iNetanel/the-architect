@@ -18,6 +18,7 @@ from unittest.mock import patch
 import pytest
 
 from the_architect.core.claude_code_provider import ClaudeCodeProvider
+from the_architect.core.codex_cli_provider import CodexCliProvider
 from the_architect.core.opencode_provider import OpenCodeProvider
 from the_architect.core.provider import (
     ArchitectProvider,
@@ -667,6 +668,7 @@ class TestDetectProvider:
         with (
             patch.object(OpenCodeProvider, "is_installed", return_value=True),
             patch.object(ClaudeCodeProvider, "is_installed", return_value=False),
+            patch.object(CodexCliProvider, "is_installed", return_value=False),
         ):
             provider = detect_provider("auto")
         assert provider.name == "opencode"
@@ -675,6 +677,7 @@ class TestDetectProvider:
         with (
             patch.object(OpenCodeProvider, "is_installed", return_value=False),
             patch.object(ClaudeCodeProvider, "is_installed", return_value=True),
+            patch.object(CodexCliProvider, "is_installed", return_value=False),
         ):
             provider = detect_provider("auto")
         assert provider.name == "claude-code"
@@ -684,6 +687,7 @@ class TestDetectProvider:
         with (
             patch.object(OpenCodeProvider, "is_installed", return_value=True),
             patch.object(ClaudeCodeProvider, "is_installed", return_value=True),
+            patch.object(CodexCliProvider, "is_installed", return_value=False),
         ):
             provider = detect_provider("auto")
         assert provider.name == "opencode"
@@ -692,6 +696,7 @@ class TestDetectProvider:
         with (
             patch.object(OpenCodeProvider, "is_installed", return_value=False),
             patch.object(ClaudeCodeProvider, "is_installed", return_value=False),
+            patch.object(CodexCliProvider, "is_installed", return_value=False),
         ):
             with pytest.raises(ProviderNotFoundError):
                 detect_provider("auto")
@@ -720,6 +725,48 @@ class TestDetectProvider:
         with pytest.raises(ValueError, match="Unknown provider preference"):
             detect_provider("unknown-provider")
 
+    def test_auto_returns_codex_when_only_codex_installed(self) -> None:
+        """When only Codex is installed, auto-detection returns Codex."""
+        with (
+            patch.object(OpenCodeProvider, "is_installed", return_value=False),
+            patch.object(ClaudeCodeProvider, "is_installed", return_value=False),
+            patch.object(CodexCliProvider, "is_installed", return_value=True),
+        ):
+            provider = detect_provider("auto")
+        assert provider.name == "codex"
+
+    def test_auto_prefers_opencode_over_codex(self) -> None:
+        """OpenCode is preferred over Codex in auto mode."""
+        with (
+            patch.object(OpenCodeProvider, "is_installed", return_value=True),
+            patch.object(ClaudeCodeProvider, "is_installed", return_value=False),
+            patch.object(CodexCliProvider, "is_installed", return_value=True),
+        ):
+            provider = detect_provider("auto")
+        assert provider.name == "opencode"
+
+    def test_auto_prefers_codex_over_claude_code(self) -> None:
+        """Codex is preferred over Claude Code in auto mode."""
+        with (
+            patch.object(OpenCodeProvider, "is_installed", return_value=False),
+            patch.object(ClaudeCodeProvider, "is_installed", return_value=True),
+            patch.object(CodexCliProvider, "is_installed", return_value=True),
+        ):
+            provider = detect_provider("auto")
+        assert provider.name == "codex"
+
+    def test_explicit_codex_returns_codex(self) -> None:
+        """Explicit codex preference returns Codex when installed."""
+        with patch.object(CodexCliProvider, "is_installed", return_value=True):
+            provider = detect_provider("codex")
+        assert provider.name == "codex"
+
+    def test_explicit_codex_raises_when_not_installed(self) -> None:
+        """Explicit codex preference raises when not installed."""
+        with patch.object(CodexCliProvider, "is_installed", return_value=False):
+            with pytest.raises(ProviderNotFoundError):
+                detect_provider("codex")
+
 
 # ---------------------------------------------------------------------------
 # detect_available_providers
@@ -733,6 +780,7 @@ class TestDetectAvailableProviders:
         with (
             patch.object(OpenCodeProvider, "is_installed", return_value=False),
             patch.object(ClaudeCodeProvider, "is_installed", return_value=False),
+            patch.object(CodexCliProvider, "is_installed", return_value=False),
         ):
             available = detect_available_providers()
         assert available == []
@@ -741,6 +789,7 @@ class TestDetectAvailableProviders:
         with (
             patch.object(OpenCodeProvider, "is_installed", return_value=True),
             patch.object(ClaudeCodeProvider, "is_installed", return_value=False),
+            patch.object(CodexCliProvider, "is_installed", return_value=False),
         ):
             available = detect_available_providers()
         assert len(available) == 1
@@ -750,6 +799,7 @@ class TestDetectAvailableProviders:
         with (
             patch.object(OpenCodeProvider, "is_installed", return_value=False),
             patch.object(ClaudeCodeProvider, "is_installed", return_value=True),
+            patch.object(CodexCliProvider, "is_installed", return_value=False),
         ):
             available = detect_available_providers()
         assert len(available) == 1
@@ -759,6 +809,7 @@ class TestDetectAvailableProviders:
         with (
             patch.object(OpenCodeProvider, "is_installed", return_value=True),
             patch.object(ClaudeCodeProvider, "is_installed", return_value=True),
+            patch.object(CodexCliProvider, "is_installed", return_value=False),
         ):
             available = detect_available_providers()
         assert len(available) == 2
@@ -768,10 +819,42 @@ class TestDetectAvailableProviders:
         with (
             patch.object(OpenCodeProvider, "is_installed", return_value=True),
             patch.object(ClaudeCodeProvider, "is_installed", return_value=True),
+            patch.object(CodexCliProvider, "is_installed", return_value=False),
         ):
             available = detect_available_providers()
         assert available[0].name == "opencode"
         assert available[1].name == "claude-code"
+
+    def test_returns_codex_when_only_codex(self) -> None:
+        """Should return [codex] when only Codex is installed."""
+        with (
+            patch.object(OpenCodeProvider, "is_installed", return_value=False),
+            patch.object(ClaudeCodeProvider, "is_installed", return_value=False),
+            patch.object(CodexCliProvider, "is_installed", return_value=True),
+        ):
+            available = detect_available_providers()
+        assert len(available) == 1
+        assert available[0].name == "codex"
+
+    def test_returns_all_three_when_all_installed(self) -> None:
+        """Should return all three providers when all are installed."""
+        with (
+            patch.object(OpenCodeProvider, "is_installed", return_value=True),
+            patch.object(ClaudeCodeProvider, "is_installed", return_value=True),
+            patch.object(CodexCliProvider, "is_installed", return_value=True),
+        ):
+            available = detect_available_providers()
+        assert len(available) == 3
+
+    def test_order_is_opencode_codex_claude_code(self) -> None:
+        """Provider order must be: OpenCode, Codex, Claude Code."""
+        with (
+            patch.object(OpenCodeProvider, "is_installed", return_value=True),
+            patch.object(ClaudeCodeProvider, "is_installed", return_value=True),
+            patch.object(CodexCliProvider, "is_installed", return_value=True),
+        ):
+            available = detect_available_providers()
+        assert [p.name for p in available] == ["opencode", "codex", "claude-code"]
 
 
 # ---------------------------------------------------------------------------
@@ -782,43 +865,59 @@ class TestDetectAvailableProviders:
 class TestProviderProtocolCompliance:
     """Tests that both providers satisfy the ArchitectProvider protocol."""
 
-    @pytest.mark.parametrize("provider_cls", [OpenCodeProvider, ClaudeCodeProvider])
+    @pytest.mark.parametrize(
+        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider]
+    )
     def test_is_architect_provider(self, provider_cls) -> None:
         """Both providers should satisfy the ArchitectProvider protocol."""
         provider = provider_cls()
         assert isinstance(provider, ArchitectProvider)
 
-    @pytest.mark.parametrize("provider_cls", [OpenCodeProvider, ClaudeCodeProvider])
+    @pytest.mark.parametrize(
+        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider]
+    )
     def test_has_name_property(self, provider_cls) -> None:
         provider = provider_cls()
         assert isinstance(provider.name, str)
         assert len(provider.name) > 0
 
-    @pytest.mark.parametrize("provider_cls", [OpenCodeProvider, ClaudeCodeProvider])
+    @pytest.mark.parametrize(
+        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider]
+    )
     def test_has_display_name_property(self, provider_cls) -> None:
         provider = provider_cls()
         assert isinstance(provider.display_name, str)
         assert len(provider.display_name) > 0
 
-    @pytest.mark.parametrize("provider_cls", [OpenCodeProvider, ClaudeCodeProvider])
+    @pytest.mark.parametrize(
+        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider]
+    )
     def test_has_binary_name_property(self, provider_cls) -> None:
         provider = provider_cls()
         assert isinstance(provider.binary_name, str)
         assert len(provider.binary_name) > 0
 
-    @pytest.mark.parametrize("provider_cls", [OpenCodeProvider, ClaudeCodeProvider])
+    @pytest.mark.parametrize(
+        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider]
+    )
     def test_is_installed_returns_bool(self, provider_cls) -> None:
         provider = provider_cls()
         assert isinstance(provider.is_installed(), bool)
 
-    @pytest.mark.parametrize("provider_cls", [OpenCodeProvider, ClaudeCodeProvider])
+    @pytest.mark.parametrize(
+        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider]
+    )
     def test_get_version_returns_string(self, provider_cls) -> None:
         provider = provider_cls()
         assert isinstance(provider.get_version(), str)
 
     @pytest.mark.parametrize(
         "provider_cls,binary",
-        [(OpenCodeProvider, "opencode"), (ClaudeCodeProvider, "claude")],
+        [
+            (OpenCodeProvider, "opencode"),
+            (ClaudeCodeProvider, "claude"),
+            (CodexCliProvider, "codex"),
+        ],
     )
     def test_get_version_is_cached(self, provider_cls, binary) -> None:
         """get_version() must not re-spawn a subprocess on every call.
@@ -840,17 +939,23 @@ class TestProviderProtocolCompliance:
         assert first == second == third == "1.2.3"
         assert mock_run.call_count == 1
 
-    @pytest.mark.parametrize("provider_cls", [OpenCodeProvider, ClaudeCodeProvider])
+    @pytest.mark.parametrize(
+        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider]
+    )
     def test_install_hint_returns_string(self, provider_cls) -> None:
         provider = provider_cls()
         assert isinstance(provider.install_hint(), str)
 
-    @pytest.mark.parametrize("provider_cls", [OpenCodeProvider, ClaudeCodeProvider])
+    @pytest.mark.parametrize(
+        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider]
+    )
     def test_list_models_returns_list(self, provider_cls) -> None:
         provider = provider_cls()
         assert isinstance(provider.list_models(), list)
 
-    @pytest.mark.parametrize("provider_cls", [OpenCodeProvider, ClaudeCodeProvider])
+    @pytest.mark.parametrize(
+        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider]
+    )
     def test_build_command_returns_list(self, provider_cls, tmp_path: Path) -> None:
         with patch("shutil.which", return_value="/fake/binary"):
             provider = provider_cls()
@@ -858,23 +963,31 @@ class TestProviderProtocolCompliance:
         assert isinstance(cmd, list)
         assert len(cmd) > 0
 
-    @pytest.mark.parametrize("provider_cls", [OpenCodeProvider, ClaudeCodeProvider])
+    @pytest.mark.parametrize(
+        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider]
+    )
     def test_get_env_overrides_returns_dict(self, provider_cls) -> None:
         provider = provider_cls()
         env = provider.get_env_overrides(None)
         assert isinstance(env, dict)
 
-    @pytest.mark.parametrize("provider_cls", [OpenCodeProvider, ClaudeCodeProvider])
+    @pytest.mark.parametrize(
+        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider]
+    )
     def test_supports_agents_returns_bool(self, provider_cls) -> None:
         provider = provider_cls()
         assert isinstance(provider.supports_agents(), bool)
 
-    @pytest.mark.parametrize("provider_cls", [OpenCodeProvider, ClaudeCodeProvider])
+    @pytest.mark.parametrize(
+        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider]
+    )
     def test_supports_json_output_returns_bool(self, provider_cls) -> None:
         provider = provider_cls()
         assert isinstance(provider.supports_json_output(), bool)
 
-    @pytest.mark.parametrize("provider_cls", [OpenCodeProvider, ClaudeCodeProvider])
+    @pytest.mark.parametrize(
+        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider]
+    )
     def test_supports_free_tier_returns_bool(self, provider_cls) -> None:
         provider = provider_cls()
         assert isinstance(provider.supports_free_tier(), bool)

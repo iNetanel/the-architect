@@ -121,30 +121,32 @@ The Architect works with agentic AI coding CLIs. Currently supported:
 | Provider | Install |
 |---|---|
 | [OpenCode](https://opencode.ai) | `brew install opencode` or `npm i -g opencode-ai` |
+| [Codex CLI](https://developers.openai.com/codex/cli/) | `npm install -g @openai/codex` |
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | `npm install -g @anthropic-ai/claude-code` |
 
 More providers are planned. The Architect is designed to be provider-agnostic.
 
-When both are installed, The Architect asks which to use. Set a preference in `architect.toml`:
+When multiple providers are installed, The Architect asks which to use. Set a preference in `architect.toml`:
 
 ```toml
 [architect]
-provider = "auto"         # detect and prompt if both present
+provider = "auto"         # detect and prompt if multiple providers are present
 # provider = "opencode"
+# provider = "codex"
 # provider = "claude-code"
 ```
 
-Or via environment variable: `ARCHITECT_PROVIDER=claude-code`
+Or via environment variable: `ARCHITECT_PROVIDER=codex`
 
 ### Provider Feature Comparison
 
-| Feature | OpenCode | Claude Code |
-|---|---|---|
-| Planning and execution | ✅ | ✅ |
-| Retry and circuit breaker | ✅ | ✅ |
-| Retrospective review | ✅ | ✅ |
-| Token usage tracking | ✅ | ❌ plain text output |
-| Free tier model rotation | ✅ via OpenRouter | ❌ |
+| Feature | OpenCode | Codex CLI | Claude Code |
+|---|---|---|---|
+| Planning and execution | ✅ | ✅ | ✅ |
+| Retry and circuit breaker | ✅ | ✅ | ✅ |
+| Retrospective review | ✅ | ✅ | ✅ |
+| Token usage tracking | ✅ | ✅ JSONL output | ❌ plain text output |
+| Free tier model rotation | ✅ via OpenRouter | ❌ | ❌ |
 
 ---
 
@@ -359,7 +361,7 @@ All planning flags can be set via environment variables — useful for CI and he
 | `ARCHITECT_GOAL` | `--goal` | `"add dark mode"` |
 | `ARCHITECT_SCOPE` | `--scope` | `standard` |
 | `ARCHITECT_CONTEXT` | `--context` | `/path/to/spec.md` |
-| `ARCHITECT_PROVIDER` | `--provider` | `claude-code` |
+| `ARCHITECT_PROVIDER` | `--provider` | `codex` |
 | `ARCHITECT_ARCHITECT_MODEL` | `--architect-model` | `openrouter/anthropic/claude-opus-4.5` |
 | `ARCHITECT_EXECUTION_MODEL` | `--execution-model` | `openrouter/google/gemini-2.5-pro` |
 
@@ -394,7 +396,7 @@ Zero-config by default. Create `architect.toml` in your project root to customis
 ```toml
 [architect]
 # Provider
-provider = "auto"                    # "auto" | "opencode" | "claude-code"
+provider = "auto"                    # "auto" | "opencode" | "codex" | "claude-code"
 
 # Retry
 max_retries = 3
@@ -428,7 +430,7 @@ token_budget_per_hour = 0            # 0 = unlimited
 
 | Option | Default | Description |
 |---|---|---|
-| `provider` | `auto` | AI CLI provider — `auto`, `opencode`, or `claude-code` |
+| `provider` | `auto` | AI CLI provider — `auto`, `opencode`, `codex`, or `claude-code` |
 | `max_retries` | `3` | Max retry attempts per task |
 | `retry_pause` | `30` | Seconds between retries |
 | `pause_between_tasks` | `10` | Seconds between tasks |

@@ -15,6 +15,7 @@ Covers:
 
 from __future__ import annotations
 
+import re
 import sys
 import time
 from pathlib import Path
@@ -531,7 +532,7 @@ class TestRenderDashboardEdgeCases:
     def test_no_current_task_id(self) -> None:
         state = _make_state(current_task_id="")
         output = render_dashboard(state, width=66)
-        assert "—" in output
+        assert "–" in output
 
     def test_missing_project_name(self) -> None:
         state = _make_state()
@@ -781,3 +782,43 @@ class TestMain:
             mock_run.assert_called_once()
             called_path = mock_run.call_args[0][0]
             assert called_path == tmp_path.resolve()
+
+
+class TestDashboardPadding:
+    """Padding tests for the right dashboard pane."""
+
+    @staticmethod
+    def _strip_ansi(s: str) -> str:
+        """Remove ANSI escape codes from a string."""
+        return re.sub(r"\033\[[0-9;]*m", "", s)
+
+    def test_dashboard_has_no_left_padding(self) -> None:
+        output = render_dashboard(_make_state(), width=40)
+        for line in output.split("\n"):
+            stripped = self._strip_ansi(line)
+            if stripped.strip():
+                assert not stripped.startswith("  ")
+
+    def test_dashboard_respects_right_padding(self) -> None:
+        width = 40
+        output = render_dashboard(_make_state(), width=width)
+        max_visible = width - 2
+        for line in output.split("\n"):
+            stripped = self._strip_ansi(line)
+            if stripped.strip():
+                assert len(stripped.rstrip()) <= max_visible
+
+    def test_waiting_has_no_left_padding(self) -> None:
+        output = render_waiting()
+        for line in output.split("\n"):
+            stripped = self._strip_ansi(line)
+            if stripped.strip():
+                assert not stripped.startswith("  ")
+
+    def test_planning_has_no_left_padding(self) -> None:
+        state = {"status": "PLANNING", "project_name": "my-proj", "goal": "Build an API"}
+        output = render_planning(state, width=30)
+        for line in output.split("\n"):
+            stripped = self._strip_ansi(line)
+            if stripped.strip():
+                assert not stripped.startswith("  ")

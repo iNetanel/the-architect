@@ -26,6 +26,7 @@ import sys
 from pathlib import Path
 
 from loguru import logger
+from rich.console import Console
 
 # Sentinel so we only show the "tmux not found" prompt once per process
 _tmux_install_attempted = False
@@ -162,6 +163,112 @@ def _get_portable_shell() -> str | None:
     return shell
 
 
+# ---------------------------------------------------------------------------
+# Padded Console — right gap so Rich output doesn't touch the side panel
+# ---------------------------------------------------------------------------
+
+
+# How much to reduce the console width by when inside a tmux split pane.
+# This creates a visual gap between the left pane's Rich-rendered output
+# and the right pane (dashboard side panel).
+_SIDE_PANEL_GAP = 2
+
+
+class PaddedConsole(Console):
+    """Rich Console that reduces its width when inside a tmux split pane.
+
+    When the architect runs inside a tmux split, Rich-rendered output
+    (console.print, rules, tables) extends all the way to the pane
+    border — right next to the dashboard side panel.  By reporting a
+    slightly smaller width, Rich renders everything narrower, creating
+    a visual gap on the right side.
+
+    When NOT inside tmux, behaves identically to a regular Console
+    (no padding since there's no side panel to gap from).
+
+    The gap size is controlled by the ``_SIDE_PANEL_GAP`` constant.
+    """
+
+    @property
+    def width(self) -> int:
+        """Return the effective console width, reduced when inside tmux."""
+        base = super().width
+        if is_inside_tmux():
+            return max(base - _SIDE_PANEL_GAP, 20)
+        return base
+
+    @width.setter
+    def width(self, value: int) -> None:
+        """Delegate width setting to the parent Console."""
+        Console.width.fset(self, value)  # type: ignore[attr-defined]
+
+
+def _configure_pane_borders(session_name: str) -> None:
+    """Make tmux pane borders invisible for a clean split-pane look.
+
+    Tries ``pane-border-lines none`` (tmux 3.4+) which removes the border
+    entirely.  Falls back to setting the border colour to a very dim gray
+    (brightblack / colour 8) which is nearly invisible on most terminals.
+
+    This is a best-effort, non-fatal operation — failures are silently
+    logged at debug level.
+
+    Args:
+        session_name: The tmux session name.
+    """
+    try:
+        # Try modern tmux 3.4+ option: no border at all
+        result = subprocess.run(
+            [
+                "tmux",
+                "set-window-option",
+                "-t",
+                session_name,
+                "pane-border-lines",
+                "none",
+            ],
+            capture_output=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            logger.debug("Set pane-border-lines none (tmux 3.4+)")
+            return
+        logger.debug("pane-border-lines none not supported, falling back to subtle colour")
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        pass
+
+    # Fallback for tmux < 3.4: set border colour to brightblack (colour 8)
+    # which is dark gray on most terminals — very subtle, nearly invisible.
+    try:
+        subprocess.run(
+            [
+                "tmux",
+                "set-window-option",
+                "-t",
+                session_name,
+                "pane-border-style",
+                "fg=brightblack",
+            ],
+            capture_output=True,
+            timeout=5,
+        )
+        subprocess.run(
+            [
+                "tmux",
+                "set-window-option",
+                "-t",
+                session_name,
+                "pane-active-border-style",
+                "fg=brightblack",
+            ],
+            capture_output=True,
+            timeout=5,
+        )
+        logger.debug("Set pane border style to brightblack (subtle)")
+    except (subprocess.SubprocessError, FileNotFoundError, OSError) as exc:
+        logger.debug(f"Failed to set pane border style (non-fatal): {exc!r}")
+
+
 def launch_in_tmux(
     session_name: str,
     project_dir: Path,
@@ -170,8 +277,12 @@ def launch_in_tmux(
     """Create a new tmux session with the split-pane layout.
 
     Layout:
-        Left pane (70%): the architect runner command
-        Right pane (30%): the dashboard process
+        Left pane (~70%): the architect runner command
+        Right pane (~30%): the dashboard process
+
+    Pane borders are set to invisible (tmux 3.4+) or very subtle
+    (brightblack fallback) so there is no visible line between panes —
+    just a clean visual gap.
 
     After creating the session, this function attaches to it (replacing
     the current process via ``os.execvp``).  It never returns on success.
@@ -267,14 +378,18 @@ def launch_in_tmux(
             kill_session(session_name)
             return False
 
-        # 3. Select the left pane (pane 0) so the user sees the runner
+        # 3. Make pane borders invisible for a clean look (no visible lines
+        #    between the left screen and the dashboard side panel).
+        _configure_pane_borders(session_name)
+
+        # 4. Select the left pane (pane 0) so the user sees the runner
         subprocess.run(
             ["tmux", "select-pane", "-t", f"{session_name}:0.0"],
             capture_output=True,
             timeout=5,
         )
 
-        # 4. Attach to the session — this replaces the current process
+        # 5. Attach to the session — this replaces the current process
         logger.info(f"Attaching to tmux session: {session_name}")
         attach_session(session_name)
 

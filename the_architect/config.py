@@ -43,8 +43,10 @@ class ArchitectConfig(BaseModel):
         default="auto",
         description=(
             "Which AI CLI provider to use for planning and execution. "
-            "'auto' — detect: prefer OpenCode if installed, fall back to Claude Code. "
+            "'auto' — detect: prefer OpenCode if installed, then Codex CLI, "
+            "then fall back to Claude Code. "
             "'opencode' — require OpenCode, error if not found. "
+            "'codex' — require Codex CLI, error if not found. "
             "'claude-code' — require Claude Code, error if not found."
         ),
     )

@@ -18,6 +18,33 @@ empty [Unreleased] above it. Use Keep a Changelog section headings:
 Added / Changed / Deprecated / Removed / Fixed / Security.
 -->
 
+## [1.1.0] (build 10033) — 2026-04-29
+
+### Fixed
+
+- Main console pane now has a small left margin plus right breathing room for streamed output, so text doesn't touch either edge near the dashboard split (build 10027).
+- Dashboard side panel now keeps only a small right padding, while using the full left edge as requested (build 10027).
+- Interactive prompt-toolkit screens in the main pane now reserve left and right padding, so long goal/input text and menu screens no longer run into the dashboard pane (build 10028).
+- Fixed the prompt-toolkit padding container to be horizontal (`VSplit`) rather than vertical, so the main-pane prompt screens now add true left/right padding instead of blank top/bottom space (build 10029).
+- Replaced raw `questionary.text(...)` free-text prompts with a custom padded prompt-toolkit text input for goal/model entry, so long typed input no longer reaches the right-side dashboard pane (build 10030).
+- Removed the accidental extra vertical spacing above the custom text input prompt; the goal/model input now uses only horizontal side padding in the main pane (build 10031).
+- Refined the custom goal/model text prompt to preserve multi-line pasted input, restore the original green heading style, and keep only right-side breathing room in the typed input area (build 10032).
+- Restored normal `Enter` submission for the custom goal/model prompt while keeping the green bold prompt styling and right-side breathing room in the input area (build 10033).
+- tmux pane borders are now invisible (tmux 3.4+) or very subtle (brightblack fallback) — no more visible lines between panes (build 10024).
+
+### Changed
+
+- Generalised CLI provider selection screen text and comments to work with any number of providers instead of hard-coding "both OpenCode and Claude Code". Model prompt instruction now uses `provider.display_name` dynamically (build 10015).
+- Updated docstrings across `cli.py` that said "Defaults to OpenCode" to correctly say "Defaults to auto-detection" (build 10015).
+- Fixed pre-existing test failures in `test_claude_code_provider.py`: `test_find_user_config_global_only` now safely cleans up non-empty directories; `test_command_building_basic` correctly asserts on the full binary path (build 10016).
+
+### Added
+
+- Full Codex CLI (OpenAI) provider support — new `CodexCliProvider` module with JSONL output parsing, model resolution via `CODEX_MODEL` env var / `~/.codex/config.toml`, and `codex exec` non-interactive invocation. Select with `--provider codex` or `provider = "codex"` in `architect.toml`. Auto-detection order is now OpenCode → Codex CLI → Claude Code (build 10017).
+- Codex CLI (OpenAI) as a third provider in provider detection. `detect_provider("codex")` returns a `CodexCliProvider`; auto-detection order is now OpenCode → Codex CLI → Claude Code. `detect_available_providers()` lists Codex between OpenCode and Claude Code (build 10013).
+- `provider = "codex"` is now a valid value in `architect.toml` config. The `provider` field description lists all four options (`auto`, `opencode`, `codex`, `claude-code`) and the updated auto-detection order (build 10014).
+- Comprehensive test suite for `CodexCliProvider` in `tests/test_codex_cli_provider.py`: identity, installation, command building, env overrides, JSONL output parsing, model resolution, config discovery, setup, and prompts. Extended `tests/test_provider.py` with Codex detection, 3-provider ordering, and protocol compliance tests (build 10016).
+
 ## [1.0.1] (build 10011) — 2026-04-28
 
 ### Fixed

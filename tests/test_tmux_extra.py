@@ -716,3 +716,116 @@ class TestMaybeLaunchTmuxInstallPrompt:
             patch("sys.stdin.isatty", return_value=False),
         ):
             assert tmux_mod.maybe_launch_tmux(tmp_path, ["architect"]) is False
+
+
+# ---------------------------------------------------------------------------
+# _configure_pane_borders
+# ---------------------------------------------------------------------------
+
+
+class TestConfigurePaneBorders:
+    """Tests for invisible pane border configuration."""
+
+    def test_tries_pane_border_lines_none_first(self) -> None:
+        """Should try pane-border-lines none (tmux 3.4+) before fallback."""
+        calls: list[list[str]] = []
+
+        def _run(cmd: list[str], **_: object) -> MagicMock:
+            calls.append(list(cmd))
+            return MagicMock(returncode=0, stderr=b"")
+
+        with patch("the_architect.core.tmux.subprocess.run", side_effect=_run):
+            tmux_mod._configure_pane_borders("architect-proj")
+
+        assert "pane-border-lines" in calls[0]
+        assert "none" in calls[0]
+
+    def test_fallback_to_brightblack_when_none_unsupported(self) -> None:
+        """When pane-border-lines none fails, should set brightblack border style."""
+        calls: list[list[str]] = []
+
+        def _run(cmd: list[str], **_: object) -> MagicMock:
+            calls.append(list(cmd))
+            if "pane-border-lines" in cmd:
+                return MagicMock(returncode=1, stderr=b"unknown option")
+            return MagicMock(returncode=0, stderr=b"")
+
+        with patch("the_architect.core.tmux.subprocess.run", side_effect=_run):
+            tmux_mod._configure_pane_borders("architect-proj")
+
+        style_calls = [
+            c for c in calls if "pane-border-style" in c or "pane-active-border-style" in c
+        ]
+        assert len(style_calls) == 2
+        for call in style_calls:
+            assert any("brightblack" in arg for arg in call), f"No brightblack in {call}"
+
+    def test_failure_does_not_raise(self) -> None:
+        """Should silently handle failures."""
+        with patch(
+            "the_architect.core.tmux.subprocess.run",
+            side_effect=OSError("nope"),
+        ):
+            tmux_mod._configure_pane_borders("architect-proj")
+
+
+# ---------------------------------------------------------------------------
+# PaddedConsole
+# ---------------------------------------------------------------------------
+
+
+class TestPaddedConsole:
+    """Tests for PaddedConsole — right gap when inside tmux."""
+
+    def test_width_reduced_in_tmux(self) -> None:
+        """Inside tmux, width should be reduced by _SIDE_PANEL_GAP."""
+        from rich.console import Console
+
+        with patch("the_architect.core.tmux.is_inside_tmux", return_value=True):
+            pc = tmux_mod.PaddedConsole()
+            base_console = Console()
+            base_width = base_console.width
+            assert pc.width == max(base_width - tmux_mod._SIDE_PANEL_GAP, 20)
+
+    def test_width_normal_outside_tmux(self) -> None:
+        """Outside tmux, width should be the same as a regular Console."""
+        from rich.console import Console
+
+        with patch("the_architect.core.tmux.is_inside_tmux", return_value=False):
+            pc = tmux_mod.PaddedConsole()
+            base_console = Console()
+            assert pc.width == base_console.width
+
+
+class TestStreamWidthGap:
+    """Tests for streamed main-pane output padding."""
+
+    def test_stream_width_reduced_inside_tmux(self) -> None:
+        with (
+            patch.dict("os.environ", {"TMUX": "1"}, clear=False),
+            patch("the_architect.core.runner.shutil.get_terminal_size") as mock_size,
+        ):
+            mock_size.return_value = MagicMock(columns=80)
+            from the_architect.core.runner import _stream_width
+
+            assert _stream_width() == 78
+
+    def test_stream_width_none_outside_tmux(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            from the_architect.core.runner import _stream_width
+
+            assert _stream_width() is None
+
+    def test_write_stream_line_adds_left_padding_and_small_right_gap(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with (
+            patch.dict("os.environ", {"TMUX": "1"}, clear=False),
+            patch("the_architect.core.runner.shutil.get_terminal_size") as mock_size,
+        ):
+            mock_size.return_value = MagicMock(columns=10)
+            from the_architect.core.runner import _write_stream_line
+
+            _write_stream_line("123456789")
+
+        assert capsys.readouterr().out == "  123456789\n"

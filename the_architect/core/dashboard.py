@@ -37,6 +37,7 @@ _YELLOW = "\033[33m"
 _RED = "\033[31m"
 _CYAN = "\033[36m"
 _CLEAR_SCREEN = "\033[2J\033[H"  # Clear screen + move cursor to top-left
+_RIGHT_PAD = "  "
 
 
 def _bold(s: str) -> str:
@@ -203,7 +204,7 @@ def render_dashboard(state: dict[str, Any], width: int = 30) -> str:
         suffix = _task_suffix(status, replanned, cooldown_active=is_current_cooldown)
 
         # Truncate title to fit pane width
-        max_title = width - len(tid) - 4 - len(suffix)
+        max_title = width - len(_RIGHT_PAD) - len(tid) - 4 - len(suffix)
         if len(title) > max_title:
             title = title[: max(0, max_title - 1)] + "…"
 
@@ -244,7 +245,7 @@ def render_dashboard(state: dict[str, Any], width: int = 30) -> str:
         except (ValueError, TypeError):
             elapsed_seconds = 0.0
 
-    task_display = f"{current_task_id} / {total_tasks}" if current_task_id else f"— / {total_tasks}"
+    task_display = f"{current_task_id} / {total_tasks}" if current_task_id else f"– / {total_tasks}"
     add(f"Task:    {task_display}")
 
     status_str = run_status
@@ -310,7 +311,7 @@ def render_dashboard(state: dict[str, Any], width: int = 30) -> str:
     rotation_count = model_info.get("rotation_count", 0)
 
     # Truncate model name to fit
-    max_model_len = width - 10
+    max_model_len = width - len(_RIGHT_PAD) - 10
     if model_current and len(model_current) > max_model_len:
         # Show just the last part (provider/model-name)
         parts = model_current.split("/")
@@ -396,7 +397,7 @@ def render_planning(state: dict[str, Any], width: int = 30) -> str:
     goal = state.get("goal", "")
     if goal:
         # Wrap goal to fit the pane width
-        max_w = max(width - 2, 10)
+        max_w = max(width - len(_RIGHT_PAD) - 2, 10)
         words = goal.split()
         current_line: list[str] = []
         current_len = 0

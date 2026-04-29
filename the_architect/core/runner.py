@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import sys
+import textwrap
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -19,6 +20,53 @@ from pydantic import BaseModel, Field
 from the_architect.config import ArchitectConfig
 from the_architect.core.progress import reconcile_task_status, task_is_done, task_is_resolved
 from the_architect.core.tasks import Task, TaskPlan
+
+_STREAM_LEFT_PAD = "  "
+_STREAM_RIGHT_GAP = 2
+
+
+def _stream_width() -> int | None:
+    """Return the effective width for streamed left-pane output.
+
+    When running inside tmux, reserve a small gap on the right so the
+    streamed provider text does not visually touch the dashboard pane.
+    """
+    if not os.environ.get("TMUX"):
+        return None
+    try:
+        columns = shutil.get_terminal_size().columns
+    except OSError:
+        return None
+    return max(columns - _STREAM_RIGHT_GAP, 20)
+
+
+def _write_stream_line(line: str) -> None:
+    """Write streamed provider output with left and right breathing room in tmux."""
+    width = _stream_width()
+    if width is None or not line:
+        sys.stdout.write(f"{_STREAM_LEFT_PAD}{line}\n")
+        sys.stdout.flush()
+        return
+
+    content_width = max(width - len(_STREAM_LEFT_PAD), 20)
+
+    wrapped = textwrap.wrap(
+        line,
+        width=content_width,
+        replace_whitespace=False,
+        drop_whitespace=False,
+        break_long_words=True,
+        break_on_hyphens=False,
+    )
+    if not wrapped:
+        sys.stdout.write(f"{_STREAM_LEFT_PAD}\n")
+        sys.stdout.flush()
+        return
+
+    for wrapped_line in wrapped:
+        sys.stdout.write(f"{_STREAM_LEFT_PAD}{wrapped_line}\n")
+    sys.stdout.flush()
+
 
 if TYPE_CHECKING:
     from the_architect.core.circuit import AttemptSummary
@@ -651,7 +699,6 @@ async def stream_provider(
             nonlocal accumulated_tokens
             nonlocal rate_limit_detected
             nonlocal cooldown_until
-            import sys
 
             log_file = None
             if log_path is not None:
@@ -692,8 +739,7 @@ async def stream_provider(
 
                         # Render display lines to terminal
                         for dl in parsed.display_lines:
-                            sys.stdout.write(dl + "\n")
-                            sys.stdout.flush()
+                            _write_stream_line(dl)
 
                         # Rate-limit / model-not-found detection.
                         # Also capture resetsAt from rate_limit_event for precise cooldown timing.
@@ -710,8 +756,7 @@ async def stream_provider(
                     else:
                         # Provider returned None → print raw line as-is
                         if line.strip():
-                            sys.stdout.write(line + "\n")
-                            sys.stdout.flush()
+                            _write_stream_line(line)
 
             except asyncio.CancelledError:
                 pass
