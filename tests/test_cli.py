@@ -2167,7 +2167,10 @@ class TestRunPlanningModeMore:
             patch("the_architect.cli.run_planner") as mock_planner,
             patch("the_architect.cli.discover_tasks", return_value=[]),
             patch("the_architect.cli.check_pending_tasks", return_value=0),
+            patch("the_architect.cli.detect_provider") as mock_detect_provider,
         ):
+            mock_detect_provider.return_value.ensure_setup.return_value = None
+            mock_detect_provider.return_value.get_resolved_model.return_value = "test-model"
             mock_result = MagicMock()
             mock_result.tasks_created = []
             mock_planner.return_value = mock_result
@@ -2196,7 +2199,10 @@ class TestRunPlanningModeMore:
             patch("the_architect.cli.run_planner", return_value=mock_result),
             patch("the_architect.cli.discover_tasks", return_value=[]),
             patch("the_architect.cli.check_pending_tasks", return_value=0),
+            patch("the_architect.cli.detect_provider") as mock_detect_provider,
         ):
+            mock_detect_provider.return_value.ensure_setup.return_value = None
+            mock_detect_provider.return_value.get_resolved_model.return_value = "test-model"
             run_planning_mode(
                 project=tmp_path,
                 config=config,
@@ -3128,7 +3134,7 @@ class TestRunPlanningModeDeeper:
         config = ArchitectConfig()
 
         with (
-            patch("the_architect.core.provider.detect_provider") as mock_detect_provider,
+            patch("the_architect.cli.detect_provider") as mock_detect_provider,
             pytest.raises(SystemExit) as exc_info,
         ):
             mock_detect_provider.return_value.ensure_setup.return_value = None
@@ -3249,7 +3255,7 @@ class TestRunPlanningModeDeeper:
                 "the_architect.core.context.load_context_paths",
                 side_effect=FileNotFoundError("not found"),
             ),
-            patch("the_architect.core.provider.detect_provider") as mock_detect_provider,
+            patch("the_architect.cli.detect_provider") as mock_detect_provider,
         ):
             mock_detect_provider.return_value.ensure_setup.return_value = None
             mock_detect_provider.return_value.get_resolved_model.return_value = "test-model"
