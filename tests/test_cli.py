@@ -634,7 +634,9 @@ class TestRunMain:
             patch("the_architect.cli._run_tasks_raw", side_effect=_fake_run_tasks) as mock_run,
             patch("the_architect.cli.write_success_md"),
             patch("the_architect.cli.print_success_summary"),
+            patch("the_architect.cli.detect_provider") as mock_detect_provider,
         ):
+            mock_detect_provider.return_value.ensure_setup.return_value = None
             with pytest.raises(SystemExit) as exc_info:
                 _run_main(
                     project=tmp_path,
@@ -670,7 +672,9 @@ class TestRunMain:
             patch("the_architect.cli._run_tasks_raw", side_effect=_fake_run_tasks),
             patch("the_architect.cli.write_success_md"),
             patch("the_architect.cli.print_success_summary"),
+            patch("the_architect.cli.detect_provider") as mock_detect_provider,
         ):
+            mock_detect_provider.return_value.ensure_setup.return_value = None
             with pytest.raises(SystemExit) as exc_info:
                 _run_main(
                     project=tmp_path,
@@ -695,7 +699,10 @@ class TestRunPlanningMode:
             patch("the_architect.cli.run_planner") as mock_planner,
             patch("the_architect.cli.discover_tasks", return_value=[]),
             patch("the_architect.cli.check_pending_tasks", return_value=[]),
+            patch("the_architect.cli.detect_provider") as mock_detect_provider,
         ):
+            mock_detect_provider.return_value.ensure_setup.return_value = None
+            mock_detect_provider.return_value.get_resolved_model.return_value = "test-model"
             # Mock the planning result with tasks_created
             mock_result = MagicMock()
             mock_result.tasks_created = []
@@ -718,7 +725,10 @@ class TestRunPlanningMode:
         with (
             patch("the_architect.cli.run_planner", side_effect=PlanningFailedError("test")),
             patch("the_architect.cli.check_pending_tasks", return_value=0),
+            patch("the_architect.cli.detect_provider") as mock_detect_provider,
         ):
+            mock_detect_provider.return_value.ensure_setup.return_value = None
+            mock_detect_provider.return_value.get_resolved_model.return_value = "test-model"
             with pytest.raises(SystemExit):
                 run_planning_mode(
                     project=tmp_path,
