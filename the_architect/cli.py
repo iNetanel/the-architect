@@ -3151,7 +3151,7 @@ def _run_main(
                 console.print(f"[red]Fix-up execution failed after retrospective {round_num}[/red]")
                 break
 
-    if not only_task and all_results:
+    if not only_task and all_results and provider is not None:
         reassessment_log_dir = config.log_dir
         reassessment_log_dir.mkdir(parents=True, exist_ok=True)
         for result in _task_results_needing_reassessment(all_results):
@@ -3159,7 +3159,7 @@ def _run_main(
                 reassessment = asyncio.run(
                     run_task_reassessment(
                         project_dir=project,
-                        provider=provider if provider is not None else detect_provider("auto"),
+                        provider=provider,
                         config=config,
                         completed_task=result.prefix,
                         outcome_summary=result.outcome_summary,
