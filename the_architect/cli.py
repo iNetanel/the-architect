@@ -1014,8 +1014,6 @@ def _prompt_architect_model(
     import questionary
 
     if provider is None:
-        from the_architect.core.provider import detect_provider
-
         provider = detect_provider("auto")
 
     provider_name = provider.display_name
@@ -1110,8 +1108,6 @@ def _prompt_exec_agent(
     import questionary
 
     if provider is None:
-        from the_architect.core.provider import detect_provider
-
         provider = detect_provider("auto")
 
     # Providers without named-agent support — skip the prompt
@@ -1180,8 +1176,6 @@ def run_planning_mode(
         provider: The AI CLI provider to use.  Defaults to auto-detection when not specified.
     """
     if provider is None:
-        from the_architect.core.provider import detect_provider
-
         provider = detect_provider("auto")
     # ── Pending task guard ─────────────────────────────────────────────
     # Check for unfinished tasks before asking for a new goal.
