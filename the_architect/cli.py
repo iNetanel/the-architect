@@ -2982,13 +2982,11 @@ def _run_main(
             f"[grey62]Model:[/grey62] [{ARCHITECT_GREEN}]{exec_model_display}[/{ARCHITECT_GREEN}]"
         )
 
-    # Ensure provider setup (prompts, planning config)
+    # Ensure provider setup only when a provider has already been selected.
+    # Some test and headless control-flow paths intentionally run without a
+    # real provider object and should not auto-detect local CLIs here.
     if provider is not None:
         provider.ensure_setup(project, config)
-    else:
-        from the_architect.core.provider import detect_provider
-
-        detect_provider("auto").ensure_setup(project, config)
     setup_logging(config.log_dir)
 
     # ── Monitor state writer (feeds the tmux dashboard) ─────────────────
