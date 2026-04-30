@@ -190,6 +190,7 @@ class TestProgressTemplate:
         assert "{task_rows}" in PROGRESS_TEMPLATE
         assert "{current_state}" in PROGRESS_TEMPLATE
         assert "{last_summary}" in PROGRESS_TEMPLATE
+        assert "## Task Outcomes" in PROGRESS_TEMPLATE
 
 
 # ---------------------------------------------------------------------------

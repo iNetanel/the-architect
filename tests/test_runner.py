@@ -3235,6 +3235,14 @@ class TestBuildInstructionPreviousSummary:
         assert "PREVIOUS ATTEMPT CONTEXT" in instruction
         assert "Error: test failed" in instruction
 
+    def test_structured_outcome_block_required(self, config, task):
+        instruction = build_instruction(task, attempt=1, config=config)
+        assert "=== TASK OUTCOME ===" in instruction
+        assert "Summary:" in instruction
+        assert "Files:" in instruction
+        assert "Verification:" in instruction
+        assert "Impact:" in instruction
+
 
 class TestBuildInstructionDocsPath:
     """Cover build_instruction with docs_path (L1643-1644)."""

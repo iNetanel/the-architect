@@ -10,6 +10,7 @@ import pytest
 from the_architect.config import ArchitectConfig
 from the_architect.core.claude_code_provider import ClaudeCodeProvider
 from the_architect.core.retrospective import (
+    ReassessmentResult,
     RetrospectiveRequest,
     RetrospectiveResult,
     _gather_review_context,
@@ -17,6 +18,7 @@ from the_architect.core.retrospective import (
     _update_progress_with_retrospective_tasks,
     build_retrospective_instruction,
     run_retrospective,
+    run_task_reassessment,
 )
 from the_architect.core.runner import StreamResult, TokenUsage
 from the_architect.core.tasks import Task, TaskStatus
@@ -209,6 +211,60 @@ class TestRetrospectiveEdgeCases:
         with patch.object(progress_file.__class__, "write_text", mock_write_text):
             _update_progress_with_retrospective_tasks(progress_file, [task])
             # Should not crash, should handle the error gracefully
+
+    @pytest.mark.asyncio
+    async def test_run_task_reassessment_skips_when_no_impact(
+        self, tmp_path: Path, config: ArchitectConfig
+    ) -> None:
+        provider = MagicMock()
+        result = await run_task_reassessment(
+            project_dir=tmp_path,
+            provider=provider,
+            config=config,
+            completed_task="T01",
+            outcome_summary="Downstream impact: none",
+            original_goal="test goal",
+        )
+        assert isinstance(result, ReassessmentResult)
+        assert result.tasks_updated == []
+        provider.ensure_setup.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_run_task_reassessment_updates_pending_tasks(
+        self, tmp_path: Path, config: ArchitectConfig
+    ) -> None:
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        task_file = tasks_dir / "T02_followup.md"
+        task_file.write_text("# T02 - Follow up\noriginal\n", encoding="utf-8")
+        (tmp_path / "PROGRESS.md").write_text(
+            "**Tasks completed:** 1\n"
+            "**Next task to run:** T02\n"
+            "## Task Log\n"
+            "| Task | Title | Status | Completed |\n"
+            "|------|-------|--------|-----------|\n"
+            "| T01 | Done thing | Done | 2026-04-29 |\n"
+            "| T02 | Follow up | Pending | — |\n",
+            encoding="utf-8",
+        )
+
+        provider = MagicMock()
+
+        async def fake_stream(**kwargs: object) -> StreamResult:
+            task_file.write_text("# T02 - Follow up\nupdated\n", encoding="utf-8")
+            return StreamResult(exit_code=0, tokens=TokenUsage())
+
+        with patch("the_architect.core.retrospective.stream_provider", side_effect=fake_stream):
+            result = await run_task_reassessment(
+                project_dir=tmp_path,
+                provider=provider,
+                config=config,
+                completed_task="T01",
+                outcome_summary="Downstream impact: possible",
+                original_goal="test goal",
+            )
+
+        assert result.tasks_updated == ["T02"]
 
     @pytest.mark.asyncio
     async def test_run_retrospective_claude_code_provider(

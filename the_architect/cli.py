@@ -47,7 +47,11 @@ from the_architect.core.provider import (
     detect_available_providers,
     detect_provider,
 )
-from the_architect.core.retrospective import RetrospectiveRequest, run_retrospective
+from the_architect.core.retrospective import (
+    RetrospectiveRequest,
+    run_retrospective,
+    run_task_reassessment,
+)
 from the_architect.core.runner import TaskResult, TokenUsage, run_all, run_task, setup_logging
 from the_architect.core.success import RetrospectiveRound, print_success_summary, write_success_md
 from the_architect.core.tasks import Task, TaskPlan, TaskScope, TaskStatus, discover_tasks
@@ -1642,6 +1646,7 @@ async def _run_tasks_raw(
 
     def on_task_done(result: TaskResult) -> None:
         results.append(result)
+        _record_task_outcome(config.progress_file, result)
         console.print()
         console.print(
             f"[#7cc800]✓ {result.prefix} done[/#7cc800]  "
@@ -1811,6 +1816,52 @@ def _read_goal_from_instructions(tasks_dir: Path) -> str:
     except OSError:
         pass
     return ""
+
+
+def _record_task_outcome(progress_file: Path, result: TaskResult) -> None:
+    """Persist a concise task outcome row and refresh Last Task Summary."""
+    try:
+        content = progress_file.read_text(encoding="utf-8")
+    except OSError:
+        return
+
+    summary = (result.outcome_summary or "Downstream impact: none").strip()
+    summary_single = summary.replace("\n", " ; ")
+    impact = "Possible" if "Downstream impact: possible" in summary else "None"
+    row = (
+        f"| {result.prefix} | {summary_single} | Captured in summary | "
+        f"Captured in summary | {impact} |\n"
+    )
+    marker = (
+        "## Task Outcomes\n\n"
+        "| Task | Outcome | Files | Verification | Impact on Next Tasks |\n"
+        "|------|---------|-------|--------------|----------------------|\n"
+    )
+    if marker in content and row not in content:
+        content = content.replace(marker, marker + row)
+
+    import re
+
+    content = re.sub(
+        r"## Last Task Summary\s*\n\s*.*?(?=\n---)",
+        f"## Last Task Summary\n\n{summary}\n",
+        content,
+        flags=re.DOTALL,
+    )
+
+    try:
+        progress_file.write_text(content, encoding="utf-8")
+    except OSError:
+        return
+
+
+def _task_results_needing_reassessment(results: list[TaskResult]) -> list[TaskResult]:
+    """Return done task results that explicitly indicate downstream impact."""
+    return [
+        result
+        for result in results
+        if result.status == "done" and "Downstream impact: possible" in result.outcome_summary
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -3099,6 +3150,32 @@ def _run_main(
             if not retro_success:
                 console.print(f"[red]Fix-up execution failed after retrospective {round_num}[/red]")
                 break
+
+    if not only_task and all_results:
+        reassessment_log_dir = config.log_dir
+        reassessment_log_dir.mkdir(parents=True, exist_ok=True)
+        for result in _task_results_needing_reassessment(all_results):
+            try:
+                reassessment = asyncio.run(
+                    run_task_reassessment(
+                        project_dir=project,
+                        provider=provider if provider is not None else detect_provider("auto"),
+                        config=config,
+                        completed_task=result.prefix,
+                        outcome_summary=result.outcome_summary,
+                        original_goal=original_goal,
+                        model_override=architect_model or None,
+                        log_path=reassessment_log_dir / f"{result.prefix.lower()}_reassess.log",
+                    )
+                )
+                if reassessment.tasks_updated:
+                    console.print()
+                    console.print(
+                        f"[yellow]↺ Reassessed after {result.prefix}[/yellow]  "
+                        f"[dim]{reassessment.summary}[/dim]"
+                    )
+            except Exception as exc:
+                logger.warning(f"Post-task reassessment failed for {result.prefix}: {exc!r}")
 
     # ── Final summary ──────────────────────────────────────────────────
     # Write final monitor state before generating the summary

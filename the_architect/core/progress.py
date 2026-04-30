@@ -254,6 +254,13 @@ PROGRESS_TEMPLATE = """\
 
 ---
 
+## Task Outcomes
+
+| Task | Outcome | Files | Verification | Impact on Next Tasks |
+|------|---------|-------|--------------|----------------------|
+
+---
+
 ## Permanent Decisions
 
 | Decision | Value | Reason | Task |

@@ -23,6 +23,13 @@ from the_architect.core.tasks import Task, TaskPlan
 
 _STREAM_LEFT_PAD = "  "
 _STREAM_RIGHT_GAP = 2
+_OUTCOME_SECTION_MARKER = "=== TASK OUTCOME ==="
+_OUTCOME_FIELD_LABELS = {
+    "summary": "Summary",
+    "files": "Files",
+    "verification": "Verification",
+    "impact": "Impact",
+}
 
 
 def _stream_width() -> int | None:
@@ -128,6 +135,10 @@ class TaskResult(BaseModel):
             "Unix timestamp when the provider cooldown resets "
             "(from rate_limit_event.resetsAt). 0 means not set."
         ),
+    )
+    outcome_summary: str = Field(
+        default="",
+        description="Structured task outcome summary extracted after the final attempt",
     )
 
 
@@ -1651,6 +1662,20 @@ def build_instruction(
             "— work autonomously without asking the human for confirmation."
         )
 
+    lines.append("")
+    lines.append("Before you finish, record concise execution evidence in PROGRESS.md:")
+    lines.append("- what changed")
+    lines.append("- files touched")
+    lines.append("- verification/tests run")
+    lines.append("- whether later tasks should change because of new discoveries")
+    lines.append("")
+    lines.append("At the very end of your response, include this exact structured block:")
+    lines.append(_OUTCOME_SECTION_MARKER)
+    lines.append("Summary: <one sentence>")
+    lines.append("Files: <comma-separated files or none>")
+    lines.append("Verification: <commands/tests run or none>")
+    lines.append("Impact: <none or possible>")
+
     if attempt > 1:
         lines.append("")
         lines.append(f"🔄 RETRY ATTEMPT {attempt}/{config.max_retries}")
@@ -1737,6 +1762,70 @@ def select_model(
     if config.standalone_mode:
         return config.standalone_mode
     return None
+
+
+def _extract_task_outcome_summary(text: str) -> str:
+    """Extract a compact structured outcome summary from agent output."""
+    import re as _re
+
+    if _OUTCOME_SECTION_MARKER in text:
+        section = text.split(_OUTCOME_SECTION_MARKER, 1)[1]
+        outcome_lines = [line.strip() for line in section.splitlines() if line.strip()]
+        values: dict[str, str] = {}
+        for line in outcome_lines:
+            for key, label in _OUTCOME_FIELD_LABELS.items():
+                prefix = f"{label}:"
+                if line.startswith(prefix):
+                    values[key] = line[len(prefix) :].strip()
+                    break
+        if values:
+            structured: list[str] = []
+            if values.get("summary"):
+                structured.append(f"Summary: {values['summary']}")
+            if values.get("files"):
+                structured.append(f"Files: {values['files']}")
+            if values.get("verification"):
+                structured.append(f"Verification: {values['verification']}")
+            impact_value = values.get("impact", "none").lower()
+            structured.append(
+                "Downstream impact: possible"
+                if impact_value in {"possible", "yes", "changed"}
+                else "Downstream impact: none"
+            )
+            return "\n".join(structured)
+
+    lines: list[str] = []
+    lowered = text.lower()
+
+    files = sorted(set(_re.findall(r"\b[\w./-]+\.[A-Za-z0-9]+\b", text)))
+    if files:
+        lines.append(f"Files: {', '.join(files[:6])}")
+
+    verifications = _re.findall(
+        r"(?:pytest|ruff check|ruff format|mypy|npm test|pnpm test|cargo test|go test)[^\n]*",
+        text,
+        _re.IGNORECASE,
+    )
+    if verifications:
+        cleaned = [match.strip() for match in verifications[:3]]
+        lines.append(f"Verification: {'; '.join(cleaned)}")
+
+    impact_markers = [
+        "next tasks",
+        "downstream",
+        "follow-up",
+        "remaining tasks",
+        "architecture changed",
+        "assumption",
+    ]
+    impact = "possible" if any(marker in lowered for marker in impact_markers) else "none"
+    lines.append(f"Downstream impact: {impact}")
+
+    progress_signals = extract_progress_signals(text)
+    if progress_signals:
+        lines.append(f"Outcome: {progress_signals[0]}")
+
+    return "\n".join(lines[:4])
 
 
 # ---------------------------------------------------------------------------
@@ -1867,6 +1956,7 @@ async def run_task_once(
                 accumulated_text=stream_result.accumulated_text,
                 exit_code=stream_result.exit_code,
                 cooldown_until=stream_result.cooldown_until,
+                outcome_summary=_extract_task_outcome_summary(stream_result.accumulated_text),
             )
 
         # Multi-signal completion check (IMP-01 + IMP-06):
@@ -1916,6 +2006,7 @@ async def run_task_once(
             accumulated_text=stream_result.accumulated_text,
             exit_code=stream_result.exit_code,
             cooldown_until=stream_result.cooldown_until,
+            outcome_summary=_extract_task_outcome_summary(stream_result.accumulated_text),
         )
 
     except Exception as exc:
@@ -1932,6 +2023,7 @@ async def run_task_once(
             attempts=attempt,
             tokens=TokenUsage(),
             model=model or "",
+            outcome_summary="Downstream impact: none",
         )
 
 

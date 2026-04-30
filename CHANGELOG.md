@@ -11,6 +11,11 @@ Full rules in [`documentation/Best Practices.md`](documentation/Best%20Practices
 
 ## [Unreleased]
 
+### Changed
+
+- Added a lightweight post-task architect reassessment loop, richer default `tasks/INSTRUCTIONS.md` execution guidance, and structured `PROGRESS.md` task outcome tracking so downstream tasks can adapt to discoveries made during earlier execution (build 10034).
+- Tightened executor outcome reporting to use an explicit structured task-outcome block, narrowed reassessment to explicit downstream-impact signals, expanded regression coverage for the new adaptive loop, and revalidated the full CI/release pipeline for the `1.1.0` release line (build 10034).
+
 <!--
 Every completed task appends a bullet here and bumps __build__ in /version.py.
 When cutting a release, rename [Unreleased] to the version and add a fresh

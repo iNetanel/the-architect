@@ -72,6 +72,13 @@ class RetrospectiveResult(BaseModel):
     fixes_planned: int = Field(default=0, description="Number of fix-up tasks created")
 
 
+class ReassessmentResult(BaseModel):
+    """Result of a lightweight architect reassessment pass."""
+
+    tasks_updated: list[str] = Field(default_factory=list, description="Pending tasks updated")
+    summary: str = Field(default="", description="What the reassessment changed")
+
+
 # ---------------------------------------------------------------------------
 # Next R-task number
 # ---------------------------------------------------------------------------
@@ -453,3 +460,93 @@ async def run_retrospective(
         f"{len(new_task_names)} new task(s), {len(tasks_after)} total"
     )
     return result
+
+
+async def run_task_reassessment(
+    project_dir: Path,
+    provider: ArchitectProvider,
+    config: ArchitectConfig,
+    completed_task: str,
+    outcome_summary: str,
+    original_goal: str,
+    model_override: str | None = None,
+    log_path: Path | None = None,
+) -> ReassessmentResult:
+    """Run a targeted architect reassessment after a task with downstream impact."""
+    if not outcome_summary or "Downstream impact: none" in outcome_summary:
+        return ReassessmentResult(summary="No reassessment needed.")
+
+    tasks_dir = project_dir / "tasks"
+    provider.ensure_setup(project_dir, config)
+
+    pending_tasks = discover_tasks(tasks_dir)
+    before_contents: dict[str, str] = {}
+    task_sections: list[str] = []
+    for task in pending_tasks:
+        if task_is_done(project_dir / "PROGRESS.md", task.prefix):
+            continue
+        try:
+            text = task.path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        before_contents[task.name] = text
+        task_sections.append(f"## {task.path.name}\n{text}")
+
+    try:
+        progress_content = (project_dir / "PROGRESS.md").read_text(encoding="utf-8")
+    except OSError:
+        progress_content = ""
+
+    instruction = "\n".join(
+        [
+            f"PROJECT ROOT: {project_dir}",
+            "You are doing a targeted post-task reassessment, not a full re-plan.",
+            "Read PROGRESS.md and pending task files only.",
+            "Only update pending task files in tasks/ when the completed task materially "
+            "changes future work.",
+            "Do not modify completed tasks. Do not rewrite the whole plan. Preserve "
+            "numbering and intent whenever possible.",
+            f"Original goal: {original_goal}",
+            f"Completed task: {completed_task}",
+            "=== Outcome Summary ===",
+            outcome_summary,
+            "=== Current PROGRESS.md ===",
+            progress_content,
+            "=== Pending Task Files ===",
+            "\n\n".join(task_sections),
+            "If no changes are needed, make no edits.",
+        ]
+    )
+
+    await stream_provider(
+        instruction=instruction,
+        project_dir=project_dir,
+        provider=provider,
+        model_override=model_override,
+        agent_override="architect" if provider.supports_agents() else None,
+        log_path=log_path,
+        config_override=(project_dir / ".architect" / "architect.json")
+        if provider.supports_agents()
+        else None,
+    )
+
+    updated: list[str] = []
+    for task in discover_tasks(tasks_dir):
+        before = before_contents.get(task.name)
+        if before is None:
+            continue
+        try:
+            after = task.path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if after != before:
+            updated.append(task.prefix)
+
+    return ReassessmentResult(
+        tasks_updated=updated,
+        summary=(
+            f"Updated pending tasks after {completed_task}: {', '.join(updated)}"
+            if updated
+            else f"No pending task changes needed after {completed_task}."
+        ),
+    )

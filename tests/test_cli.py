@@ -118,6 +118,20 @@ class TestMoreHelperFunctions:
 
     def test_prompt_text_input_builds_layout(self) -> None:
         """Custom text prompt should build a right-padded prompt-toolkit layout."""
+
+    def test_task_results_needing_reassessment_filters_only_explicit_impact(self) -> None:
+        from the_architect.cli import _task_results_needing_reassessment
+
+        results = [
+            TaskResult(prefix="T01", status="done", outcome_summary="Downstream impact: possible"),
+            TaskResult(prefix="T02", status="done", outcome_summary="Downstream impact: none"),
+            TaskResult(
+                prefix="T03", status="failed", outcome_summary="Downstream impact: possible"
+            ),
+        ]
+
+        filtered = _task_results_needing_reassessment(results)
+        assert [result.prefix for result in filtered] == ["T01"]
         import the_architect.cli as cli_mod
 
         with (
@@ -438,7 +452,8 @@ class TestRetryCommand:
             patch("the_architect.cli.discover_tasks", return_value=[mock_task]),
             patch("the_architect.core.opencode_provider.OpenCodeProvider") as mock_prov,
             patch("the_architect.cli.setup_logging"),
-            patch("the_architect.cli.asyncio.run"),
+            patch("the_architect.cli.run_task", return_value=None),
+            patch("the_architect.cli.asyncio.run", return_value=None),
         ):
             mock_prov.return_value.ensure_setup.return_value = None
             runner = CliRunner()
@@ -2066,7 +2081,8 @@ class TestRetryCommandMore:
             patch("the_architect.cli.discover_tasks", return_value=[mock_task]),
             patch("the_architect.core.opencode_provider.OpenCodeProvider") as mock_prov,
             patch("the_architect.cli.setup_logging"),
-            patch("the_architect.cli.asyncio.run"),
+            patch("the_architect.cli.run_task", return_value=None),
+            patch("the_architect.cli.asyncio.run", return_value=None),
         ):
             mock_prov.return_value.ensure_setup.return_value = None
             runner = CliRunner()
@@ -2532,7 +2548,7 @@ class TestRunMainNonPreloaded:
             patch("the_architect.cli.write_success_md"),
             patch("the_architect.cli.print_success_summary"),
             patch("the_architect.core.free_models.FreeModelRotator", return_value=mock_rotator),
-            patch("the_architect.cli.asyncio.run"),
+            patch("the_architect.cli.asyncio.run", side_effect=[None, (True, [], 1.0)]),
         ):
             with pytest.raises(SystemExit) as exc_info:  # noqa: F841
                 _run_main(
@@ -2930,7 +2946,7 @@ class TestRunMainDeeper:
             patch("the_architect.cli.write_success_md"),
             patch("the_architect.cli.print_success_summary"),
             patch("the_architect.core.free_models.FreeModelRotator", return_value=mock_rotator),
-            patch("the_architect.cli.asyncio.run"),
+            patch("the_architect.cli.asyncio.run", side_effect=[None, (True, [], 1.0)]),
             patch("the_architect.config.write_config", return_value=tmp_path / "architect.toml"),
         ):
             with pytest.raises(SystemExit) as exc_info:  # noqa: F841
@@ -4112,7 +4128,8 @@ class TestRetryCommandBranches:
             patch("the_architect.cli.task_is_done", return_value=False),
             patch("the_architect.cli.discover_tasks", return_value=[mock_task]),
             patch("the_architect.cli.setup_logging"),
-            patch("the_architect.cli.asyncio.run"),
+            patch("the_architect.cli.run_task", return_value=None),
+            patch("the_architect.cli.asyncio.run", return_value=None),
         ):
             runner = CliRunner()
             result = runner.invoke(main, ["retry", "-t", "T01", "-p", str(tmp_path)])
