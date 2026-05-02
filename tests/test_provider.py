@@ -4,6 +4,8 @@ Covers:
 - ArchitectProvider protocol
 - OpenCodeProvider implementation
 - ClaudeCodeProvider implementation
+- CodexCliProvider integration in detection
+- GeminiCliProvider integration in detection
 - detect_provider() auto-detection
 - detect_available_providers()
 - ParsedEvent structure
@@ -19,6 +21,7 @@ import pytest
 
 from the_architect.core.claude_code_provider import ClaudeCodeProvider
 from the_architect.core.codex_cli_provider import CodexCliProvider
+from the_architect.core.gemini_cli_provider import GeminiCliProvider
 from the_architect.core.opencode_provider import OpenCodeProvider
 from the_architect.core.provider import (
     ArchitectProvider,
@@ -259,9 +262,9 @@ class TestClaudeCodeProviderIdentity:
     def test_binary_name(self) -> None:
         assert ClaudeCodeProvider().binary_name == "claude"
 
-    def test_supports_agents_false(self) -> None:
-        """Claude Code has no named-agent system."""
-        assert ClaudeCodeProvider().supports_agents() is False
+    def test_supports_agents_true(self) -> None:
+        """Claude Code supports named agent selection via --agent."""
+        assert ClaudeCodeProvider().supports_agents() is True
 
     def test_supports_json_output_false(self) -> None:
         """Claude Code outputs plain text, not JSON events."""
@@ -328,11 +331,13 @@ class TestClaudeCodeProviderCommand:
         idx = cmd.index("--model")
         assert cmd[idx + 1] == "claude-opus-4"
 
-    def test_build_command_ignores_agent_override(self) -> None:
-        """Claude Code has no named agents — agent_override should be ignored."""
+    def test_build_command_with_agent_override(self) -> None:
+        """Claude Code should pass named agent selection via --agent."""
         with patch("shutil.which", return_value="/usr/local/bin/claude"):
             cmd = ClaudeCodeProvider().build_command("task", agent_override="build")
-        assert "--agent" not in cmd
+        assert "--agent" in cmd
+        idx = cmd.index("--agent")
+        assert cmd[idx + 1] == "build"
 
     def test_uses_stream_json_output_format(self) -> None:
         """Claude Code uses --output-format stream-json for token and model capture."""
@@ -669,6 +674,7 @@ class TestDetectProvider:
             patch.object(OpenCodeProvider, "is_installed", return_value=True),
             patch.object(ClaudeCodeProvider, "is_installed", return_value=False),
             patch.object(CodexCliProvider, "is_installed", return_value=False),
+            patch.object(GeminiCliProvider, "is_installed", return_value=False),
         ):
             provider = detect_provider("auto")
         assert provider.name == "opencode"
@@ -678,6 +684,7 @@ class TestDetectProvider:
             patch.object(OpenCodeProvider, "is_installed", return_value=False),
             patch.object(ClaudeCodeProvider, "is_installed", return_value=True),
             patch.object(CodexCliProvider, "is_installed", return_value=False),
+            patch.object(GeminiCliProvider, "is_installed", return_value=False),
         ):
             provider = detect_provider("auto")
         assert provider.name == "claude-code"
@@ -688,6 +695,7 @@ class TestDetectProvider:
             patch.object(OpenCodeProvider, "is_installed", return_value=True),
             patch.object(ClaudeCodeProvider, "is_installed", return_value=True),
             patch.object(CodexCliProvider, "is_installed", return_value=False),
+            patch.object(GeminiCliProvider, "is_installed", return_value=False),
         ):
             provider = detect_provider("auto")
         assert provider.name == "opencode"
@@ -697,6 +705,7 @@ class TestDetectProvider:
             patch.object(OpenCodeProvider, "is_installed", return_value=False),
             patch.object(ClaudeCodeProvider, "is_installed", return_value=False),
             patch.object(CodexCliProvider, "is_installed", return_value=False),
+            patch.object(GeminiCliProvider, "is_installed", return_value=False),
         ):
             with pytest.raises(ProviderNotFoundError):
                 detect_provider("auto")
@@ -731,6 +740,7 @@ class TestDetectProvider:
             patch.object(OpenCodeProvider, "is_installed", return_value=False),
             patch.object(ClaudeCodeProvider, "is_installed", return_value=False),
             patch.object(CodexCliProvider, "is_installed", return_value=True),
+            patch.object(GeminiCliProvider, "is_installed", return_value=False),
         ):
             provider = detect_provider("auto")
         assert provider.name == "codex"
@@ -741,6 +751,7 @@ class TestDetectProvider:
             patch.object(OpenCodeProvider, "is_installed", return_value=True),
             patch.object(ClaudeCodeProvider, "is_installed", return_value=False),
             patch.object(CodexCliProvider, "is_installed", return_value=True),
+            patch.object(GeminiCliProvider, "is_installed", return_value=False),
         ):
             provider = detect_provider("auto")
         assert provider.name == "opencode"
@@ -751,6 +762,7 @@ class TestDetectProvider:
             patch.object(OpenCodeProvider, "is_installed", return_value=False),
             patch.object(ClaudeCodeProvider, "is_installed", return_value=True),
             patch.object(CodexCliProvider, "is_installed", return_value=True),
+            patch.object(GeminiCliProvider, "is_installed", return_value=False),
         ):
             provider = detect_provider("auto")
         assert provider.name == "codex"
@@ -767,6 +779,40 @@ class TestDetectProvider:
             with pytest.raises(ProviderNotFoundError):
                 detect_provider("codex")
 
+    def test_explicit_gemini_cli_returns_gemini_cli(self) -> None:
+        """Explicit gemini-cli preference returns Gemini CLI when installed."""
+        with patch.object(GeminiCliProvider, "is_installed", return_value=True):
+            provider = detect_provider("gemini-cli")
+        assert provider.name == "gemini-cli"
+
+    def test_explicit_gemini_cli_raises_when_not_installed(self) -> None:
+        """Explicit gemini-cli preference raises when not installed."""
+        with patch.object(GeminiCliProvider, "is_installed", return_value=False):
+            with pytest.raises(ProviderNotFoundError):
+                detect_provider("gemini-cli")
+
+    def test_auto_prefers_claude_code_over_gemini_cli(self) -> None:
+        """Claude Code is preferred over Gemini CLI in auto mode."""
+        with (
+            patch.object(OpenCodeProvider, "is_installed", return_value=False),
+            patch.object(ClaudeCodeProvider, "is_installed", return_value=True),
+            patch.object(CodexCliProvider, "is_installed", return_value=False),
+            patch.object(GeminiCliProvider, "is_installed", return_value=True),
+        ):
+            provider = detect_provider("auto")
+        assert provider.name == "claude-code"
+
+    def test_auto_returns_gemini_cli_when_only_gemini_installed(self) -> None:
+        """When only Gemini CLI is installed, auto-detection returns Gemini CLI."""
+        with (
+            patch.object(OpenCodeProvider, "is_installed", return_value=False),
+            patch.object(ClaudeCodeProvider, "is_installed", return_value=False),
+            patch.object(CodexCliProvider, "is_installed", return_value=False),
+            patch.object(GeminiCliProvider, "is_installed", return_value=True),
+        ):
+            provider = detect_provider("auto")
+        assert provider.name == "gemini-cli"
+
 
 # ---------------------------------------------------------------------------
 # detect_available_providers
@@ -774,13 +820,14 @@ class TestDetectProvider:
 
 
 class TestDetectAvailableProviders:
-    """Tests for detect_available_providers()."""
+    """Tests for detect_available_providers() — covers all four known providers."""
 
     def test_returns_empty_when_nothing_installed(self) -> None:
         with (
             patch.object(OpenCodeProvider, "is_installed", return_value=False),
             patch.object(ClaudeCodeProvider, "is_installed", return_value=False),
             patch.object(CodexCliProvider, "is_installed", return_value=False),
+            patch.object(GeminiCliProvider, "is_installed", return_value=False),
         ):
             available = detect_available_providers()
         assert available == []
@@ -790,6 +837,7 @@ class TestDetectAvailableProviders:
             patch.object(OpenCodeProvider, "is_installed", return_value=True),
             patch.object(ClaudeCodeProvider, "is_installed", return_value=False),
             patch.object(CodexCliProvider, "is_installed", return_value=False),
+            patch.object(GeminiCliProvider, "is_installed", return_value=False),
         ):
             available = detect_available_providers()
         assert len(available) == 1
@@ -800,6 +848,7 @@ class TestDetectAvailableProviders:
             patch.object(OpenCodeProvider, "is_installed", return_value=False),
             patch.object(ClaudeCodeProvider, "is_installed", return_value=True),
             patch.object(CodexCliProvider, "is_installed", return_value=False),
+            patch.object(GeminiCliProvider, "is_installed", return_value=False),
         ):
             available = detect_available_providers()
         assert len(available) == 1
@@ -810,6 +859,7 @@ class TestDetectAvailableProviders:
             patch.object(OpenCodeProvider, "is_installed", return_value=True),
             patch.object(ClaudeCodeProvider, "is_installed", return_value=True),
             patch.object(CodexCliProvider, "is_installed", return_value=False),
+            patch.object(GeminiCliProvider, "is_installed", return_value=False),
         ):
             available = detect_available_providers()
         assert len(available) == 2
@@ -820,6 +870,7 @@ class TestDetectAvailableProviders:
             patch.object(OpenCodeProvider, "is_installed", return_value=True),
             patch.object(ClaudeCodeProvider, "is_installed", return_value=True),
             patch.object(CodexCliProvider, "is_installed", return_value=False),
+            patch.object(GeminiCliProvider, "is_installed", return_value=False),
         ):
             available = detect_available_providers()
         assert available[0].name == "opencode"
@@ -831,6 +882,7 @@ class TestDetectAvailableProviders:
             patch.object(OpenCodeProvider, "is_installed", return_value=False),
             patch.object(ClaudeCodeProvider, "is_installed", return_value=False),
             patch.object(CodexCliProvider, "is_installed", return_value=True),
+            patch.object(GeminiCliProvider, "is_installed", return_value=False),
         ):
             available = detect_available_providers()
         assert len(available) == 1
@@ -842,6 +894,7 @@ class TestDetectAvailableProviders:
             patch.object(OpenCodeProvider, "is_installed", return_value=True),
             patch.object(ClaudeCodeProvider, "is_installed", return_value=True),
             patch.object(CodexCliProvider, "is_installed", return_value=True),
+            patch.object(GeminiCliProvider, "is_installed", return_value=False),
         ):
             available = detect_available_providers()
         assert len(available) == 3
@@ -852,9 +905,44 @@ class TestDetectAvailableProviders:
             patch.object(OpenCodeProvider, "is_installed", return_value=True),
             patch.object(ClaudeCodeProvider, "is_installed", return_value=True),
             patch.object(CodexCliProvider, "is_installed", return_value=True),
+            patch.object(GeminiCliProvider, "is_installed", return_value=False),
         ):
             available = detect_available_providers()
         assert [p.name for p in available] == ["opencode", "codex", "claude-code"]
+
+    def test_returns_gemini_cli_when_only_gemini(self) -> None:
+        """Should return [gemini-cli] when only Gemini CLI is installed."""
+        with (
+            patch.object(OpenCodeProvider, "is_installed", return_value=False),
+            patch.object(ClaudeCodeProvider, "is_installed", return_value=False),
+            patch.object(CodexCliProvider, "is_installed", return_value=False),
+            patch.object(GeminiCliProvider, "is_installed", return_value=True),
+        ):
+            available = detect_available_providers()
+        assert len(available) == 1
+        assert available[0].name == "gemini-cli"
+
+    def test_returns_all_four_when_all_installed(self) -> None:
+        """Should return all four providers when all are installed."""
+        with (
+            patch.object(OpenCodeProvider, "is_installed", return_value=True),
+            patch.object(ClaudeCodeProvider, "is_installed", return_value=True),
+            patch.object(CodexCliProvider, "is_installed", return_value=True),
+            patch.object(GeminiCliProvider, "is_installed", return_value=True),
+        ):
+            available = detect_available_providers()
+        assert len(available) == 4
+
+    def test_order_is_opencode_codex_claude_code_gemini(self) -> None:
+        """Provider order must be: OpenCode, Codex, Claude Code, Gemini CLI."""
+        with (
+            patch.object(OpenCodeProvider, "is_installed", return_value=True),
+            patch.object(ClaudeCodeProvider, "is_installed", return_value=True),
+            patch.object(CodexCliProvider, "is_installed", return_value=True),
+            patch.object(GeminiCliProvider, "is_installed", return_value=True),
+        ):
+            available = detect_available_providers()
+        assert [p.name for p in available] == ["opencode", "codex", "claude-code", "gemini-cli"]
 
 
 # ---------------------------------------------------------------------------
@@ -863,10 +951,10 @@ class TestDetectAvailableProviders:
 
 
 class TestProviderProtocolCompliance:
-    """Tests that both providers satisfy the ArchitectProvider protocol."""
+    """Tests that all providers satisfy the ArchitectProvider protocol."""
 
     @pytest.mark.parametrize(
-        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider]
+        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider, GeminiCliProvider]
     )
     def test_is_architect_provider(self, provider_cls) -> None:
         """Both providers should satisfy the ArchitectProvider protocol."""
@@ -874,7 +962,7 @@ class TestProviderProtocolCompliance:
         assert isinstance(provider, ArchitectProvider)
 
     @pytest.mark.parametrize(
-        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider]
+        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider, GeminiCliProvider]
     )
     def test_has_name_property(self, provider_cls) -> None:
         provider = provider_cls()
@@ -882,7 +970,7 @@ class TestProviderProtocolCompliance:
         assert len(provider.name) > 0
 
     @pytest.mark.parametrize(
-        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider]
+        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider, GeminiCliProvider]
     )
     def test_has_display_name_property(self, provider_cls) -> None:
         provider = provider_cls()
@@ -890,7 +978,7 @@ class TestProviderProtocolCompliance:
         assert len(provider.display_name) > 0
 
     @pytest.mark.parametrize(
-        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider]
+        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider, GeminiCliProvider]
     )
     def test_has_binary_name_property(self, provider_cls) -> None:
         provider = provider_cls()
@@ -898,14 +986,14 @@ class TestProviderProtocolCompliance:
         assert len(provider.binary_name) > 0
 
     @pytest.mark.parametrize(
-        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider]
+        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider, GeminiCliProvider]
     )
     def test_is_installed_returns_bool(self, provider_cls) -> None:
         provider = provider_cls()
         assert isinstance(provider.is_installed(), bool)
 
     @pytest.mark.parametrize(
-        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider]
+        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider, GeminiCliProvider]
     )
     def test_get_version_returns_string(self, provider_cls) -> None:
         provider = provider_cls()
@@ -917,6 +1005,7 @@ class TestProviderProtocolCompliance:
             (OpenCodeProvider, "opencode"),
             (ClaudeCodeProvider, "claude"),
             (CodexCliProvider, "codex"),
+            (GeminiCliProvider, "gemini"),
         ],
     )
     def test_get_version_is_cached(self, provider_cls, binary) -> None:
@@ -940,21 +1029,21 @@ class TestProviderProtocolCompliance:
         assert mock_run.call_count == 1
 
     @pytest.mark.parametrize(
-        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider]
+        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider, GeminiCliProvider]
     )
     def test_install_hint_returns_string(self, provider_cls) -> None:
         provider = provider_cls()
         assert isinstance(provider.install_hint(), str)
 
     @pytest.mark.parametrize(
-        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider]
+        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider, GeminiCliProvider]
     )
     def test_list_models_returns_list(self, provider_cls) -> None:
         provider = provider_cls()
         assert isinstance(provider.list_models(), list)
 
     @pytest.mark.parametrize(
-        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider]
+        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider, GeminiCliProvider]
     )
     def test_build_command_returns_list(self, provider_cls, tmp_path: Path) -> None:
         with patch("shutil.which", return_value="/fake/binary"):
@@ -964,7 +1053,7 @@ class TestProviderProtocolCompliance:
         assert len(cmd) > 0
 
     @pytest.mark.parametrize(
-        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider]
+        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider, GeminiCliProvider]
     )
     def test_get_env_overrides_returns_dict(self, provider_cls) -> None:
         provider = provider_cls()
@@ -972,21 +1061,21 @@ class TestProviderProtocolCompliance:
         assert isinstance(env, dict)
 
     @pytest.mark.parametrize(
-        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider]
+        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider, GeminiCliProvider]
     )
     def test_supports_agents_returns_bool(self, provider_cls) -> None:
         provider = provider_cls()
         assert isinstance(provider.supports_agents(), bool)
 
     @pytest.mark.parametrize(
-        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider]
+        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider, GeminiCliProvider]
     )
     def test_supports_json_output_returns_bool(self, provider_cls) -> None:
         provider = provider_cls()
         assert isinstance(provider.supports_json_output(), bool)
 
     @pytest.mark.parametrize(
-        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider]
+        "provider_cls", [OpenCodeProvider, ClaudeCodeProvider, CodexCliProvider, GeminiCliProvider]
     )
     def test_supports_free_tier_returns_bool(self, provider_cls) -> None:
         provider = provider_cls()

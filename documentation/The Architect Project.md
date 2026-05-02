@@ -1,8 +1,8 @@
 # The Architect
 
-> **Fire-and-forget autonomous development powered by OpenCode or Claude Code.**
+> **Fire-and-forget autonomous development powered by your AI coding CLI of choice.**
 
-The Architect is an open-source Python CLI application that wraps [OpenCode](https://opencode.ai) or [Claude Code](https://docs.anthropic.com/en/docs/claude-code) to provide fully autonomous development agents. You describe what you want to build — in plain English, or by pointing to a PRD, spec, or any document — The Architect plans it into numbered tasks, executes them unattended, detects and recovers from failures automatically, and shows live progress in the terminal with an optional tmux split-pane dashboard.
+The Architect is an open-source Python CLI application that wraps supported AI coding CLIs such as [OpenCode](https://opencode.ai), [Codex CLI](https://developers.openai.com/codex/cli/), [Claude Code](https://docs.anthropic.com/en/docs/claude-code), and [Gemini CLI](https://github.com/google-gemini/gemini-cli) to provide fully autonomous development agents. You describe what you want to build — in plain English, or by pointing to a PRD, spec, or any document — The Architect plans it into numbered tasks, executes them unattended, detects and recovers from failures automatically, and shows live progress in the terminal with an optional tmux split-pane dashboard.
 
 It is published to PyPI as `the-architect` and works on any project regardless of language, framework, or stack.
 
@@ -11,7 +11,7 @@ It is published to PyPI as `the-architect` and works on any project regardless o
 ## Table of Contents
 
 1. [What The Architect Does](#1-what-the-architect-does)
-2. [Supported Providers — OpenCode and Claude Code](#2-supported-providers--opencode-and-claude-code)
+2. [Supported Providers](#2-supported-providers)
 3. [How It Works](#3-how-it-works)
 4. [Context Injection — PRD, Spec, and Any Document Import](#4-context-injection--prd-spec-and-any-document-import)
 5. [Project Structure Detection](#5-project-structure-detection)
@@ -48,7 +48,7 @@ The Architect automates the entire development lifecycle:
 
 - **Planning** — Decomposes your goal into numbered task files (T01, T02, …) using an AI architect agent. You can describe the goal in plain English, or point to a PRD, SPEC.md, design doc, or any file or directory via `--context`
 - **Project Detection** — Automatically detects your repo type (monorepo, multi-repo, single repo), languages, frameworks, components, dependency graph, project descriptions, key dependencies, test/lint commands, and sub-components — and injects this into the architect's planning prompt and every execution instruction
-- **Execution** — Runs each task via the AI CLI provider (OpenCode or Claude Code), streaming output live to the terminal
+- **Execution** — Runs each task via the active AI CLI provider, streaming output live to the terminal
 - **Smart Retry** — Automatically retries failed tasks with model fallbacks, previous-attempt context injection, and circuit breaker protection
 - **Stuck Detection** — Monitors agent output for "I'm stuck", "can't proceed", and similar patterns; the circuit breaker reacts to no-progress, repeated errors, and token decline signals
 - **Cooldown Handling** — Detects provider rate limits (HTTP 429, "rate limit" in output) and pauses automatically without consuming retry slots
@@ -61,9 +61,9 @@ Your involvement is minimal: describe a goal (or just point to a doc), answer a 
 
 ---
 
-## 2. Supported Providers — OpenCode and Claude Code
+## 2. Supported Providers
 
-The Architect supports two AI CLI backends. Both provide the same core features — planning, execution, retry, circuit breaker, retrospective, and cooldown detection — with a few provider-specific differences.
+The Architect supports four AI CLI backends today: OpenCode, Codex CLI, Claude Code, and Gemini CLI. All four provide the same core lifecycle features — planning, execution, retry, circuit breaker, retrospective, and cooldown detection — with a few provider-specific differences.
 
 ### Provider Selection
 
@@ -72,17 +72,21 @@ At startup, The Architect auto-detects which provider is installed:
 | Scenario | Behaviour |
 |----------|-----------|
 | Only OpenCode installed | Uses OpenCode silently |
+| Only Codex CLI installed | Uses Codex CLI silently |
 | Only Claude Code installed | Uses Claude Code silently |
-| Both installed | Interactive arrow-key selection screen |
-| Neither installed | Error with install instructions for both |
+| Only Gemini CLI installed | Uses Gemini CLI silently |
+| Multiple supported providers installed | Interactive arrow-key selection screen |
+| None installed | Error with install instructions for all supported providers |
 
 You can also set a preference explicitly in `architect.toml`:
 
 ```toml
 [architect]
-provider = "auto"         # default — detect and prompt if both present
+provider = "auto"         # default — detect and prompt if multiple are present
 # provider = "opencode"   # require OpenCode
+# provider = "codex"      # require Codex CLI
 # provider = "claude-code"  # require Claude Code
+# provider = "gemini-cli"   # require Gemini CLI
 ```
 
 Or via environment variable: `ARCHITECT_PROVIDER=claude-code`
@@ -100,18 +104,28 @@ npm i -g opencode-ai       # npm (cross-platform)
 npm install -g @anthropic-ai/claude-code
 ```
 
+**Codex CLI:**
+```bash
+npm install -g @openai/codex
+```
+
+**Gemini CLI:**
+```bash
+npm install -g @google/gemini-cli
+```
+
 ### Provider Differences
 
-| Feature | OpenCode | Claude Code |
-|---------|----------|-------------|
-| Binary | `opencode` | `claude` |
-| Named agents | Yes (`--agent build`) | No — prompt injected as prefix |
-| Output format | Structured JSON events | Plain text |
-| Token counts | Yes (per event) | Not available |
-| Config file | `opencode.json` | `CLAUDE.md` |
-| Model list | `opencode models` | Static list of known Claude models |
-| Free Tier (OpenRouter) | Yes (if OpenRouter configured) | **Never** |
-| Planning config | `.architect/architect.json` | Not needed — prompt prefix |
+| Feature | OpenCode | Codex CLI | Claude Code | Gemini CLI |
+|---------|----------|-----------|-------------|------------|
+| Binary | `opencode` | `codex` | `claude` | `gemini` |
+| Named agents | Yes (`--agent build`) | No | No | No |
+| Output format | Structured JSON events | Structured JSONL events | Plain text | Structured JSONL events |
+| Token counts | Yes (per event) | Yes | Not available | Yes |
+| Config signal | `opencode.json` | `~/.codex/config.toml` | `CLAUDE.md` + env vars | `~/.gemini/settings.json` + env vars |
+| Model resolution | `opencode models` / config | config + env var | env var / Claude defaults | settings.json + `GEMINI_MODEL` |
+| Free Tier (OpenRouter) | Yes (if OpenRouter configured) | **Never** | **Never** | **Never** |
+| Planning setup | `.architect/architect.json` | Prompt injection | Prompt injection | Prompt injection |
 
 ### What Works the Same on Both Providers
 
@@ -127,9 +141,9 @@ npm install -g @anthropic-ai/claude-code
 - tmux dashboard
 - All configuration options except `free_mode` (OpenCode + OpenRouter only)
 
-### Token Counts with Claude Code
+### Token Counts with Plain-Text Providers
 
-Claude Code outputs plain text — there are no structured JSON events carrying token usage. Token counts will show as `0` in SUCCESS.md and the dashboard when using Claude Code. This is a provider limitation, not a bug.
+Claude Code outputs plain text — there are no structured JSON events carrying token usage. Token counts will show as `0` in SUCCESS.md and the dashboard when using Claude Code. Codex CLI and Gemini CLI do emit structured JSONL usage events, so token tracking is available there.
 
 ### Free Tier with Claude Code
 
@@ -201,10 +215,10 @@ Free Tier (`--free`) is **not available** with Claude Code. Claude Code uses Ant
 
 ### Key Design Principles
 
-- **Model-agnostic** — Uses your existing OpenCode or Claude Code setup. No separate API key management
+- **Provider-agnostic** — Uses your existing AI coding CLI setup. No separate AI SDK integration
 - **Fire-and-forget** — Set a goal, walk away, come back to results
 - **Zero-config by default** — Works without any configuration file. All settings have sensible defaults
-- **Never modifies your provider config** — The Architect writes its own planning config to `.architect/architect.json` (OpenCode) or injects prompts directly (Claude Code). Your config is used untouched during execution
+- **Never modifies your provider config** — The Architect writes its own planning config only where needed (OpenCode) and otherwise injects prompts at runtime. Your existing provider config is used untouched during execution
 - **No direct AI API calls** — Everything goes through the provider CLI. No Anthropic SDK, no OpenAI SDK
 - **Never crash silently** — All exceptions are logged with full context
 
@@ -422,7 +436,7 @@ When you run `architect --plan`, The Architect enters interactive planning mode:
 2. **Goal prompt** — "What do you want to build?" (or extracted automatically from `--context` files)
 3. **Scope selection** — Choose task granularity
 4. **Architect model selection** — Pick from available provider models
-5. **Execution agent selection** — Pick which agent runs the tasks (OpenCode only; Claude Code has no named-agent system)
+5. **Execution agent selection** — Pick which agent runs the tasks when the active provider supports named agents (OpenCode only)
 
 ### What The Architect Does During Planning
 
@@ -431,7 +445,7 @@ When you run `architect --plan`, The Architect enters interactive planning mode:
 3. **Reads `PROGRESS.md`** — extracts completed tasks and permanent decisions only (active state is excluded to prevent the architect from confusing "continue old plan" with "start new plan")
 4. **Gathers context** — reads `--context` files and directories if provided
 5. **Detects docs/** — reads file names and first 80 lines of each doc in `docs/` directory
-6. **Runs the provider CLI with the architect role** — For OpenCode: `opencode run --agent architect` with `OPENCODE_CONFIG` set to `.architect/architect.json`. For Claude Code: `claude --print` with the architect prompt prepended to the instruction.
+6. **Runs the provider CLI with the architect role** — OpenCode uses `opencode run --agent architect` with `OPENCODE_CONFIG` set to `.architect/architect.json`. Codex CLI, Claude Code, and Gemini CLI inject the architect prompt directly into the instruction and run non-interactively via their own CLI format.
 7. **Rescues stray task files** — if the architect wrote task files outside `tasks/`, moves them to the canonical location
 8. **Updates `ARCHITECT.md`** — rewrites the structure section, preserves all other sections
 9. **Writes `PROGRESS.md`** and `tasks/INSTRUCTIONS.md`
@@ -448,7 +462,7 @@ If all 3 attempts fail, planning exits with an error.
 |-------|-------------|
 | **Architect** | User's interactive selection → provider default |
 | **Reviewer** | Same model as architect → provider default |
-| **Execution** | User's provider default agent (OpenCode: from `opencode.json`; Claude Code: from `ANTHROPIC_MODEL` env var or `CLAUDE.md`) |
+| **Execution** | User's active provider default execution model or agent (provider-specific resolution rules apply) |
 
 The architect and reviewer both perform high-reasoning work (planning and critique), so they use the same model. The execution agent is separate — it's the workhorse that runs tasks, managed by the user's opencode config.
 
@@ -487,7 +501,7 @@ When you run `architect`, The Architect enters execution mode:
 3. Acquires a lock file (`.architect/runner.lock`) to prevent concurrent runs
 4. Runs each pending task via the active provider CLI
 5. Streams provider output directly to the terminal in real-time — no piping, no reformatting, pure TTY-like output
-6. For OpenCode: parses JSON events for token usage tracking and display rendering (supports both v1.4+ and legacy formats). For Claude Code: plain text output is displayed as-is; token counts are not available
+6. Parses provider output according to the active CLI: OpenCode JSON events, Codex CLI JSONL events, Gemini CLI JSONL events, or Claude Code plain text. Token counts are available when the provider emits structured usage data
 7. After each task: 2-second pause to allow file writes to flush, then checks PROGRESS.md for completion
 8. Pauses `pause_between_tasks` seconds between tasks (configurable, default: 10)
 9. Writes `SUCCESS.md` with the final summary
@@ -515,6 +529,8 @@ The build agent is also instructed to **update ARCHITECT.md** when it discovers 
 
 Non-JSON lines (ANSI codes, status output) are passed through to the terminal as-is.
 
+**Codex CLI** and **Gemini CLI** are invoked in non-interactive JSONL streaming modes. Their structured events are parsed for display, tool activity, errors, and token usage.
+
 **Claude Code** is invoked with `--print` (non-interactive mode). Output is plain text — each line is displayed directly. Token counts are not available from Claude Code's plain-text output.
 
 ### Subprocess Buffer Limit
@@ -539,9 +555,21 @@ ANTHROPIC_API_KEY env var → CLAUDE_MODEL env var →
 CLAUDE.md in project root → ~/.claude/CLAUDE.md
 ```
 
+**Codex CLI** config resolution order:
+
+```
+CODEX_MODEL env var → ~/.codex/config.toml → provider defaults
+```
+
+**Gemini CLI** config resolution order:
+
+```
+GEMINI_MODEL env var → .gemini/settings.json → ~/.gemini/settings.json → provider defaults
+```
+
 ### Provider Timeout
 
-The Architect sets `OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS=900000` (15 minutes) for OpenCode so long-running build commands don't time out prematurely. Claude Code manages its own timeouts.
+The Architect sets `OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS=900000` (15 minutes) for OpenCode so long-running build commands don't time out prematurely. Other providers use their own CLI timeout behaviour.
 
 ---
 
@@ -816,7 +844,7 @@ When disabled, rate limit errors fall through to normal circuit breaker evaluati
 
 ### Cooldown Detection with Claude Code
 
-Claude Code outputs plain text. The Architect reads the accumulated text output directly from the stream result (not by re-parsing JSON events from the log file). This means cooldown detection works correctly for both providers.
+Claude Code outputs plain text. The Architect reads the accumulated text output directly from the stream result (not by re-parsing JSON events from the log file). Structured providers surface cooldown signals through parsed events. This means cooldown detection works correctly across providers.
 
 Common Claude Code quota messages that trigger cooldown detection:
 - `"You're out of extra usage · resets 11pm (UTC)"` — daily quota exhausted
@@ -827,7 +855,7 @@ Common Claude Code quota messages that trigger cooldown detection:
 
 ## 13. Free Mode — Zero-Cost OpenRouter Rotation
 
-> **Note:** Free Mode requires OpenCode with OpenRouter configured. It is not available with Claude Code. See [Section 2](#2-supported-providers--opencode-and-claude-code) for provider differences.
+> **Note:** Free Mode requires OpenCode with OpenRouter configured. It is not available with Codex CLI, Claude Code, or Gemini CLI. See [Section 2](#2-supported-providers) for provider differences.
 
 When `--free` is enabled:
 
@@ -1003,16 +1031,18 @@ Settings are pre-filled from `architect.toml` (saved from the previous run). Cha
 
 ### Provider Selection Screen
 
-When both OpenCode and Claude Code are installed and `provider = "auto"` (default), a provider selection screen is shown before any other prompts:
+When multiple supported providers are installed and `provider = "auto"` (default), a provider selection screen is shown before any other prompts:
 
 ```
  The Architect  select provider
 
-  Both OpenCode and Claude Code are installed.
+  Multiple supported AI CLIs are installed.
   Select which provider to use for this run.
 
-  › OpenCode  (v1.4.0)
+  › OpenCode     (v1.4.0)
+    Codex CLI    (v0.0.0)
     Claude Code  (v1.2.3)
+    Gemini CLI   (v0.0.0)
 
   ↑↓ navigate   Enter confirm
 ```
@@ -1264,7 +1294,7 @@ retry_model_2 = ""                   # Fallback model for attempt 2
 retry_model_3 = ""                  # Fallback model for attempt 3
 
 # ── Provider ────────────────────────────────────────────────────────────────
-provider = "auto"                    # "auto" | "opencode" | "claude-code"
+provider = "auto"                    # "auto" | "opencode" | "codex" | "claude-code" | "gemini-cli"
 
 # ── Execution ───────────────────────────────────────────────────────────────
 execution_agent = ""                 # Agent name from opencode.json (empty = default)
@@ -1311,8 +1341,8 @@ token_budget_per_hour = 0           # Max tokens/rolling hour (0 = disabled)
 | `pause_between_tasks` | int | `10` | Seconds to wait between tasks |
 | `retry_model_2` | str | `""` | Fallback model for attempt 2 |
 | `retry_model_3` | str | `""` | Fallback model for attempt 3 |
-| `provider` | str | `"auto"` | AI CLI provider: `"auto"`, `"opencode"`, or `"claude-code"` |
-| `execution_agent` | str | `""` | Agent name for task execution (OpenCode only) |
+| `provider` | str | `"auto"` | AI CLI provider: `"auto"`, `"opencode"`, `"codex"`, `"claude-code"`, or `"gemini-cli"` |
+| `execution_agent` | str | `""` | Agent name for task execution (OpenCode only; ignored by other providers) |
 | `standalone_mode` | str | `""` | Use this model directly (bypasses provider config) |
 | `carry_context` | bool | `true` | Inject previous attempt context on retry |
 | `retry_prompt_mode` | str | `"focused"` | `"focused"` (structured) or `"same"` (identical) |
@@ -1720,7 +1750,7 @@ The Architect handles failures robustly at every layer:
 
 | Scenario | Handling |
 |----------|----------|
-| **No provider installed** | Detects and shows install instructions for both OpenCode and Claude Code |
+| **No provider installed** | Detects and shows install instructions for all supported providers |
 | **Provider not configured** | Shows setup guidance with config file locations for the active provider |
 | **`--free` with Claude Code** | Warning shown, flag cleared, `free_mode=false` saved to `architect.toml` |
 | **Concurrent runs** | Lock file prevents multiple instances |
@@ -1808,9 +1838,11 @@ the_architect/              # Python package (published to PyPI as "the-architec
 │   ├── architect_md.py          # ARCHITECT.md read/write + append helpers
 │   ├── circuit.py               # Circuit breaker (CLOSED/OPEN/HALF_OPEN per task)
 │   ├── claude_code_provider.py  # Claude Code CLI provider implementation
+│   ├── codex_cli_provider.py    # Codex CLI provider implementation
 │   ├── context.py               # Context file/directory loading + goal extraction
 │   ├── dashboard.py             # tmux dashboard renderer (separate process)
 │   ├── free_models.py           # Free-tier OpenRouter model rotator (OpenCode only)
+│   ├── gemini_cli_provider.py   # Gemini CLI provider implementation
 │   ├── monitor_state.py         # Monitor state writer (feeds dashboard)
 │   ├── opencode_config.py       # Backward-compat shim (delegates to opencode_provider.py)
 │   ├── opencode_provider.py     # OpenCode CLI provider implementation
@@ -1826,8 +1858,8 @@ the_architect/              # Python package (published to PyPI as "the-architec
 └── resources/
     ├── opencode_template.json  # OpenCode planning config (architect + reviewer agents)
     └── prompts/
-        ├── architect.md        # Architect agent prompt (used by both providers)
-        ├── reviewer.md         # Retrospective reviewer agent prompt (used by both providers)
+        ├── architect.md        # Architect agent prompt (used by all providers)
+        ├── reviewer.md         # Retrospective reviewer agent prompt (used by all providers)
         └── execution-protocol.md  # Execution protocol (injected at runtime)
 ```
 
@@ -1859,7 +1891,7 @@ dev = [
 TOML parsing uses the built-in `tomllib` (Python 3.11+). `tomli` is intentionally
 not a dependency.
 
-**No Anthropic SDK. No OpenAI SDK. No direct AI API calls. Everything goes through the provider CLI (OpenCode or Claude Code).**
+**No Anthropic SDK. No OpenAI SDK. No Google AI SDK. No direct AI API calls. Everything goes through the provider CLI.**
 
 ---
 
@@ -1868,7 +1900,9 @@ not a dependency.
 The Architect is built on:
 
 - [OpenCode](https://opencode.ai) — Autonomous coding agent
+- [Codex CLI](https://developers.openai.com/codex/cli/) — OpenAI's coding CLI
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — Anthropic's official AI coding CLI
+- [Gemini CLI](https://github.com/google-gemini/gemini-cli) — Google's Gemini coding CLI
 - [Rich](https://github.com/Textualize/rich) — Terminal formatting
 - [questionary](https://github.com/tmbo/questionary) — Interactive terminal prompts
 - [Click](https://click.palletsprojects.com/) — CLI framework

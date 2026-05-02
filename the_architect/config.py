@@ -44,10 +44,11 @@ class ArchitectConfig(BaseModel):
         description=(
             "Which AI CLI provider to use for planning and execution. "
             "'auto' — detect: prefer OpenCode if installed, then Codex CLI, "
-            "then fall back to Claude Code. "
+            "then Claude Code, then fall back to Gemini CLI. "
             "'opencode' — require OpenCode, error if not found. "
             "'codex' — require Codex CLI, error if not found. "
-            "'claude-code' — require Claude Code, error if not found."
+            "'claude-code' — require Claude Code, error if not found. "
+            "'gemini-cli' — require Gemini CLI, error if not found."
         ),
     )
 

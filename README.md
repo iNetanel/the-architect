@@ -123,8 +123,9 @@ The Architect works with agentic AI coding CLIs. Currently supported:
 | [OpenCode](https://opencode.ai) | `brew install opencode` or `npm i -g opencode-ai` |
 | [Codex CLI](https://developers.openai.com/codex/cli/) | `npm install -g @openai/codex` |
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | `npm install -g @anthropic-ai/claude-code` |
+| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `npm install -g @google/gemini-cli` |
 
-More providers are planned. The Architect is designed to be provider-agnostic.
+The Architect is provider-agnostic today. When multiple supported CLIs are installed, it auto-detects them and lets you choose.
 
 When multiple providers are installed, The Architect asks which to use. Set a preference in `architect.toml`:
 
@@ -134,19 +135,21 @@ provider = "auto"         # detect and prompt if multiple providers are present
 # provider = "opencode"
 # provider = "codex"
 # provider = "claude-code"
+# provider = "gemini-cli"
 ```
 
 Or via environment variable: `ARCHITECT_PROVIDER=codex`
 
 ### Provider Feature Comparison
 
-| Feature | OpenCode | Codex CLI | Claude Code |
-|---|---|---|---|
-| Planning and execution | ✅ | ✅ | ✅ |
-| Retry and circuit breaker | ✅ | ✅ | ✅ |
-| Retrospective review | ✅ | ✅ | ✅ |
-| Token usage tracking | ✅ | ✅ JSONL output | ❌ plain text output |
-| Free tier model rotation | ✅ via OpenRouter | ❌ | ❌ |
+| Feature | OpenCode | Codex CLI | Claude Code | Gemini CLI |
+|---|---|---|---|---|
+| Planning and execution | ✅ | ✅ | ✅ | ✅ |
+| Retry and circuit breaker | ✅ | ✅ | ✅ | ✅ |
+| Retrospective review | ✅ | ✅ | ✅ | ✅ |
+| Token usage tracking | ✅ | ✅ JSONL output | ❌ plain text output | ✅ JSONL output |
+| Named execution agents | ✅ | ❌ | ❌ | ❌ |
+| Free tier model rotation | ✅ via OpenRouter | ❌ | ❌ | ❌ |
 
 ---
 
@@ -222,7 +225,7 @@ Split-pane terminal dashboard shows live agent output, task progress, circuit br
 
 The Architect and Ralph both help coding agents work more autonomously.
 
-Ralph is closer to a persistent autonomous loop around Claude Code. The Architect goes further into planning, task orchestration, persistent project memory, retrospective review, and provider-agnostic execution.
+Ralph is closer to a persistent autonomous loop around a single coding CLI. The Architect goes further into planning, task orchestration, persistent project memory, retrospective review, and provider-agnostic execution.
 
 | Feature | The Architect | Ralph |
 |----|---:|---:|
@@ -253,8 +256,11 @@ Ralph is closer to a persistent autonomous loop around Claude Code. The Architec
 | Premature re-plan guard | ✅ | ❌ |
 | Task/archive history | ✅ | ❌ |
 | Multi-provider support | ✅ | ❌ |
+| Multi-provider support | ✅ | ❌ |
 | Claude Code support | ✅ | ✅ |
 | OpenCode support | ✅ | ❌ |
+| Codex CLI support | ✅ | ❌ |
+| Gemini CLI support | ✅ | ❌ |
 | PRD / spec / docs input | ✅ | ✅ |
 | JSON-oriented loop control | ❌ | ✅ |
 | Extra CLI loop / permission controls | ❌ | ✅ |
@@ -361,7 +367,7 @@ All planning flags can be set via environment variables — useful for CI and he
 | `ARCHITECT_GOAL` | `--goal` | `"add dark mode"` |
 | `ARCHITECT_SCOPE` | `--scope` | `standard` |
 | `ARCHITECT_CONTEXT` | `--context` | `/path/to/spec.md` |
-| `ARCHITECT_PROVIDER` | `--provider` | `codex` |
+| `ARCHITECT_PROVIDER` | `--provider` | `codex`, `gemini-cli` |
 | `ARCHITECT_ARCHITECT_MODEL` | `--architect-model` | `openrouter/anthropic/claude-opus-4.5` |
 | `ARCHITECT_EXECUTION_MODEL` | `--execution-model` | `openrouter/google/gemini-2.5-pro` |
 
@@ -396,7 +402,7 @@ Zero-config by default. Create `architect.toml` in your project root to customis
 ```toml
 [architect]
 # Provider
-provider = "auto"                    # "auto" | "opencode" | "codex" | "claude-code"
+provider = "auto"                    # "auto" | "opencode" | "codex" | "claude-code" | "gemini-cli"
 
 # Retry
 max_retries = 3
@@ -430,7 +436,7 @@ token_budget_per_hour = 0            # 0 = unlimited
 
 | Option | Default | Description |
 |---|---|---|
-| `provider` | `auto` | AI CLI provider — `auto`, `opencode`, `codex`, or `claude-code` |
+| `provider` | `auto` | AI CLI provider — `auto`, `opencode`, `codex`, `claude-code`, or `gemini-cli` |
 | `max_retries` | `3` | Max retry attempts per task |
 | `retry_pause` | `30` | Seconds between retries |
 | `pause_between_tasks` | `10` | Seconds between tasks |

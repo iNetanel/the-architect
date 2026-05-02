@@ -11,17 +11,26 @@ Full rules in [`documentation/Best Practices.md`](documentation/Best%20Practices
 
 ## [Unreleased]
 
-### Changed
-
-- Added a lightweight post-task architect reassessment loop, richer default `tasks/INSTRUCTIONS.md` execution guidance, and structured `PROGRESS.md` task outcome tracking so downstream tasks can adapt to discoveries made during earlier execution (build 10034).
-- Tightened executor outcome reporting to use an explicit structured task-outcome block, narrowed reassessment to explicit downstream-impact signals, expanded regression coverage for the new adaptive loop, and revalidated the full CI/release pipeline for the `1.1.0` release line (build 10034).
-
 <!--
 Every completed task appends a bullet here and bumps __build__ in /version.py.
 When cutting a release, rename [Unreleased] to the version and add a fresh
 empty [Unreleased] above it. Use Keep a Changelog section headings:
 Added / Changed / Deprecated / Removed / Fixed / Security.
 -->
+
+## [1.2.0] (build 10043) — 2026-05-02
+
+### Added
+
+- Full Gemini CLI (Google) provider support — new `GeminiCliProvider` module with JSONL stream-json output parsing, model resolution via `GEMINI_MODEL` env var / `~/.gemini/settings.json`, and `gemini -p` non-interactive invocation with `--yolo` approval bypass. Select with `--provider gemini-cli` or `provider = "gemini-cli"` in `architect.toml`. Auto-detection order is now OpenCode → Codex CLI → Claude Code → Gemini CLI (build 10039).
+- `"gemini-cli"` is now a valid `provider` value in `architect.toml` and `architect config --set provider=gemini-cli` (build 10035).
+
+### Changed
+
+- Added a lightweight post-task architect reassessment loop, richer default `tasks/INSTRUCTIONS.md` execution guidance, and structured `PROGRESS.md` task outcome tracking so downstream tasks can adapt to discoveries made during earlier execution (build 10034).
+- Tightened executor outcome reporting to use an explicit structured task-outcome block, narrowed reassessment to explicit downstream-impact signals, expanded regression coverage for the new adaptive loop, and revalidated the full CI/release pipeline for the `1.1.0` release line (build 10034).
+- Updated `README.md` and `documentation/` to reflect the current provider-agnostic architecture, including Gemini CLI and four-provider support (build 10040).
+- Polished top-level docs for consistent provider-agnostic wording across `README.md`, `more_things.md`, and `CONTRIBUTING.md` (build 10041).
 
 ## [1.1.0] (build 10033) — 2026-04-29
 

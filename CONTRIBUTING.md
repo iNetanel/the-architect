@@ -28,7 +28,7 @@ pytest tests/
 architect --version
 ```
 
-**Requirements:** Python 3.11+ and at least one supported provider (OpenCode or Claude Code) installed and configured.
+**Requirements:** Python 3.11+ and at least one supported provider installed and configured (`OpenCode`, `Codex CLI`, `Claude Code`, or `Gemini CLI`).
 
 ---
 

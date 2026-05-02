@@ -74,7 +74,7 @@ Result:   ✓ All tasks completed
 | `Duration` | Wall-clock time for that single task |
 | `Tokens` | **Total tokens for that task** = input + output only (see below) |
 
-> **Note:** When using Claude Code as the provider, token counts are not available (Claude Code outputs plain text with no structured token events). Token columns will show `0` for Claude Code runs.
+> **Note:** When using a plain-text provider such as Claude Code, token counts are not available because there are no structured usage events. Token columns will show `0` for those runs. Structured providers such as OpenCode, Codex CLI, and Gemini CLI do report token usage.
 
 **Reading attempts:** If `Attempts` is 1, the task passed first try. If it's 3, the task failed twice and succeeded on the third attempt. In the terminal summary, tasks with >1 attempt are highlighted in yellow.
 
@@ -262,7 +262,7 @@ The following information exists in the system but is **not yet surfaced** in SU
 | Per-attempt logs | `.architect/logs/T01.log`, `.architect/logs/T01.attempt2.log` |
 | Retrospective logs | `.architect/logs/reviewer_round1.log` |
 | Circuit breaker state | `.architect/circuit.json` |
-| Full event log | The log files above contain raw provider output — JSON events (OpenCode) or plain text (Claude Code) |
+| Full event log | The log files above contain raw provider output — JSON or JSONL events for structured providers, or plain text for plain-text providers such as Claude Code |
 
 ---
 
@@ -272,7 +272,7 @@ The following information exists in the system but is **not yet surfaced** in SU
 |------|------|
 | `the_architect/core/success.py` | Writes SUCCESS.md and prints the terminal summary |
 | `the_architect/core/runner.py` | `TokenUsage` model — defines and accumulates all four token fields; `stream_provider` — unified provider output engine |
-| `the_architect/core/provider.py` | `ArchitectProvider` protocol — defines the interface both OpenCode and Claude Code implement |
+| `the_architect/core/provider.py` | `ArchitectProvider` protocol — defines the interface all supported providers implement |
 | `the_architect/core/retrospective.py` | Retrospective review — runs reviewer agent, creates R-tasks |
 | `the_architect/core/circuit.py` | Circuit breaker — tracks failure patterns, cooldowns, replans |
 | `the_architect/cli.py` | Orchestrates planning → execution → retrospective loop |

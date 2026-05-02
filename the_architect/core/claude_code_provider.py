@@ -441,13 +441,16 @@ class ClaudeCodeProvider:
         ``--verbose`` is required by Claude Code when using stream-json
         output format in ``--print`` mode.
 
-        Note: ``agent_override`` is ignored for Claude Code — agent roles
-        are injected as prompt prefixes in the instruction string itself.
+        When ``agent_override`` is provided, Claude Code runs that named
+        subagent via ``--agent``. This is used for execution-agent selection
+        in the main run loop. Planning and retrospective can still inject
+        architect/reviewer prompts directly when needed.
 
         Args:
             instruction: The full instruction string to pass to claude.
             model_override: Optional model name to pass via --model flag.
-            agent_override: Ignored (Claude Code has no named agents).
+            agent_override: Optional Claude Code agent/subagent name to pass
+                via ``--agent``.
 
         Returns:
             List of command components ready for subprocess execution.
@@ -464,6 +467,9 @@ class ClaudeCodeProvider:
 
         if model_override:
             cmd.extend(["--model", model_override])
+
+        if agent_override:
+            cmd.extend(["--agent", agent_override])
 
         # Pass instruction as the final positional argument
         cmd.append(instruction)
@@ -654,8 +660,8 @@ class ClaudeCodeProvider:
         )
 
     def supports_agents(self) -> bool:
-        """Claude Code does not support named agent selection."""
-        return False
+        """Claude Code supports named agent selection via ``--agent``."""
+        return True
 
     def supports_json_output(self) -> bool:
         """Claude Code outputs plain text, not JSON events."""

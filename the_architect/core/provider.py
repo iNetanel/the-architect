@@ -1,21 +1,23 @@
 """Provider abstraction for The Architect.
 
 Defines the ArchitectProvider protocol — a common interface that OpenCode,
-Claude Code, and Codex CLI implementations satisfy.  All provider-specific
-logic lives in the concrete implementations; the rest of The Architect calls
-only this interface.
+Claude Code, Codex CLI, and Gemini CLI implementations satisfy.  All
+provider-specific logic lives in the concrete implementations; the rest of
+The Architect calls only this interface.
 
 Auto-detection order (when preference is "auto"):
   1. If OpenCode is installed → use OpenCode
   2. If Codex CLI is installed → use Codex CLI
   3. If Claude Code is installed → use Claude Code
-  4. If none are installed → raise ProviderNotFoundError
+  4. If Gemini CLI is installed → use Gemini CLI
+  5. If none are installed → raise ProviderNotFoundError
 
 Preference values (from architect.toml ``provider`` field):
   "auto"        — detect as above
   "opencode"    — require OpenCode, raise if not found
   "codex"       — require Codex CLI, raise if not found
   "claude-code" — require Claude Code, raise if not found
+  "gemini-cli"  — require Gemini CLI, raise if not found
 """
 
 from __future__ import annotations
@@ -72,7 +74,7 @@ class ParsedEvent:
 
 @runtime_checkable
 class ArchitectProvider(Protocol):
-    """Common interface for AI CLI backends (OpenCode, Claude Code).
+    """Common interface for AI CLI backends (OpenCode, Claude Code, Codex CLI, Gemini CLI).
 
     Every method must be safe to call even when the provider is not
     installed — ``is_installed()`` must always return a bool, and all
@@ -280,7 +282,7 @@ def detect_provider(preference: str = "auto") -> ArchitectProvider:
 
     Args:
         preference: One of ``"auto"``, ``"opencode"``, ``"codex"``,
-            or ``"claude-code"``.
+            ``"claude-code"``, or ``"gemini-cli"``.
 
     Returns:
         An :class:`ArchitectProvider` instance.
@@ -291,11 +293,13 @@ def detect_provider(preference: str = "auto") -> ArchitectProvider:
     """
     from the_architect.core.claude_code_provider import ClaudeCodeProvider
     from the_architect.core.codex_cli_provider import CodexCliProvider
+    from the_architect.core.gemini_cli_provider import GeminiCliProvider
     from the_architect.core.opencode_provider import OpenCodeProvider
 
     oc = OpenCodeProvider()
     cc = ClaudeCodeProvider()
     codex = CodexCliProvider()
+    gemini = GeminiCliProvider()
 
     pref = preference.lower().strip()
 
@@ -320,10 +324,18 @@ def detect_provider(preference: str = "auto") -> ArchitectProvider:
             )
         return cc
 
+    if pref == "gemini-cli":
+        if not gemini.is_installed():
+            raise ProviderNotFoundError(
+                f"Gemini CLI is not installed. Install it with: {gemini.install_hint()}"
+            )
+        return gemini
+
     if pref == "auto":
         oc_ok = oc.is_installed()
         codex_ok = codex.is_installed()
         cc_ok = cc.is_installed()
+        gemini_ok = gemini.is_installed()
 
         if oc_ok:
             return oc  # OpenCode preferred when present
@@ -331,16 +343,19 @@ def detect_provider(preference: str = "auto") -> ArchitectProvider:
             return codex  # Codex preferred over Claude Code
         if cc_ok:
             return cc
+        if gemini_ok:
+            return gemini
         raise ProviderNotFoundError(
             "No supported AI CLI found. Install one of:\n"
-            f"  OpenCode:    {oc.install_hint()}\n"
-            f"  Codex CLI:   {codex.install_hint()}\n"
-            f"  Claude Code: {cc.install_hint()}"
+            f"  OpenCode:     {oc.install_hint()}\n"
+            f"  Codex CLI:    {codex.install_hint()}\n"
+            f"  Claude Code:  {cc.install_hint()}\n"
+            f"  Gemini CLI:   {gemini.install_hint()}"
         )
 
     raise ValueError(
         f"Unknown provider preference: {preference!r}. "
-        "Valid values: 'auto', 'opencode', 'codex', 'claude-code'."
+        "Valid values: 'auto', 'opencode', 'codex', 'claude-code', 'gemini-cli'."
     )
 
 
@@ -352,17 +367,19 @@ def detect_available_providers() -> list[ArchitectProvider]:
 
     Returns:
         List of installed :class:`ArchitectProvider` instances.
-        OpenCode comes first when present, followed by Codex, then Claude Code.
-        Empty list when nothing is installed.
+        OpenCode comes first when present, followed by Codex, then Claude Code,
+        then Gemini CLI.  Empty list when nothing is installed.
     """
     from the_architect.core.claude_code_provider import ClaudeCodeProvider
     from the_architect.core.codex_cli_provider import CodexCliProvider
+    from the_architect.core.gemini_cli_provider import GeminiCliProvider
     from the_architect.core.opencode_provider import OpenCodeProvider
 
     available: list[ArchitectProvider] = []
     oc = OpenCodeProvider()
     cc = ClaudeCodeProvider()
     codex = CodexCliProvider()
+    gemini = GeminiCliProvider()
 
     if oc.is_installed():
         available.append(oc)
@@ -370,5 +387,7 @@ def detect_available_providers() -> list[ArchitectProvider]:
         available.append(codex)
     if cc.is_installed():
         available.append(cc)
+    if gemini.is_installed():
+        available.append(gemini)
 
     return available

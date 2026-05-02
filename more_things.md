@@ -6,7 +6,7 @@
 
 ## It Doesn't Write Code
 
-This is the first thing people get wrong. The Architect never writes a single line of your application code. It doesn't call any AI API directly — no OpenAI SDK, no Anthropic SDK, nothing. It shells out to your existing AI CLI tool (OpenCode or Claude Code) and orchestrates it. The AI writes the code. The Architect makes sure the AI finishes the job, doesn't get stuck, and doesn't hallucinate success.
+This is the first thing people get wrong. The Architect never writes a single line of your application code. It doesn't call any AI API directly — no OpenAI SDK, no Anthropic SDK, no Google AI SDK, nothing. It shells out to your existing AI CLI tool and orchestrates it. The AI writes the code. The Architect makes sure the AI finishes the job, doesn't get stuck, and doesn't hallucinate success.
 
 Think of it as a project manager for AI agents, not an AI agent itself.
 
@@ -94,12 +94,12 @@ In persistent mode, it does *two* retrospective rounds — the second one review
 
 ## Provider-Agnostic by Design
 
-The Architect doesn't care which AI tool you use. It supports OpenCode and Claude Code today, but the provider layer is a protocol — not a hardcoded integration. Each provider implements the same interface:
+The Architect doesn't care which AI tool you use. It supports OpenCode, Codex CLI, Claude Code, and Gemini CLI today, but the provider layer is a protocol — not a hardcoded integration. Each provider implements the same interface:
 
 - Detect if it's installed
 - Get its version
 - Run it with a prompt and return the output
-- Parse its output format (JSON events for OpenCode, plain text for Claude Code)
+- Parse its output format (JSON events or JSONL for structured providers, plain text for providers that do not expose structured streams)
 
 Adding a new provider (Cursor, Aider, continue.dev, whatever comes next) means implementing that protocol. The planning, execution, retry, circuit breaker, retrospective, and all the orchestration logic stays the same.
 
@@ -120,7 +120,7 @@ Several features exist specifically to prevent common mistakes:
 
 The Architect works without any configuration file. No `architect.toml` needed. No YAML. No JSON. Every setting has a sensible default, and all of them can be overridden via CLI flags, environment variables, or the interactive setup screen.
 
-The only thing you need installed is an AI coding CLI (OpenCode or Claude Code). Everything else is optional.
+The only thing you need installed is at least one supported AI coding CLI. Everything else is optional.
 
 ---
 
@@ -141,6 +141,6 @@ You can watch the AI work without it filling your terminal. And when it's done, 
 
 ## It Was Built by an AI Using Itself
 
-The Architect is its own first user. During development, The Architect planned and executed tasks against its own codebase — using OpenCode with the architect agent to build the architect agent. The circuit breaker was tested by the circuit breaker. The retrospective reviewed the retrospective.
+The Architect is its own first user. During development, The Architect planned and executed tasks against its own codebase using its own orchestration loop. The circuit breaker was tested by the circuit breaker. The retrospective reviewed the retrospective.
 
 This created a tight feedback loop: every bug in orchestration was immediately felt by the orchestration itself. The build counter you see in `version.py` is the honest record of how many operations it took — because the tool that increments it was also the tool being built.

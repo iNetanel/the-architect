@@ -2155,17 +2155,20 @@ def main(
             if not _available_pre:
                 from the_architect.core.claude_code_provider import ClaudeCodeProvider
                 from the_architect.core.codex_cli_provider import CodexCliProvider
+                from the_architect.core.gemini_cli_provider import GeminiCliProvider
                 from the_architect.core.opencode_provider import OpenCodeProvider
 
                 oc = OpenCodeProvider()
                 codex = CodexCliProvider()
                 cc = ClaudeCodeProvider()
+                gem = GeminiCliProvider()
                 console.print("[red]Error: No supported AI CLI found.[/red]")
                 console.print()
                 console.print("[dim]Install one of:[/dim]")
                 console.print(f"[dim]  OpenCode:    {oc.install_hint()}[/dim]")
                 console.print(f"[dim]  Codex CLI:   {codex.install_hint()}[/dim]")
                 console.print(f"[dim]  Claude Code: {cc.install_hint()}[/dim]")
+                console.print(f"[dim]  Gemini CLI:  {gem.install_hint()}[/dim]")
                 raise SystemExit(1)
             elif len(_available_pre) == 1:
                 # Only one provider — resolve now, no prompt needed
@@ -2210,6 +2213,17 @@ def main(
                 console.print("[dim]Codex CLI looks for config in:[/dim]")
                 console.print("[dim]  • CODEX_API_KEY env var[/dim]")
                 console.print("[dim]  • ~/.codex/config.toml (global)[/dim]")
+            elif _active_provider.name == "gemini-cli":
+                console.print(
+                    "The Architect uses Gemini CLI to run AI agents. "
+                    "Set GEMINI_API_KEY or run [bold]gemini[/bold] to configure."
+                )
+                console.print()
+                console.print("[dim]Gemini CLI looks for config in:[/dim]")
+                console.print("[dim]  • GEMINI_API_KEY env var[/dim]")
+                console.print("[dim]  • GEMINI_MODEL env var (override default model)[/dim]")
+                console.print("[dim]  • .gemini/settings.json (project-local)[/dim]")
+                console.print("[dim]  • ~/.gemini/settings.json (global)[/dim]")
             else:
                 console.print(
                     f"The Architect uses {_active_provider.display_name} to run AI agents. "
@@ -2380,6 +2394,8 @@ def main(
                     )
                 elif _active_provider.name == "codex":
                     console.print("Set CODEX_API_KEY or run [bold]codex[/bold] to configure.")
+                elif _active_provider.name == "gemini-cli":
+                    console.print("Set GEMINI_API_KEY or run [bold]gemini[/bold] to configure.")
                 else:
                     console.print("Set ANTHROPIC_API_KEY or run [bold]claude[/bold] to configure.")
                 raise SystemExit(1)
