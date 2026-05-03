@@ -96,9 +96,18 @@ the_architect/
     retrospective.py  # Retrospective review runner
     architect_md.py   # ARCHITECT.md read/write
     structure.py      # Project structure detection
-    tmux.py           # tmux dashboard integration
-    dashboard.py      # Monitor state and display
+    tmux.py           # tmux dashboard integration (non-TUI fallback)
+    dashboard.py      # Monitor state and display (tmux dashboard)
     ...
+  tui/                # Textual TUI layer — default UI on TTY (Phases 1-10)
+    app.py            # ArchitectApp — persistent app with execution + wait overlays
+    renderer.py       # TextualStreamRenderer — plugs into StreamRenderer seam
+    session.py        # tui_execution_session + tui_wait_session context managers
+    screens/
+      execution.py    # Output / Events / Details tabbed viewport + footer
+      wait.py         # WaitScreen (overlay) + WaitApp (standalone) for long-running work
+      mode_selection.py, resume.py, config.py, list_screen.py, status_screen.py,
+      logs_screen.py, circuit_screen.py, monitor_screen.py
   resources/
     opencode_template.json   # Template written to user projects on `architect init`
     prompts/

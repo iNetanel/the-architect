@@ -118,6 +118,16 @@ class ArchitectConfig(BaseModel):
         ),
     )
 
+    integrity: bool = Field(
+        default=True,
+        description=(
+            "When True, The Architect instructs executors to snapshot existing files "
+            "as architect_eval_* before editing, validate rewritten output against "
+            "those snapshots, and treat leftover snapshots as corruption signals "
+            "during reassessment and retrospective review."
+        ),
+    )
+
     # ── Circuit breaker settings ──────────────────────────────────────────
 
     circuit_no_progress_threshold: int = Field(
@@ -240,6 +250,7 @@ class ArchitectConfig(BaseModel):
             retry_prompt_mode=self.retry_prompt_mode,
             free_mode=self.free_mode,
             persistent=self.persistent,
+            integrity=self.integrity,
             circuit_no_progress_threshold=self.circuit_no_progress_threshold,
             circuit_same_error_threshold=self.circuit_same_error_threshold,
             circuit_token_decline_pct=self.circuit_token_decline_pct,

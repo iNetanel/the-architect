@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 from the_architect.config import ArchitectConfig
 from the_architect.core.planner import _rescue_stray_tasks, _summarize_progress_historical
 from the_architect.core.progress import task_is_done
-from the_architect.core.runner import stream_provider
+from the_architect.core.runner import StreamRenderer, stream_provider
 from the_architect.core.tasks import Task, discover_tasks
 
 if TYPE_CHECKING:
@@ -77,6 +77,16 @@ class ReassessmentResult(BaseModel):
 
     tasks_updated: list[str] = Field(default_factory=list, description="Pending tasks updated")
     summary: str = Field(default="", description="What the reassessment changed")
+
+
+def _find_eval_snapshot_files(project_dir: Path) -> list[Path]:
+    """Return leftover architect_eval snapshot files outside skipped directories."""
+    skip_dirs = {"__pycache__", ".git", "node_modules", ".venv", ".architect", ".pytest_cache"}
+    return [
+        path
+        for path in sorted(project_dir.rglob("architect_eval_*"))
+        if path.is_file() and not any(skip in path.parts for skip in skip_dirs)
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +176,8 @@ def _gather_review_context(project_dir: Path, original_goal: str) -> str:
     if tasks_dir.exists() and tasks_dir.is_dir():
         task_lines = ["Existing task files:"]
         for task_file in sorted(tasks_dir.iterdir()):
+            if task_file.name.startswith("architect_eval_"):
+                continue
             if task_file.is_file() and task_file.suffix == ".md":
                 task_lines.append(f"- {task_file.name}")
                 # Read first line (heading) for context
@@ -184,6 +196,8 @@ def _gather_review_context(project_dir: Path, original_goal: str) -> str:
     for path in sorted(project_dir.rglob("*")):
         if any(skip in path.parts for skip in skip_dirs):
             continue
+        if path.name.startswith("architect_eval_"):
+            continue
         if path.is_symlink():
             try:
                 if not path.resolve().is_relative_to(resolved_root):
@@ -194,6 +208,34 @@ def _gather_review_context(project_dir: Path, original_goal: str) -> str:
         indent = "  " * (len(rel.parts) - 1)
         tree_lines.append(f"{indent}{rel.name}")
     add_part("## File Tree", "\n".join(tree_lines))
+
+    eval_files = _find_eval_snapshot_files(project_dir)
+    if eval_files:
+        eval_lines = [
+            "WARNING: architect_eval snapshot files remain in the project.",
+            "These files should have been deleted by the executor after successful validation.",
+            "Their presence indicates possible truncation corruption or incomplete task execution.",
+            "Investigate each snapshot against its corresponding original file.",
+            "",
+        ]
+        for eval_file in eval_files:
+            rel = eval_file.relative_to(project_dir)
+            original_name = eval_file.name.replace("architect_eval_", "", 1)
+            original_path = eval_file.parent / original_name
+            try:
+                snapshot_size = eval_file.stat().st_size
+            except OSError:
+                snapshot_size = 0
+            try:
+                original_size = original_path.stat().st_size if original_path.exists() else 0
+            except OSError:
+                original_size = 0
+            pct = int((original_size / snapshot_size) * 100) if snapshot_size > 0 else 0
+            eval_lines.append(
+                f"- {rel} -> original: {original_name} "
+                f"(snapshot: {snapshot_size}B, current: {original_size}B, {pct}% of snapshot)"
+            )
+        add_part("## Leftover Eval Snapshot Files", "\n".join(eval_lines))
 
     return "\n\n".join(parts)
 
@@ -352,6 +394,7 @@ async def run_retrospective(
     config: ArchitectConfig,
     log_path: Path | None = None,
     provider: ArchitectProvider | None = None,
+    renderer: StreamRenderer | None = None,
 ) -> RetrospectiveResult:
     """Run the reviewer agent via the configured provider to assess completed work.
 
@@ -364,6 +407,12 @@ async def run_retrospective(
         log_path: Optional path to capture the retrospective session transcript.
         provider: The AI CLI provider to use.  Defaults to OpenCode when
             not specified (backward-compatible behaviour).
+        renderer: Optional :class:`StreamRenderer` for live output. TUI
+            callers should pass a
+            :class:`~the_architect.tui.renderer.WaitLogRenderer` bound
+            to the active wait session so reviewer output is visible
+            in the wait-screen log tail instead of being swallowed by
+            Textual's alt-screen.
 
     Returns:
         RetrospectiveResult with created tasks and review summary.
@@ -420,6 +469,7 @@ async def run_retrospective(
         agent_override=agent_override,
         log_path=log_path,
         config_override=config_override,
+        renderer=renderer,
     )
 
     if stream_result.exit_code != 0:
@@ -471,9 +521,12 @@ async def run_task_reassessment(
     original_goal: str,
     model_override: str | None = None,
     log_path: Path | None = None,
+    renderer: StreamRenderer | None = None,
 ) -> ReassessmentResult:
     """Run a targeted architect reassessment after a task with downstream impact."""
-    if not outcome_summary or "Downstream impact: none" in outcome_summary:
+    eval_files = _find_eval_snapshot_files(project_dir) if config.integrity else []
+    needs_reassessment = bool(outcome_summary) and "Downstream impact: none" not in outcome_summary
+    if not needs_reassessment and not eval_files:
         return ReassessmentResult(summary="No reassessment needed.")
 
     tasks_dir = project_dir / "tasks"
@@ -497,10 +550,45 @@ async def run_task_reassessment(
     except OSError:
         progress_content = ""
 
+    eval_warning = ""
+    if eval_files:
+        eval_lines = [
+            f"WARNING: {len(eval_files)} architect_eval snapshot file(s) were found "
+            f"after task {completed_task} completed.",
+            "These snapshots should have been deleted by the executor after validation.",
+            "Their presence is a strong signal of truncated or corrupted output, "
+            "or an interrupted task.",
+            "",
+            "Leftover snapshot files:",
+        ]
+        for eval_file in eval_files:
+            rel = eval_file.relative_to(project_dir)
+            original_name = eval_file.name.replace("architect_eval_", "", 1)
+            original_path = eval_file.parent / original_name
+            try:
+                snapshot_size = eval_file.stat().st_size
+            except OSError:
+                snapshot_size = 0
+            try:
+                original_size = original_path.stat().st_size if original_path.exists() else 0
+            except OSError:
+                original_size = 0
+            pct = int((original_size / snapshot_size) * 100) if snapshot_size > 0 else 0
+            eval_lines.append(
+                f"  - {rel} (snapshot {snapshot_size}B -> current {original_size}B = {pct}%)"
+            )
+        eval_lines.append("")
+        eval_lines.append(
+            "Treat these leftover snapshots as corruption signals. Update pending "
+            "work so later tasks do not build on suspicious files."
+        )
+        eval_warning = "\n".join(eval_lines)
+
     instruction = "\n".join(
         [
             f"PROJECT ROOT: {project_dir}",
             "You are doing a targeted post-task reassessment, not a full re-plan.",
+            *([eval_warning, "---", ""] if eval_warning else []),
             "Read PROGRESS.md and pending task files only.",
             "Only update pending task files in tasks/ when the completed task materially "
             "changes future work.",
@@ -528,6 +616,7 @@ async def run_task_reassessment(
         config_override=(project_dir / ".architect" / "architect.json")
         if provider.supports_agents()
         else None,
+        renderer=renderer,
     )
 
     updated: list[str] = []

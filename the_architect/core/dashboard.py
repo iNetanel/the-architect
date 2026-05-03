@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import signal
 import sys
+import textwrap
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,8 +37,37 @@ _GREEN = "\033[38;2;124;200;0m"  # The Architect lime #7cc800
 _YELLOW = "\033[33m"
 _RED = "\033[31m"
 _CYAN = "\033[36m"
-_CLEAR_SCREEN = "\033[2J\033[H"  # Clear screen + move cursor to top-left
+_CURSOR_HOME = "\033[H"  # Move cursor to top-left without erasing
+_ERASE_BELOW = "\033[J"  # Erase from cursor to end of screen
 _RIGHT_PAD = "  "
+
+
+def _wrap_task_row(
+    symbol: str,
+    tid: str,
+    title: str,
+    suffix: str,
+    width: int,
+) -> list[str]:
+    """Wrap a dashboard task row to fit the pane width.
+
+    The first line includes the task symbol and id. Continuation lines are
+    indented so long titles push later rows down instead of visually spilling
+    into them.
+    """
+    width = max(width - len(_RIGHT_PAD), 12)
+    prefix = f"{symbol} {tid} "
+    continuation = " " * len(prefix)
+    text = f"{title} {suffix}".strip()
+    wrapped = textwrap.wrap(
+        text,
+        width=max(width - len(prefix), 8),
+        break_long_words=True,
+        break_on_hyphens=False,
+    )
+    if not wrapped:
+        return [prefix.rstrip()]
+    return [prefix + wrapped[0], *[continuation + line for line in wrapped[1:]]]
 
 
 def _bold(s: str) -> str:
@@ -203,25 +233,19 @@ def render_dashboard(state: dict[str, Any], width: int = 30) -> str:
         symbol = _task_symbol(status, replanned)
         suffix = _task_suffix(status, replanned, cooldown_active=is_current_cooldown)
 
-        # Truncate title to fit pane width
-        max_title = width - len(_RIGHT_PAD) - len(tid) - 4 - len(suffix)
-        if len(title) > max_title:
-            title = title[: max(0, max_title - 1)] + "…"
+        row_lines = _wrap_task_row(symbol, tid, title, suffix, width)
 
-        row = f"{symbol} {tid} {title}"
-        if suffix:
-            row += f" {suffix}"
+        for row in row_lines:
+            if status == "done":
+                row = _green(row)
+            elif status == "running":
+                row = _bold(row)
+            elif status == "failed":
+                row = _red(row)
+            else:
+                row = _dim(row)
 
-        if status == "done":
-            row = _green(row)
-        elif status == "running":
-            row = _bold(row)
-        elif status == "failed":
-            row = _red(row)
-        else:
-            row = _dim(row)
-
-        add(row)
+            add(row)
 
     add()
 
@@ -524,14 +548,19 @@ def run_dashboard(project_dir: Path) -> None:
         try:
             state = read_monitor_state(project_dir)
 
-            # Clear screen and render
-            sys.stdout.write(_CLEAR_SCREEN)
+            # Re-render in place: move cursor to top-left WITHOUT clearing,
+            # write the new frame, then erase any leftover lines from a
+            # previous, longer render.  This eliminates the whole-screen
+            # flash caused by "\033[2J" while still keeping the output clean.
+            sys.stdout.write(_CURSOR_HOME)
             if state is None:
-                sys.stdout.write(render_waiting())
+                content = render_waiting()
             elif state.get("status") == RUN_STATUS_PLANNING:
-                sys.stdout.write(render_planning(state, width=width))
+                content = render_planning(state, width=width)
             else:
-                sys.stdout.write(render_dashboard(state, width=width))
+                content = render_dashboard(state, width=width)
+            sys.stdout.write(content)
+            sys.stdout.write(_ERASE_BELOW)
             sys.stdout.write("\n")
             sys.stdout.flush()
 

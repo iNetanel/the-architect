@@ -130,6 +130,17 @@ class TestDiscoverTasks:
             assert len(tasks) == 1
             assert tasks[0].prefix == "T01"
 
+    def test_discover_tasks_ignores_architect_eval_files(self) -> None:
+        """architect_eval files must never be discovered as tasks."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tasks_dir = Path(tmpdir)
+            (tasks_dir / "T01_first.md").touch()
+            (tasks_dir / "architect_eval_T02_second.md").touch()
+
+            tasks = discover_tasks(tasks_dir)
+
+            assert [task.name for task in tasks] == ["T01_first"]
+
 
 class TestTaskPlan:
     """Tests for TaskPlan model."""

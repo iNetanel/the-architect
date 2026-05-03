@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 from the_architect.config import ArchitectConfig
 from the_architect.core.progress import PROGRESS_TEMPLATE
-from the_architect.core.runner import stream_provider
+from the_architect.core.runner import StreamRenderer, stream_provider
 from the_architect.core.tasks import Task, TaskScope, discover_tasks
 
 if TYPE_CHECKING:
@@ -255,6 +255,8 @@ def gather_project_context(
 
         # Emit sorted file entries
         for filename in sorted(filenames):
+            if filename.startswith("architect_eval_"):
+                continue
             path = dirpath / filename
             # Skip symlinks that resolve outside the project root
             if path.is_symlink():
@@ -337,7 +339,9 @@ def gather_project_context(
             "treat as historical context only):"
         ]
         current_tasks = [
-            f for f in sorted(tasks_dir.iterdir()) if f.is_file() and f.suffix == ".md"
+            f
+            for f in sorted(tasks_dir.iterdir())
+            if f.is_file() and f.suffix == ".md" and not f.name.startswith("architect_eval_")
         ]
         if current_tasks:
             for task_file in current_tasks:
@@ -362,7 +366,10 @@ def gather_project_context(
                     session_tasks = [
                         f.stem
                         for f in sorted(session_dir.iterdir())
-                        if f.is_file() and f.suffix == ".md" and f.name != "INSTRUCTIONS.md"
+                        if f.is_file()
+                        and f.suffix == ".md"
+                        and f.name != "INSTRUCTIONS.md"
+                        and not f.name.startswith("architect_eval_")
                     ]
                     goal_hint = ""
                     instructions = session_dir / "INSTRUCTIONS.md"
@@ -904,6 +911,7 @@ async def run_planner(
     config: ArchitectConfig,
     log_path: Path | None = None,
     provider: ArchitectProvider | None = None,
+    renderer: StreamRenderer | None = None,
 ) -> PlanningResult:
     """Run the architect agent via the configured provider to plan tasks.
 
@@ -919,6 +927,14 @@ async def run_planner(
         log_path: Optional path to capture the planning session transcript.
         provider: The AI CLI provider to use.  Defaults to OpenCode when
             not specified (backward-compatible behaviour).
+        renderer: Optional :class:`StreamRenderer` that receives the
+            planner's streamed output. When ``None`` (the legacy
+            default), output falls through to :class:`PlainStreamRenderer`
+            which writes to ``stdout`` — that path is only safe in a
+            plain terminal because Textual's alt-screen swallows
+            ``stdout`` writes. TUI callers should pass
+            :class:`~the_architect.tui.renderer.WaitLogRenderer` so
+            the user actually sees what the planner is doing.
 
     Returns:
         PlanningResult with created tasks and status.
@@ -1010,6 +1026,7 @@ async def run_planner(
             agent_override=agent_override,
             log_path=log_path,
             config_override=config_override,
+            renderer=renderer,
         )
 
         if stream_result.exit_code != 0:

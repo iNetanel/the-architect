@@ -640,6 +640,8 @@ def _detect_components(project_dir: Path, repo_type: RepoType) -> list[Component
         # Each subdirectory with .git is a component
         try:
             for entry in sorted(project_dir.iterdir()):
+                if entry.name.startswith("architect_eval_"):
+                    continue
                 if entry.is_dir() and not entry.name.startswith(".") and (entry / ".git").exists():
                     comp = Component(path=entry.name + "/")
                     _enrich_component(entry, comp)
@@ -651,6 +653,8 @@ def _detect_components(project_dir: Path, repo_type: RepoType) -> list[Component
     # SINGLE_REPO or UNTRACKED — scan for component signals
     try:
         for entry in sorted(project_dir.iterdir()):
+            if entry.name.startswith("architect_eval_"):
+                continue
             if not entry.is_dir() or entry.name.startswith("."):
                 continue
 
@@ -738,6 +742,8 @@ def _detect_sub_components(parent_dir: Path) -> list[Component]:
 
     try:
         for entry in sorted(parent_dir.iterdir()):
+            if entry.name.startswith("architect_eval_"):
+                continue
             if not entry.is_dir() or entry.name.startswith(".") or entry.name in skip_dirs:
                 continue
 
@@ -963,6 +969,8 @@ def _detect_dependencies(
     shared_dir_names = {"packages", "shared", "common", "libs"}
     try:
         for entry in project_dir.iterdir():
+            if entry.name.startswith("architect_eval_"):
+                continue
             if entry.is_dir() and entry.name in shared_dir_names:
                 shared_resources.append(
                     f"{entry.name}/ — shared directory referenced by multiple components"

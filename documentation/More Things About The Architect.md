@@ -1,6 +1,6 @@
 # More Things About The Architect
 
-> Stuff worth talking about that you won't find in the documentation folder.
+> Stuff worth talking about that you won't find in the README.md file.
 
 ---
 

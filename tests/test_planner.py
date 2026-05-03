@@ -84,6 +84,17 @@ class TestGatherProjectContextEdgeCases:
             context = gather_project_context(project_dir)
             assert "link.txt" not in context
 
+    def test_gather_context_excludes_architect_eval_files(self, tmp_path: Path) -> None:
+        """architect_eval files should not appear in normal planner file trees."""
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "app.py").write_text("print('ok')\n", encoding="utf-8")
+        (tmp_path / "src" / "architect_eval_app.py").write_text("backup\n", encoding="utf-8")
+
+        context = gather_project_context(tmp_path)
+
+        assert "app.py" in context
+        assert "architect_eval_app.py" not in context
+
     def test_gather_context_claude_code_provider_uses_claude_md(self, tmp_path: Path) -> None:
         """Test that claude-code provider reads CLAUDE.md instead of AGENTS.md."""
         claude_md = tmp_path / "CLAUDE.md"
@@ -1141,3 +1152,61 @@ class TestRunPlannerProviderError:
         ):
             with pytest.raises(PlanningFailedError):
                 await run_planner(request, config, provider=provider)
+
+
+class TestRunPlannerRendererPassthrough:
+    """The planner must forward its ``renderer`` argument to
+    ``stream_provider`` so TUI callers can route provider output into
+    the wait-screen log tail. When no renderer is passed, the planner
+    must not silently substitute one — the ``None`` propagates and
+    ``stream_provider`` falls back to the plain stdout path.
+    """
+
+    @pytest.mark.asyncio
+    async def test_renderer_forwarded_to_stream_provider(self, tmp_path: Path) -> None:
+        from unittest.mock import MagicMock
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        config = ArchitectConfig().resolve(tmp_path)
+        request = PlanningRequest(
+            goal="Test goal",
+            scope=TaskScope.STANDARD,
+            project_dir=tmp_path,
+        )
+        renderer = MagicMock()
+
+        captured: dict[str, object] = {}
+
+        async def fake_stream(**kwargs: object) -> StreamResult:
+            captured.update(kwargs)
+            (tasks_dir / "T01_test.md").write_text("# T01", encoding="utf-8")
+            return StreamResult(exit_code=0, tokens=TokenUsage(), accumulated_text="")
+
+        with patch("the_architect.core.planner.stream_provider", side_effect=fake_stream):
+            await run_planner(request, config, renderer=renderer)
+
+        assert captured.get("renderer") is renderer
+
+    @pytest.mark.asyncio
+    async def test_default_renderer_is_none(self, tmp_path: Path) -> None:
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        config = ArchitectConfig().resolve(tmp_path)
+        request = PlanningRequest(
+            goal="Test goal",
+            scope=TaskScope.STANDARD,
+            project_dir=tmp_path,
+        )
+
+        captured: dict[str, object] = {}
+
+        async def fake_stream(**kwargs: object) -> StreamResult:
+            captured.update(kwargs)
+            (tasks_dir / "T01_test.md").write_text("# T01", encoding="utf-8")
+            return StreamResult(exit_code=0, tokens=TokenUsage(), accumulated_text="")
+
+        with patch("the_architect.core.planner.stream_provider", side_effect=fake_stream):
+            await run_planner(request, config)
+
+        assert captured.get("renderer") is None

@@ -273,6 +273,7 @@ def launch_in_tmux(
     session_name: str,
     project_dir: Path,
     argv: list[str],
+    single_pane: bool = False,
 ) -> bool:
     """Create a new tmux session with the split-pane layout.
 
@@ -280,9 +281,18 @@ def launch_in_tmux(
         Left pane (~70%): the architect runner command
         Right pane (~30%): the dashboard process
 
+    When ``single_pane=True`` the right pane (dashboard) is skipped
+    entirely — the runner gets the full window.  This is the mode
+    used when the Textual TUI is active: the TUI already renders
+    every piece of information the dashboard would show, so the
+    side panel only competes for screen space.  We still wrap the
+    run in a tmux session so the user keeps the ``Ctrl+B D`` detach
+    and ``tmux attach`` reattach flow.
+
     Pane borders are set to invisible (tmux 3.4+) or very subtle
     (brightblack fallback) so there is no visible line between panes —
-    just a clean visual gap.
+    just a clean visual gap.  No-op in ``single_pane`` mode where
+    there are no borders to configure.
 
     After creating the session, this function attaches to it (replacing
     the current process via ``os.execvp``).  It never returns on success.
@@ -296,6 +306,9 @@ def launch_in_tmux(
         session_name: The tmux session name to create.
         project_dir: The project root directory.
         argv: The full command-line arguments to run in the left pane.
+        single_pane: When True, skip the dashboard split.  The runner
+            command gets the whole window.  Used when the TUI owns
+            rendering and the side panel would be redundant.
 
     Returns:
         False if session creation failed (so caller can fall back to
@@ -306,8 +319,10 @@ def launch_in_tmux(
     # We add --no-monitor to prevent recursive tmux wrapping
     runner_cmd = _build_runner_cmd(argv)
 
-    # Build the dashboard command
-    dashboard_cmd = _build_dashboard_cmd(project_dir)
+    # Build the dashboard command.  Only needed in split-pane mode —
+    # in single_pane mode the dashboard is skipped entirely so the
+    # TUI can use the whole window.
+    dashboard_cmd = "" if single_pane else _build_dashboard_cmd(project_dir)
 
     # Resolve the shell once — prefer bash, fall back to sh.
     shell = _get_portable_shell()
@@ -352,42 +367,46 @@ def launch_in_tmux(
         #     to the session (inherited by all panes).
         _forward_env_vars(session_name)
 
-        # 2. Split the window vertically — right pane gets 30% width
-        result = subprocess.run(
-            [
-                "tmux",
-                "split-window",
-                "-t",
-                session_name,
-                "-h",  # horizontal split (side by side)
-                "-p",
-                "30",  # right pane = 30% of width
-                shell,
-                "-c",
-                dashboard_cmd,
-            ],
-            capture_output=True,
-            timeout=10,
-        )
-        if result.returncode != 0:
-            logger.warning(
-                f"tmux split-window failed (rc={result.returncode}): "
-                f"{result.stderr.decode(errors='replace').strip()}"
+        if not single_pane:
+            # 2. Split the window vertically — right pane gets 30% width.
+            #    Skipped in single_pane mode where the TUI owns the
+            #    whole window; the dashboard would only overlap its
+            #    already-rendered status info.
+            result = subprocess.run(
+                [
+                    "tmux",
+                    "split-window",
+                    "-t",
+                    session_name,
+                    "-h",  # horizontal split (side by side)
+                    "-p",
+                    "30",  # right pane = 30% of width
+                    shell,
+                    "-c",
+                    dashboard_cmd,
+                ],
+                capture_output=True,
+                timeout=10,
             )
-            # Session was created but split failed — kill it and fall back
-            kill_session(session_name)
-            return False
+            if result.returncode != 0:
+                logger.warning(
+                    f"tmux split-window failed (rc={result.returncode}): "
+                    f"{result.stderr.decode(errors='replace').strip()}"
+                )
+                # Session was created but split failed — kill it and fall back
+                kill_session(session_name)
+                return False
 
-        # 3. Make pane borders invisible for a clean look (no visible lines
-        #    between the left screen and the dashboard side panel).
-        _configure_pane_borders(session_name)
+            # 3. Make pane borders invisible for a clean look (no visible lines
+            #    between the left screen and the dashboard side panel).
+            _configure_pane_borders(session_name)
 
-        # 4. Select the left pane (pane 0) so the user sees the runner
-        subprocess.run(
-            ["tmux", "select-pane", "-t", f"{session_name}:0.0"],
-            capture_output=True,
-            timeout=5,
-        )
+            # 4. Select the left pane (pane 0) so the user sees the runner
+            subprocess.run(
+                ["tmux", "select-pane", "-t", f"{session_name}:0.0"],
+                capture_output=True,
+                timeout=5,
+            )
 
         # 5. Attach to the session — this replaces the current process
         logger.info(f"Attaching to tmux session: {session_name}")
@@ -851,6 +870,7 @@ def maybe_launch_tmux(
     project_dir: Path,
     argv: list[str],
     no_monitor: bool = False,
+    single_pane: bool = False,
 ) -> bool:
     """Check tmux availability and auto-launch if appropriate.
 
@@ -869,6 +889,12 @@ def maybe_launch_tmux(
         project_dir: The project root directory.
         argv: The current sys.argv (used to reconstruct the runner command).
         no_monitor: If True, skip all tmux logic.
+        single_pane: If True, wrap the runner in tmux WITHOUT the
+            dashboard split — the runner gets the full window.  Used
+            when the TUI is active: wrapping in tmux still gives the
+            user ``Ctrl+B D`` detach + ``tmux attach`` reattach, but
+            without the side panel that would otherwise compete with
+            the TUI's own Details/Events tabs for screen space.
 
     Returns:
         True if tmux was launched and the caller should exit.
@@ -963,7 +989,7 @@ def maybe_launch_tmux(
             return False
 
     # Launch in a new tmux session
-    launched = launch_in_tmux(session_name, project_dir, argv)
+    launched = launch_in_tmux(session_name, project_dir, argv, single_pane=single_pane)
     if launched:
         return True  # pragma: no cover (attach replaces process)
 

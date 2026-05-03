@@ -23,6 +23,7 @@ class TestArchitectConfig:
         assert config.pause_between_tasks == 10
         assert config.standalone_mode == ""
         assert config.execution_agent == ""
+        assert config.integrity is True
 
     def test_config_resolve(self) -> None:
         """Should make paths absolute when resolve is called."""
@@ -206,20 +207,26 @@ class TestNewConfigFields:
 
     def test_new_fields_survive_resolve(self, tmp_path) -> None:
         """New fields should be preserved through resolve()."""
-        config = ArchitectConfig(carry_context=False, retry_prompt_mode="same")
+        config = ArchitectConfig(
+            carry_context=False,
+            retry_prompt_mode="same",
+            integrity=False,
+        )
         resolved = config.resolve(tmp_path)
         assert resolved.carry_context is False
         assert resolved.retry_prompt_mode == "same"
+        assert resolved.integrity is False
 
     def test_new_fields_load_from_toml(self, tmp_path) -> None:
         """Should load carry_context and retry_prompt_mode from architect.toml."""
         (tmp_path / "architect.toml").write_text(
-            '[architect]\ncarry_context = false\nretry_prompt_mode = "same"\n',
+            '[architect]\ncarry_context = false\nretry_prompt_mode = "same"\nintegrity = false\n',
             encoding="utf-8",
         )
         config = load_config(tmp_path)
         assert config.carry_context is False
         assert config.retry_prompt_mode == "same"
+        assert config.integrity is False
 
 
 # ---------------------------------------------------------------------------
@@ -298,10 +305,14 @@ class TestWriteConfig:
 
     def test_multiple_values(self, tmp_path) -> None:
         """Should write multiple values in one call."""
-        write_config(tmp_path, {"max_retries": 7, "carry_context": False})
+        write_config(
+            tmp_path,
+            {"max_retries": 7, "carry_context": False, "integrity": False},
+        )
         config = load_config(tmp_path)
         assert config.max_retries == 7
         assert config.carry_context is False
+        assert config.integrity is False
 
     def test_section_header_present(self, tmp_path) -> None:
         """Written file should have [architect] section header."""

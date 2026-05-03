@@ -638,3 +638,83 @@ class TestForwardEnvVars:
         for call in captured_calls:
             assert call[0] == "tmux"
             assert "set-environment" in call
+
+
+class TestLaunchInTmuxSinglePane:
+    """Tests for ``launch_in_tmux`` single-pane mode.
+
+    When the Textual TUI is active, wrapping the run in tmux is
+    useful purely for the detach/reattach flow — the side-panel
+    dashboard would just fight with the TUI for screen space. These
+    tests make sure ``single_pane=True`` really skips the split.
+    """
+
+    def test_single_pane_mode_skips_split_window(self, tmp_path: Path) -> None:
+        """When ``single_pane=True``, no ``tmux split-window`` call is made."""
+        from unittest.mock import MagicMock, patch
+
+        from the_architect.core.tmux import launch_in_tmux
+
+        captured: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+            captured.append(list(cmd))
+            result = MagicMock()
+            result.returncode = 0
+            result.stderr = b""
+            return result
+
+        with (
+            patch("the_architect.core.tmux.subprocess.run", side_effect=fake_run),
+            patch("the_architect.core.tmux._get_portable_shell", return_value="/bin/bash"),
+            patch("the_architect.core.tmux.attach_session") as mock_attach,
+        ):
+            launch_in_tmux(
+                "architect-test",
+                tmp_path,
+                ["architect"],
+                single_pane=True,
+            )
+
+        # No split-window call should appear in the captured command list.
+        split_calls = [c for c in captured if "split-window" in c]
+        assert split_calls == []
+        # The new-session call is still present — we still want the
+        # tmux wrapper, just without the split.
+        new_session_calls = [c for c in captured if "new-session" in c]
+        assert len(new_session_calls) == 1
+        # attach_session was called at the end like the normal path.
+        mock_attach.assert_called_once_with("architect-test")
+
+    def test_split_pane_mode_still_splits(self, tmp_path: Path) -> None:
+        """Default (``single_pane=False``) behaviour is unchanged —
+        regression guard so the dashboard still shows up when the TUI
+        is off.
+        """
+        from unittest.mock import MagicMock, patch
+
+        from the_architect.core.tmux import launch_in_tmux
+
+        captured: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+            captured.append(list(cmd))
+            result = MagicMock()
+            result.returncode = 0
+            result.stderr = b""
+            return result
+
+        with (
+            patch("the_architect.core.tmux.subprocess.run", side_effect=fake_run),
+            patch("the_architect.core.tmux._get_portable_shell", return_value="/bin/bash"),
+            patch("the_architect.core.tmux.attach_session"),
+        ):
+            launch_in_tmux(
+                "architect-test",
+                tmp_path,
+                ["architect"],
+                # single_pane defaults to False — keep the dashboard.
+            )
+
+        split_calls = [c for c in captured if "split-window" in c]
+        assert len(split_calls) == 1

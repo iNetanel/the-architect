@@ -199,6 +199,8 @@ def discover_tasks(tasks_dir: Path | str) -> list[Task]:
     pattern = re.compile(r"^[TRS](\d+)_.+\.md$")
 
     for entry in tasks_dir.iterdir():
+        if entry.name.startswith("architect_eval_"):
+            continue
         if entry.is_file() and entry.suffix == ".md":
             match = pattern.match(entry.name)
             if match:

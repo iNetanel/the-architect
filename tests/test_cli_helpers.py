@@ -311,6 +311,64 @@ class TestSpinANSI:
             assert has_spinner and has_label
 
 
+class TestExecutionStartupStatus:
+    """Tests for the restored main-pane startup spinner behavior."""
+
+    def test_task_start_uses_live_spinner_and_clears_on_first_output(self, tmp_path: Path) -> None:
+        from the_architect.cli import _run_tasks_raw
+        from the_architect.config import ArchitectConfig
+
+        task = Task(
+            name="T01_test",
+            prefix="T01",
+            number=1,
+            path=tmp_path / "tasks" / "T01_test.md",
+            title="Test task",
+            status=TaskStatus.PENDING,
+        )
+        task.path.parent.mkdir(parents=True, exist_ok=True)
+        task.path.write_text("# T01\n", encoding="utf-8")
+
+        config = ArchitectConfig().resolve(tmp_path)
+
+        async def fake_run_all(*args, **kwargs):
+            on_task_start = kwargs["on_task_start"]
+            on_first_output = kwargs["on_first_output"]
+            on_task_done = kwargs["on_task_done"]
+            on_task_start(task)
+            on_first_output()
+            on_task_done(
+                type(
+                    "Result",
+                    (),
+                    {
+                        "prefix": "T01",
+                        "status": "done",
+                        "outcome_summary": "Downstream impact: none",
+                        "duration_seconds": 1.0,
+                        "tokens": type("Tokens", (), {"total": 0})(),
+                    },
+                )()
+            )
+            return True
+
+        with (
+            patch("the_architect.cli._ansi_supported", return_value=True),
+            patch("the_architect.cli.run_all", side_effect=fake_run_all),
+            patch("the_architect.cli.console.print"),
+            patch("sys.stdout.write") as mock_write,
+            patch("sys.stdout.flush"),
+        ):
+            import asyncio
+
+            asyncio.run(_run_tasks_raw(tmp_path, config, [task]))
+
+        writes = [call.args[0] for call in mock_write.call_args_list]
+        assert any("starting T01" in text for text in writes)
+        assert any("████" in text or "░░" in text for text in writes)
+        assert any("\r\033[2K" in text for text in writes)
+
+
 class TestMaybeKillOwnTmuxSession:
     """Tests for _maybe_kill_own_tmux_session tmux cleanup."""
 

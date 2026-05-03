@@ -157,6 +157,9 @@ def read_context_directory(
         if not path.is_file() or path.suffix.lower() not in TEXT_EXTENSIONS:
             continue
 
+        if path.name.startswith("architect_eval_"):
+            continue
+
         # Skip symlinks that resolve outside the directory
         if path.is_symlink():
             try:

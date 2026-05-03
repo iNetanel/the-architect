@@ -132,6 +132,20 @@ class TestMoreHelperFunctions:
 
         filtered = _task_results_needing_reassessment(results)
         assert [result.prefix for result in filtered] == ["T01"]
+
+    def test_result_needs_reassessment_only_for_done_with_explicit_impact(self) -> None:
+        from the_architect.cli import _result_needs_reassessment
+
+        assert _result_needs_reassessment(
+            TaskResult(prefix="T01", status="done", outcome_summary="Downstream impact: possible")
+        )
+        assert not _result_needs_reassessment(
+            TaskResult(prefix="T02", status="done", outcome_summary="Downstream impact: none")
+        )
+        assert not _result_needs_reassessment(
+            TaskResult(prefix="T03", status="failed", outcome_summary="Downstream impact: possible")
+        )
+
         import the_architect.cli as cli_mod
 
         with (
@@ -2839,6 +2853,9 @@ class TestConfigCommandDisplay:
         assert "retrospective_rounds" in result.output
         assert "carry_context" in result.output
         assert "free_mode" in result.output
+        assert "persistent" in result.output
+        assert "token_budget_per_hour" in result.output
+        assert "integrity" in result.output
 
     def test_config_with_toml_shows_path(self, tmp_path: Path) -> None:
         """Should show config file path when architect.toml exists."""

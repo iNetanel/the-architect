@@ -216,8 +216,11 @@ Automatically rotates through free OpenRouter models when rate limits hit — mi
 ### Build Tracking
 Every agent operation — reads, writes, renames, test runs — increments the build counter. Full traceability of effort across every session, not just version releases.
 
-### Live tmux Dashboard
-Split-pane terminal dashboard shows live agent output, task progress, circuit breaker state, token usage, and build number — all updating in real time.
+### Textual TUI (default on TTY)
+Rich Textual-based UI with tabbed execution viewport (Output / Events / Details), animated wait screens for planning and retrospective review, and dedicated screens for `list`, `status`, `logs`, `circuit`, `monitor`, and `config`. The TUI is the default whenever stdout is a terminal. Opt out with `--no-tui`, `NO_COLOR=1`, `TERM=dumb`, `--headless`, or by piping stdout to a file.
+
+### Live tmux Dashboard (non-TUI fallback)
+When the TUI is disabled, a split-pane tmux dashboard shows live agent output, task progress, circuit breaker state, token usage, and build number — all updating in real time.
 
 ---
 
@@ -457,9 +460,49 @@ token_budget_per_hour = 0            # 0 = unlimited
 
 ---
 
-## Live Dashboard (tmux)
+## TUI (default)
 
-When tmux is installed, The Architect automatically opens a split-pane session:
+When stdout is a TTY and colour is supported, `architect` opens a Textual TUI in the current terminal. The TUI owns the screen from mode selection through planning, execution, retrospective review, and reassessment — no separate tmux pane, no orphaned spinners.
+
+Screens and what they show:
+
+- **Execution** — tabbed viewport
+  - **Output** — provider stream, task-start banners, attempt lines, done/failed markers
+  - **Events** — `task_start`, `attempt_start`, `model_switched`, `circuit_state_change`, `cooldown_start`/`_end`, `replan_start`/`_end`, `task_done`, `task_failed`
+  - **Details** — current task, phase, attempt, model, tokens
+- **Wait screen overlay** — animated spinner, title, detail block, log tail. Pushed onto the running app for planning, retrospective rounds, and between-task reassessment.
+- **Mode selection / Resume** — free tier, persistent, integrity defense, token budget.
+- **Inspection** — `architect list --tui`, `architect status --tui`, `architect logs --tui`, `architect circuit --tui`, `architect monitor --tui`, `architect config --tui`.
+
+Key bindings inside the execution screen: `o` / `e` / `d` switch tabs, `q` or `Ctrl+C` quit.
+
+Opt out of the TUI when you need plain output:
+
+```bash
+architect --no-tui               # explicit opt-out
+NO_COLOR=1 architect             # globally honour NO_COLOR
+TERM=dumb architect              # minimal-terminal environments
+architect --headless             # unattended runs (CI, cron)
+architect > run.log 2>&1         # piped / redirected stdout
+```
+
+### Surviving SSH disconnect
+
+When the TUI is the default, The Architect no longer spawns its own tmux session. If you need the run to survive a closed terminal or SSH disconnect, wrap it in your own tmux/screen:
+
+```bash
+tmux new -s arch 'architect'
+# later, from any terminal:
+tmux attach -t arch
+```
+
+The `architect` process still writes live state to `.architect/monitor_state.json`, so `architect monitor --tui` (or the classic `architect monitor` tmux reattach, when run under `--no-tui`) works for reconnecting read-only.
+
+---
+
+## Live Dashboard (tmux, non-TUI mode)
+
+When the TUI is disabled (`--no-tui`, `NO_COLOR=1`, piped stdout, etc.) and tmux is installed, The Architect falls back to the classic split-pane session:
 
 ```text
 +-------------------------------------+---------------------------------+

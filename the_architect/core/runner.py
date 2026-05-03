@@ -7,8 +7,10 @@ import datetime
 import os
 import re
 import shutil
+import signal
 import sys
 import textwrap
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -30,6 +32,73 @@ _OUTCOME_FIELD_LABELS = {
     "verification": "Verification",
     "impact": "Impact",
 }
+
+
+class StreamRenderer:
+    """Abstract renderer for provider stream output."""
+
+    def write_line(self, line: str) -> None:
+        """Render a single provider output line."""
+
+    def set_footer(self, text: str) -> None:
+        """Update footer/status text if supported."""
+
+    def clear_footer(self) -> None:
+        """Clear footer/status text if supported."""
+
+    def close(self) -> None:
+        """Release renderer resources."""
+
+
+class PlainStreamRenderer(StreamRenderer):
+    """Current direct-to-stdout streaming behavior."""
+
+    def write_line(self, line: str) -> None:
+        _write_stream_line(line)
+
+    def set_footer(self, text: str) -> None:
+        return
+
+    def clear_footer(self) -> None:
+        return
+
+    def close(self) -> None:
+        return
+
+
+class ManagedExecutionRenderer(StreamRenderer):
+    """Compatibility shim — currently an alias for :class:`PlainStreamRenderer`.
+
+    An earlier experiment rendered provider output inside an alternate-screen
+    surface with a live footer, but it proved visually unstable (blinking,
+    footer/output mixing, animation stalls under streaming load).  Doing that
+    correctly requires a real TUI toolkit (``prompt_toolkit``, ``Textual``,
+    or ``rich.Live``), which is a larger change.  Until that work lands, the
+    managed renderer simply behaves like the plain streaming renderer so
+    execution output scrolls naturally with no broken UI surface.
+    """
+
+    def write_line(self, line: str) -> None:
+        _write_stream_line(line)
+
+    def set_footer(self, text: str) -> None:
+        return
+
+    def clear_footer(self) -> None:
+        return
+
+    def close(self) -> None:
+        return
+
+
+def _set_renderer_footer(renderer: StreamRenderer | None, text: str) -> None:
+    """No-op until a real TUI footer is implemented."""
+    return
+
+
+def _footer_text(label: str, status: str) -> str:
+    """Build footer text with stable label and dynamic status (unused today)."""
+    return f"{label} | {status}"
 
 
 def _stream_width() -> int | None:
@@ -606,6 +675,88 @@ class StreamResult(BaseModel):
     )
 
 
+# ---------------------------------------------------------------------------
+# Live subprocess registry (shutdown aid)
+# ---------------------------------------------------------------------------
+#
+# Every call to :func:`stream_provider` registers its child subprocess
+# here for the duration of the run. When the TUI is torn down (user
+# hit Ctrl+C, app exited), the outer runner calls
+# :func:`kill_active_subprocesses` to terminate anything the worker
+# thread left behind. Without this registry, a daemon worker thread
+# abandoned by `App.run()` returning would leave the opencode / claude
+# subprocess running in the background — the exact symptom issue 2
+# was reporting.
+
+_ACTIVE_PROCS: set[asyncio.subprocess.Process] = set()
+_ACTIVE_PROCS_LOCK = threading.Lock()
+
+
+def _register_process(proc: asyncio.subprocess.Process) -> None:
+    with _ACTIVE_PROCS_LOCK:
+        _ACTIVE_PROCS.add(proc)
+
+
+def _unregister_process(proc: asyncio.subprocess.Process) -> None:
+    with _ACTIVE_PROCS_LOCK:
+        _ACTIVE_PROCS.discard(proc)
+
+
+def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
+    """Kill ``proc`` and its process group (best-effort, cross-platform).
+
+    Uses ``SIGKILL`` (Unix) / forceful ``TerminateProcess`` (Windows
+    via ``proc.kill``) rather than ``SIGTERM`` because this function
+    is only called from shutdown paths — the user has already hit
+    Ctrl+C or pressed "Exit" and expects the backend to stop *now*,
+    not after the provider decides to flush its buffers. The few
+    seconds that SIGTERM saved when everything was healthy weren't
+    worth the "Ctrl+C doesn't actually kill opencode" bug it caused
+    when the provider was mid-long-running tool call.
+
+    Unix: the process was spawned with ``start_new_session=True``,
+    so ``os.killpg`` terminates the whole session including any
+    grandchildren (npm → node → opencode helpers). Windows: fall
+    back to ``proc.kill`` which forcefully terminates the single
+    process (Windows job-object handling is a larger fix).
+    """
+    if proc.returncode is not None:
+        return
+    # Try process group first on POSIX so we also kill helper
+    # processes the provider spawned (sandboxes, editors, etc.).
+    if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+        try:
+            pgid = os.getpgid(proc.pid)
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        except Exception:
+            pass
+    # Always call proc.kill as a backstop (also covers Windows and
+    # the rare case where os.killpg failed but the process itself
+    # is still reachable via its direct pid).
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        pass
+    except Exception:
+        pass
+
+
+def kill_active_subprocesses() -> int:
+    """Terminate every subprocess currently tracked by the runner.
+
+    Called from the TUI shutdown path so that pressing Ctrl+C in the
+    Textual app really does stop the backend provider, not just hide
+    the UI. Returns the number of processes it attempted to kill.
+    """
+    with _ACTIVE_PROCS_LOCK:
+        procs = list(_ACTIVE_PROCS)
+    for proc in procs:
+        _kill_process_tree(proc)
+    return len(procs)
+
+
 async def stream_provider(
     instruction: str,
     project_dir: Path,
@@ -614,6 +765,8 @@ async def stream_provider(
     agent_override: str | None = None,
     log_path: Path | None = None,
     config_override: Path | None = None,
+    on_first_output: Callable[[], None] | None = None,
+    renderer: StreamRenderer | None = None,
 ) -> StreamResult:
     """Run any supported AI CLI provider, parse output, and render to terminal.
 
@@ -688,8 +841,29 @@ async def stream_provider(
     cooldown_until: int = 0  # Unix timestamp from rate_limit_event.resetsAt (0 = not set)
     process: asyncio.subprocess.Process | None = None
     exit_code: int = -1
+    first_output_fired: bool = False
+
+    def _fire_first_output() -> None:
+        """Fire the on_first_output callback exactly once, swallowing errors."""
+        nonlocal first_output_fired
+        if first_output_fired or on_first_output is None:
+            return
+        first_output_fired = True
+        try:
+            on_first_output()
+        except Exception as exc:
+            logger.debug(f"on_first_output callback raised: {exc!r}")
 
     try:
+        render = renderer or PlainStreamRenderer()
+        # Spawn in a new session on POSIX so we can kill the whole
+        # process group (opencode / claude → its own children)
+        # cleanly when the user hits Ctrl+C. On Windows,
+        # ``start_new_session`` isn't supported by asyncio, so we
+        # just omit it and rely on ``proc.kill()`` in shutdown.
+        _spawn_kwargs: dict[str, Any] = {}
+        if os.name == "posix":
+            _spawn_kwargs["start_new_session"] = True
         process = await asyncio.create_subprocess_exec(
             *cmd,
             env=env,
@@ -698,7 +872,9 @@ async def stream_provider(
             stdout=asyncio.subprocess.PIPE,
             stderr=None,
             limit=_SUBPROCESS_READ_LIMIT,
+            **_spawn_kwargs,
         )
+        _register_process(process)
 
         if process.stdout is None:
             raise RuntimeError(f"Failed to capture {provider.display_name} stdout")
@@ -748,9 +924,14 @@ async def stream_provider(
                         if parsed.event_type in ("text", "assistant") and parsed.display_lines:
                             accumulated_text_parts.append("\n".join(parsed.display_lines))
 
-                        # Render display lines to terminal
+                        # Render display lines to terminal.  Fire the
+                        # on_first_output callback the first time we are
+                        # about to write user-visible output so the spinner
+                        # disappears exactly when real content starts.
+                        if parsed.display_lines:
+                            _fire_first_output()
                         for dl in parsed.display_lines:
-                            _write_stream_line(dl)
+                            render.write_line(dl)
 
                         # Rate-limit / model-not-found detection.
                         # Also capture resetsAt from rate_limit_event for precise cooldown timing.
@@ -767,7 +948,8 @@ async def stream_provider(
                     else:
                         # Provider returned None → print raw line as-is
                         if line.strip():
-                            _write_stream_line(line)
+                            _fire_first_output()
+                            render.write_line(line)
 
             except asyncio.CancelledError:
                 pass
@@ -796,6 +978,17 @@ async def stream_provider(
 
     except FileNotFoundError:
         raise
+    except asyncio.CancelledError:
+        # Propagated when the caller (or the TUI shutdown path) cancels
+        # the enclosing task. Kill the subprocess before re-raising so
+        # we don't leak a running provider into the background.
+        if process is not None and process.returncode is None:
+            _kill_process_tree(process)
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5.0)
+            except Exception:
+                pass
+        raise
     except Exception as exc:
         logger.error(f"Failed to run {provider.display_name} subprocess: {exc!r}")
         exit_code = -1
@@ -806,6 +999,25 @@ async def stream_provider(
                 await process.wait()
             except Exception:
                 pass
+    finally:
+        # Always release the subprocess registration. If the process
+        # is still alive (e.g. the user hit Ctrl+C and the outer
+        # shutdown path is racing with this one), terminate it — we
+        # must never return to the caller with a live provider still
+        # running.
+        if process is not None:
+            if process.returncode is None:
+                _kill_process_tree(process)
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5.0)
+                except Exception:
+                    pass
+            _unregister_process(process)
+
+    try:
+        render.close()
+    except Exception:
+        pass
 
     return StreamResult(
         exit_code=exit_code,
@@ -1647,6 +1859,45 @@ def build_instruction(
         "Do not `cd` above this directory. All work must stay within the project root."
     )
     lines.append("")
+    if config.integrity:
+        lines.append("=== FILE INTEGRITY PROTOCOL ===")
+        lines.append(
+            "Before modifying any existing file, create a same-directory snapshot named "
+            "architect_eval_<original_filename>. This is mandatory for existing files and "
+            "is how you protect against truncated mid-write corruption."
+        )
+        lines.append("")
+        lines.append("Follow this protocol exactly:")
+        lines.append(
+            "1. Before editing an existing file, copy it to architect_eval_<filename> in the "
+            "same directory. Do not create snapshots for brand-new files."
+        )
+        lines.append(
+            "2. Make your change to the original file normally. Never create snapshots for "
+            "architect_eval_* files themselves."
+        )
+        lines.append(
+            "3. Validate the rewritten file against the snapshot before considering the edit "
+            "complete. Check for obvious truncation, incomplete endings, missing major sections, "
+            "and any large unexpected size shrinkage. Size is a warning signal, "
+            "not an absolute rule."
+        )
+        lines.append(
+            "4. If validation passes, delete the architect_eval_* snapshot immediately. A deleted "
+            "snapshot means the file was verified clean."
+        )
+        lines.append(
+            "5. If validation fails, restore from the snapshot, diagnose the problem, retry the "
+            "write, and only delete the snapshot after a clean validation."
+        )
+        lines.append("")
+        lines.append(
+            "Never leave architect_eval_* files behind after a successful task. Any leftover "
+            "snapshot will be treated by The Architect as a corruption signal during reassessment "
+            "and retrospective review."
+        )
+        lines.append("=== END FILE INTEGRITY PROTOCOL ===")
+        lines.append("")
     # Point to tasks/INSTRUCTIONS.md if it exists — The Architect's master context file
     instructions_md = config.progress_file.parent / "tasks" / "INSTRUCTIONS.md"
     if instructions_md.exists():
@@ -1840,6 +2091,8 @@ async def run_task_once(
     model_override: str | None = None,
     architect_md_content: str = "",
     provider: ArchitectProvider | None = None,
+    on_first_output: Callable[[], None] | None = None,
+    renderer: StreamRenderer | None = None,
 ) -> TaskResult:
     """Run one attempt of a task.
 
@@ -1913,6 +2166,14 @@ async def run_task_once(
         f"model={model or 'default'} log={log_path.name}"
     )
 
+    _set_renderer_footer(
+        renderer,
+        _footer_text(
+            f"{task.prefix} {task.title or task.name}",
+            f"attempt {attempt}/{config.max_retries} | model {model or 'default'}",
+        ),
+    )
+
     start_time = time.monotonic()
 
     try:
@@ -1923,6 +2184,8 @@ async def run_task_once(
             model_override=model,
             agent_override=config.execution_agent or None,
             log_path=log_path,
+            on_first_output=on_first_output,
+            renderer=renderer,
         )
 
         duration = time.monotonic() - start_time
@@ -2042,6 +2305,8 @@ async def run_task(
     circuit_breaker: object | None = None,
     on_circuit_event: Callable[[str, dict[str, Any]], None] | None = None,
     provider: ArchitectProvider | None = None,
+    on_first_output: Callable[[], None] | None = None,
+    renderer: StreamRenderer | None = None,
 ) -> TaskResult:
     """Run a task with automatic retries, model fallbacks, and circuit breaking.
 
@@ -2165,6 +2430,8 @@ async def run_task(
             # Normal mode: use retry_model_2/3
             model_override = retry_models.get(attempt)
 
+        model_for_attempt: str | None = None
+
         if on_attempt_start:
             try:
                 model_for_attempt = select_model(attempt, config, model_override)
@@ -2185,6 +2452,14 @@ async def run_task(
                 on_attempt_start(attempt, model_for_attempt)
             except Exception:
                 pass  # Callback failure must not stop the task
+        _set_renderer_footer(
+            renderer,
+            _footer_text(
+                f"{task.prefix} {task.title or task.name}",
+                "attempt "
+                f"{attempt}/{config.max_retries} | starting {model_for_attempt or 'default'}",
+            ),
+        )
 
         try:
             result = await run_task_once(
@@ -2194,6 +2469,7 @@ async def run_task(
                 model_override=model_override,
                 architect_md_content=architect_md_content,
                 provider=provider,
+                on_first_output=on_first_output,
             )
         except Exception as exc:
             # run_task_once should never raise (it has its own catch-all),
@@ -2277,6 +2553,13 @@ async def run_task(
                             )
                         except Exception:
                             pass
+                    _set_renderer_footer(
+                        renderer,
+                        _footer_text(
+                            f"{task.prefix} {task.title or task.name}",
+                            f"cooldown wait | attempt {attempt}/{config.max_retries}",
+                        ),
+                    )
                     try:
                         await cb.handle_cooldown_wait(task.prefix)
                     except Exception as cw_exc:
@@ -2286,6 +2569,13 @@ async def run_task(
                             on_circuit_event("cooldown_end", {})
                         except Exception:
                             pass
+                    _set_renderer_footer(
+                        renderer,
+                        _footer_text(
+                            f"{task.prefix} {task.title or task.name}",
+                            f"cooldown ended | attempt {attempt}/{config.max_retries}",
+                        ),
+                    )
                     # Decrement attempt so this slot is not consumed
                     attempt -= 1
 
@@ -2301,6 +2591,10 @@ async def run_task(
                             on_circuit_event("replan_start", {"task_id": task.prefix})
                         except Exception:
                             pass
+                    _set_renderer_footer(
+                        renderer,
+                        _footer_text(f"{task.prefix} {task.title or task.name}", "replanning task"),
+                    )
                     try:
                         await cb.attempt_replan(
                             task_id=task.prefix,
@@ -2316,6 +2610,10 @@ async def run_task(
                             on_circuit_event("replan_end", {"task_id": task.prefix})
                         except Exception:
                             pass
+                    _set_renderer_footer(
+                        renderer,
+                        _footer_text(f"{task.prefix} {task.title or task.name}", "replan complete"),
+                    )
             except Exception as cb_exc:
                 # Circuit breaker errors must NEVER crash the run
                 logger.error(
@@ -2366,6 +2664,13 @@ async def run_task(
                     on_model_switched(old_model, new_model)
                 except Exception:
                     pass  # Callback failure must not stop the task
+            _set_renderer_footer(
+                renderer,
+                _footer_text(
+                    f"{task.prefix} {task.title or task.name}",
+                    f"switching model | now {new_model or 'default'}",
+                ),
+            )
             # Distinguish rotation reason for logging
             from the_architect.core.free_models import is_model_not_found_error
 
@@ -2643,6 +2948,8 @@ async def run_all(
     on_model_switched: Callable[[str, str | None], None] | None = None,
     on_circuit_event: Callable[[str, dict[str, Any]], None] | None = None,
     provider: ArchitectProvider | None = None,
+    on_first_output: Callable[[], None] | None = None,
+    renderer: StreamRenderer | None = None,
 ) -> bool:
     """Run all pending tasks in order.
 
@@ -2665,6 +2972,9 @@ async def run_all(
         on_task_pause: Called with the pause duration (seconds) before sleeping between tasks.
         free_rotator: Optional FreeModelRotator for --free mode.
         on_model_switched: Called when --free mode rotates models with (old_model, new_model).
+        on_first_output: Called (at most once per task) the first time the
+            provider produces a user-visible line of output.  Used by the CLI
+            to stop the startup spinner the moment real output begins.
 
     Returns:
         True if all tasks completed successfully.
@@ -2708,6 +3018,8 @@ async def run_all(
             circuit_breaker=circuit_breaker,
             on_circuit_event=on_circuit_event,
             provider=provider,
+            on_first_output=on_first_output,
+            renderer=renderer,
         )
     finally:
         release_lock(project_dir)
@@ -2727,6 +3039,8 @@ async def _run_all_inner(
     circuit_breaker: object | None = None,
     on_circuit_event: Callable[[str, dict[str, Any]], None] | None = None,
     provider: ArchitectProvider | None = None,
+    on_first_output: Callable[[], None] | None = None,
+    renderer: StreamRenderer | None = None,
 ) -> bool:
     """Inner run_all implementation (after lock acquisition)."""
     # Track which tasks we actually attempted (skipping already-done ones).
@@ -2769,6 +3083,8 @@ async def _run_all_inner(
                 circuit_breaker=circuit_breaker,
                 on_circuit_event=on_circuit_event,
                 provider=provider,
+                on_first_output=on_first_output,
+                renderer=renderer,
             )
         except Exception as exc:
             # run_task should never raise (it has its own catch-all), but if

@@ -689,14 +689,15 @@ class TestClaudeCodeProviderCommandBuilding:
         assert "--model" in cmd
         assert "claude-sonnet-4-6" in cmd
 
-    def test_command_building_ignores_agent_override(self, provider):
-        """Test that agent override is ignored."""
+    def test_command_building_with_agent_override(self, provider):
+        """Test that agent override is passed via --agent flag."""
         cmd = provider.build_command("test", agent_override="backend")
-        assert "backend" not in cmd
+        assert "--agent" in cmd
+        assert "backend" in cmd
 
-    def test_supports_agents_returns_false(self, provider):
-        """Test that supports_agents returns False."""
-        assert provider.supports_agents() is False
+    def test_supports_agents_returns_true(self, provider):
+        """Test that supports_agents returns True (Claude Code supports --agent)."""
+        assert provider.supports_agents() is True
 
     def test_supports_json_output_returns_false(self, provider):
         """Test that supports_json_output returns False."""

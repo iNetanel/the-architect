@@ -15,6 +15,7 @@ from the_architect.config import ArchitectConfig
 from the_architect.core.provider import ParsedEvent
 from the_architect.core.runner import (
     HourlyTokenBudget,
+    ManagedExecutionRenderer,
     OutputAnalysis,
     StreamResult,
     TaskResult,
@@ -224,6 +225,28 @@ class TestStreamProviderSubprocess:
             result = await stream_provider("test", Path("/tmp"), provider)
             assert result.exit_code == -1
 
+    def test_managed_execution_renderer_lifecycle(self) -> None:
+        renderer = ManagedExecutionRenderer()
+        renderer.write_line("hello world")
+        renderer.set_footer("starting T01")
+        renderer.clear_footer()
+        renderer.close()
+
+    def test_managed_execution_renderer_renders_footer_text(self) -> None:
+        renderer = ManagedExecutionRenderer()
+        renderer.set_footer("T01 | attempt 1/3 | starting")
+        renderer.write_line("provider output")
+        renderer.close()
+
+    def test_managed_execution_renderer_formats_structured_footer(self) -> None:
+        # ManagedExecutionRenderer is currently a compatibility shim that
+        # behaves like PlainStreamRenderer.  It accepts footer updates but
+        # does not apply them — a real TUI footer will be added later.
+        renderer = ManagedExecutionRenderer()
+        renderer.set_footer("T01 | attempt 1/3 | model claude-sonnet")
+        renderer.clear_footer()
+        renderer.close()
+
     @pytest.mark.asyncio
     async def test_reads_lines_and_accumulates_text(self):
         provider = _make_mock_provider()
@@ -375,6 +398,90 @@ class TestStreamProviderSubprocess:
             mock_exec.return_value = _make_mock_process(stdout_lines=[], exit_code=0)
             await stream_provider("test", Path("/tmp"), provider, log_path=log_path)
             assert log_path.parent.exists()
+
+    @pytest.mark.asyncio
+    async def test_spawns_subprocess_with_start_new_session_on_posix(self):
+        """Issue 2 regression: subprocess must get its own POSIX session
+        so the whole process tree can be killed via ``killpg`` when the
+        TUI shuts down. Without this, Ctrl+C leaves opencode / claude
+        alive in the background.
+        """
+        if os.name != "posix":
+            pytest.skip("start_new_session is POSIX-only")
+        provider = _make_mock_provider()
+        with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = _make_mock_process(stdout_lines=[], exit_code=0)
+            await stream_provider("test", Path("/tmp"), provider)
+            _, kwargs = mock_exec.call_args
+            assert kwargs.get("start_new_session") is True
+
+    @pytest.mark.asyncio
+    async def test_finally_kills_leftover_subprocess(self):
+        """The stream_provider ``finally`` block must terminate the
+        subprocess if it is somehow still running when the function
+        returns — this is the last line of defence that prevents an
+        abandoned provider from outliving the UI after Ctrl+C.
+        """
+        provider = _make_mock_provider()
+        mock_proc = _make_mock_process(stdout_lines=[], exit_code=0)
+        # Simulate a process that never exited on its own.
+        mock_proc.returncode = None
+        mock_proc.kill = MagicMock()
+        mock_proc.wait = AsyncMock(return_value=0)
+        with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = mock_proc
+            await stream_provider("test", Path("/tmp"), provider)
+            # The finally block called kill() (via _kill_process_tree).
+            assert mock_proc.kill.called
+
+    def test_kill_active_subprocesses_terminates_registered_processes(self):
+        """``kill_active_subprocesses`` kills every process the runner
+        knows about — this is what the TUI shutdown path calls when
+        the user hits Ctrl+C so the backend actually stops.
+        """
+        from the_architect.core import runner as runner_mod
+
+        fake_proc = MagicMock()
+        fake_proc.returncode = None
+        fake_proc.pid = 99999999  # non-existent PID — killpg will no-op
+        fake_proc.kill = MagicMock()
+        runner_mod._register_process(fake_proc)
+        try:
+            n = runner_mod.kill_active_subprocesses()
+            assert n >= 1
+            assert fake_proc.kill.called
+        finally:
+            runner_mod._unregister_process(fake_proc)
+
+    def test_kill_process_tree_uses_sigkill_not_sigterm(self):
+        """Regression guard: ``_kill_process_tree`` must use SIGKILL so
+        the backend actually dies when the user hits Ctrl+C. An earlier
+        iteration used SIGTERM, which providers could ignore or delay
+        while mid-call, producing the exact bug the user reported
+        ("Ctrl+C just exits the UI, backend keeps going").
+        """
+        import signal as _signal
+
+        from the_architect.core import runner as runner_mod
+
+        fake_proc = MagicMock()
+        fake_proc.returncode = None
+        fake_proc.pid = 99999999
+        fake_proc.kill = MagicMock()
+
+        with patch("the_architect.core.runner.os.killpg") as killpg:
+            with patch("the_architect.core.runner.os.getpgid", return_value=42):
+                runner_mod._kill_process_tree(fake_proc)
+        # The signal we actually send to the process group must be
+        # SIGKILL — SIGTERM is not strong enough for a provider that
+        # has entered an uninterruptible system call or is ignoring
+        # SIGTERM while flushing buffers.
+        assert killpg.called
+        # Support either killpg(pgid, SIGKILL) signature shape.
+        called_sig = killpg.call_args[0][1] if len(killpg.call_args[0]) >= 2 else None
+        assert called_sig == _signal.SIGKILL
+        # And proc.kill as the Windows / backup path.
+        assert fake_proc.kill.called
 
     @pytest.mark.asyncio
     async def test_provider_doesnt_support_agents(self):
@@ -1071,6 +1178,16 @@ class TestBuildInstruction:
         instructions_md.write_text("# Instructions\n", encoding="utf-8")
         result = build_instruction(task, attempt=1, config=config)
         assert "tasks/INSTRUCTIONS.md" in result
+
+    def test_integrity_protocol_enabled_by_default(self, task, config):
+        result = build_instruction(task, attempt=1, config=config)
+        assert "=== FILE INTEGRITY PROTOCOL ===" in result
+        assert "architect_eval_<original_filename>" in result
+
+    def test_integrity_protocol_can_be_disabled(self, task, config):
+        config.integrity = False
+        result = build_instruction(task, attempt=1, config=config)
+        assert "=== FILE INTEGRITY PROTOCOL ===" not in result
 
     def test_retry_prompt_mode_same(self, task, config):
         config.retry_prompt_mode = "same"

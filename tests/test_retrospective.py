@@ -112,6 +112,18 @@ class TestRetrospectiveEdgeCases:
         # Should not include .git in the file tree
         assert ".git" not in context
 
+    def test_gather_review_context_reports_eval_snapshots_separately(self, tmp_path: Path) -> None:
+        """Eval snapshots should be hidden from file tree and shown in a warning section."""
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        (src_dir / "app.py").write_text("print('ok')\n", encoding="utf-8")
+        (src_dir / "architect_eval_app.py").write_text("print('backup')\n", encoding="utf-8")
+
+        context = _gather_review_context(tmp_path, "test goal")
+
+        assert "## Leftover Eval Snapshot Files" in context
+        assert "architect_eval_app.py" in context
+
     def test_symlink_safety_with_valueerror(self, tmp_path: Path) -> None:
         """Should handle ValueError when resolving symlink (lines 181-185)."""
         # Create a symlink that will cause resolve() to raise ValueError
@@ -265,6 +277,46 @@ class TestRetrospectiveEdgeCases:
             )
 
         assert result.tasks_updated == ["T02"]
+
+    @pytest.mark.asyncio
+    async def test_run_task_reassessment_runs_for_eval_snapshot_without_downstream_impact(
+        self, tmp_path: Path, config: ArchitectConfig
+    ) -> None:
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        task_file = tasks_dir / "T02_followup.md"
+        task_file.write_text("# T02 - Follow up\noriginal\n", encoding="utf-8")
+        (tmp_path / "PROGRESS.md").write_text(
+            "**Tasks completed:** 1\n"
+            "**Next task to run:** T02\n"
+            "## Task Log\n"
+            "| Task | Title | Status | Completed |\n"
+            "|------|-------|--------|-----------|\n"
+            "| T01 | Done thing | Done | 2026-04-29 |\n"
+            "| T02 | Follow up | Pending | — |\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "architect_eval_problem.py").write_text("backup\n", encoding="utf-8")
+        (tmp_path / "problem.py").write_text("current\n", encoding="utf-8")
+
+        provider = MagicMock()
+
+        async def fake_stream(**kwargs: object) -> StreamResult:
+            task_file.write_text("# T02 - Follow up\nupdated\n", encoding="utf-8")
+            return StreamResult(exit_code=0, tokens=TokenUsage())
+
+        with patch("the_architect.core.retrospective.stream_provider", side_effect=fake_stream):
+            result = await run_task_reassessment(
+                project_dir=tmp_path,
+                provider=provider,
+                config=config,
+                completed_task="T01",
+                outcome_summary="Downstream impact: none",
+                original_goal="test goal",
+            )
+
+        assert result.tasks_updated == ["T02"]
+        provider.ensure_setup.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_run_retrospective_claude_code_provider(
@@ -638,3 +690,93 @@ class TestRetrospectiveCoverage:
                 # PROGRESS.md should have been updated
                 updated_content = progress_file.read_text(encoding="utf-8")
                 assert "| R01 | R01_fix | Pending | — |" in updated_content
+
+
+class TestRendererPassthrough:
+    """TUI callers must be able to forward a ``WaitLogRenderer`` through
+    ``run_retrospective`` and ``run_task_reassessment`` so provider
+    output lands in the wait-screen log tail — otherwise the output
+    is swallowed by Textual's alt-screen and the user sees an empty
+    spinner for the whole review.
+    """
+
+    @pytest.mark.asyncio
+    async def test_retrospective_forwards_renderer(
+        self, tmp_path: Path, config: ArchitectConfig
+    ) -> None:
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tmp_path / "PROGRESS.md").write_text(
+            "**Tasks completed:** 0\n"
+            "**Next task to run:** T01\n"
+            "## Task Log\n"
+            "| Task | Title | Status | Completed |\n"
+            "|------|-------|--------|-----------|\n",
+            encoding="utf-8",
+        )
+
+        provider = MagicMock()
+        provider.supports_agents.return_value = False
+        provider.get_reviewer_prompt.return_value = "reviewer"
+        provider.name = "claude-code"
+        provider.display_name = "Claude Code"
+        renderer = MagicMock()
+
+        captured: dict[str, object] = {}
+
+        async def fake_stream(**kwargs: object) -> StreamResult:
+            captured.update(kwargs)
+            return StreamResult(exit_code=0, tokens=TokenUsage())
+
+        request = RetrospectiveRequest(
+            round_number=1,
+            project_dir=tmp_path,
+            original_goal="test",
+        )
+        with patch("the_architect.core.retrospective.stream_provider", side_effect=fake_stream):
+            await run_retrospective(request, config, provider=provider, renderer=renderer)
+
+        assert captured.get("renderer") is renderer
+
+    @pytest.mark.asyncio
+    async def test_reassessment_forwards_renderer(
+        self, tmp_path: Path, config: ArchitectConfig
+    ) -> None:
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        task_file = tasks_dir / "T02_followup.md"
+        task_file.write_text("# T02\n", encoding="utf-8")
+        (tmp_path / "PROGRESS.md").write_text(
+            "**Tasks completed:** 1\n"
+            "**Next task to run:** T02\n"
+            "## Task Log\n"
+            "| Task | Title | Status | Completed |\n"
+            "|------|-------|--------|-----------|\n"
+            "| T01 | Thing | Done | 2026-04-29 |\n"
+            "| T02 | Follow up | Pending | — |\n",
+            encoding="utf-8",
+        )
+
+        provider = MagicMock()
+        provider.supports_agents.return_value = False
+        provider.name = "claude-code"
+        renderer = MagicMock()
+
+        captured: dict[str, object] = {}
+
+        async def fake_stream(**kwargs: object) -> StreamResult:
+            captured.update(kwargs)
+            return StreamResult(exit_code=0, tokens=TokenUsage())
+
+        with patch("the_architect.core.retrospective.stream_provider", side_effect=fake_stream):
+            await run_task_reassessment(
+                project_dir=tmp_path,
+                provider=provider,
+                config=config,
+                completed_task="T01",
+                outcome_summary="Downstream impact: high",
+                original_goal="test",
+                renderer=renderer,
+            )
+
+        assert captured.get("renderer") is renderer

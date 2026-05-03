@@ -497,7 +497,25 @@ class TestRenderDashboardEdgeCases:
             tasks=[{"id": "T01", "title": "A" * 50, "status": "done", "replanned": False}]
         )
         output = render_dashboard(state, width=20)
-        assert "…" in output
+        assert "T01" in output
+
+    def test_long_task_title_wraps_to_next_line(self) -> None:
+        state = _make_state(
+            tasks=[
+                {
+                    "id": "T01",
+                    "title": "Very long task title that should wrap instead of overflowing rows",
+                    "status": "running",
+                    "replanned": False,
+                },
+                {"id": "T02", "title": "Next task", "status": "pending", "replanned": False},
+            ]
+        )
+        output = render_dashboard(state, width=28)
+        lines = output.splitlines()
+        task_index = next(i for i, line in enumerate(lines) if "T01" in line)
+        assert "T02" not in lines[task_index + 1]
+        assert "Next task" in output
 
     def test_naive_timestamp_no_tzinfo(self) -> None:
         state = _make_state(run_started_at="2026-04-18T10:00:00")
