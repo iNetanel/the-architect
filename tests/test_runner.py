@@ -370,13 +370,18 @@ class TestStreamProviderSubprocess:
             mock_process.stdout.readline = AsyncMock(return_value=b"")
             mock_process.wait = AsyncMock(return_value=-1)
             mock_process.returncode = None
-            mock_process.kill = AsyncMock()
+            mock_process.kill = MagicMock()
             mock_exec.return_value = mock_process
 
-            # Make the reader task raise
-            with patch(
-                "the_architect.core.runner.asyncio.wait_for", side_effect=RuntimeError("boom")
-            ):
+            async def raise_runtime(awaitable: object, timeout: float | None = None) -> object:
+                if asyncio.iscoroutine(awaitable):
+                    awaitable.close()
+                elif isinstance(awaitable, asyncio.Task):
+                    awaitable.cancel()
+                raise RuntimeError("boom")
+
+            # Make the reader wait path raise without leaking the awaitable passed to wait_for.
+            with patch("the_architect.core.runner.asyncio.wait_for", side_effect=raise_runtime):
                 result = await stream_provider("test", Path("/tmp"), provider)
             assert result.exit_code == -1
 

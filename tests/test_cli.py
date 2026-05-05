@@ -14,6 +14,20 @@ from the_architect.core.provider import ProviderNotFoundError
 from the_architect.core.runner import TaskResult, TokenUsage
 from the_architect.core.tasks import Task, TaskStatus
 
+
+def _fake_asyncio_run(*results: object) -> object:
+    """Return a fake asyncio.run that closes coroutine args before returning results."""
+    values = iter(results or (None,))
+
+    def _run(awaitable: object) -> object:
+        close = getattr(awaitable, "close", None)
+        if callable(close):
+            close()
+        return next(values)
+
+    return _run
+
+
 # ---------------------------------------------------------------------------
 # Helper Function Tests
 # ---------------------------------------------------------------------------
@@ -445,7 +459,7 @@ class TestRetryCommand:
             patch("the_architect.core.opencode_provider.OpenCodeProvider") as mock_prov,
             patch("the_architect.cli.setup_logging"),
             patch("the_architect.cli.run_task", return_value=None),
-            patch("the_architect.cli.asyncio.run", return_value=None),
+            patch("the_architect.cli.asyncio.run", side_effect=_fake_asyncio_run(None)),
         ):
             mock_prov.return_value.ensure_setup.return_value = None
             runner = CliRunner()
@@ -1430,11 +1444,14 @@ class TestRunMainExecution:
             summary="No issues found",
         )
 
+        async def _fake_retrospective(*args: object, **kwargs: object) -> RetrospectiveResult:
+            return mock_retro_result
+
         with (
             patch("the_architect.cli.discover_tasks", return_value=[mock_task]),
             patch("the_architect.cli._filter_and_set_status", return_value=[mock_task]),
             patch("the_architect.cli._run_tasks_raw", side_effect=_fake_run_tasks),
-            patch("the_architect.cli.run_retrospective", return_value=mock_retro_result),
+            patch("the_architect.cli.run_retrospective", new=_fake_retrospective),
             patch("the_architect.cli.write_success_md"),
             patch("the_architect.cli.print_success_summary"),
         ):
@@ -2068,13 +2085,16 @@ class TestRunMainRetrospective:
             summary="Found one issue",
         )
 
+        async def _fake_retrospective(*args: object, **kwargs: object) -> RetrospectiveResult:
+            return mock_retro_result
+
         with (
             patch("the_architect.cli.discover_tasks", return_value=[mock_task, mock_r_task]),
             patch(
                 "the_architect.cli._filter_and_set_status", return_value=[mock_task, mock_r_task]
             ),
             patch("the_architect.cli._run_tasks_raw", side_effect=_fake_run_tasks),
-            patch("the_architect.cli.run_retrospective", return_value=mock_retro_result),
+            patch("the_architect.cli.run_retrospective", new=_fake_retrospective),
             patch("the_architect.cli.write_success_md"),
             patch("the_architect.cli.print_success_summary"),
         ):
@@ -2107,11 +2127,14 @@ class TestRunMainRetrospective:
         ) -> tuple[bool, list[TaskResult], float]:
             return (True, [], 1.0)
 
+        async def _fake_retrospective_fail(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("retro failed")
+
         with (
             patch("the_architect.cli.discover_tasks", return_value=[mock_task]),
             patch("the_architect.cli._filter_and_set_status", return_value=[mock_task]),
             patch("the_architect.cli._run_tasks_raw", side_effect=_fake_run_tasks),
-            patch("the_architect.cli.run_retrospective", side_effect=RuntimeError("retro failed")),
+            patch("the_architect.cli.run_retrospective", new=_fake_retrospective_fail),
             patch("the_architect.cli.write_success_md"),
             patch("the_architect.cli.print_success_summary"),
         ):
@@ -2152,7 +2175,7 @@ class TestRetryCommandMore:
             patch("the_architect.core.opencode_provider.OpenCodeProvider") as mock_prov,
             patch("the_architect.cli.setup_logging"),
             patch("the_architect.cli.run_task", return_value=None),
-            patch("the_architect.cli.asyncio.run", return_value=None),
+            patch("the_architect.cli.asyncio.run", side_effect=_fake_asyncio_run(None)),
         ):
             mock_prov.return_value.ensure_setup.return_value = None
             runner = CliRunner()
@@ -2624,7 +2647,10 @@ class TestRunMainNonPreloaded:
             patch("the_architect.cli.write_success_md"),
             patch("the_architect.cli.print_success_summary"),
             patch("the_architect.core.free_models.FreeModelRotator", return_value=mock_rotator),
-            patch("the_architect.cli.asyncio.run", side_effect=[None, (True, [], 1.0)]),
+            patch(
+                "the_architect.cli.asyncio.run",
+                side_effect=_fake_asyncio_run(None, (True, [], 1.0)),
+            ),
         ):
             with pytest.raises(SystemExit) as exc_info:  # noqa: F841
                 _run_main(
@@ -3025,7 +3051,10 @@ class TestRunMainDeeper:
             patch("the_architect.cli.write_success_md"),
             patch("the_architect.cli.print_success_summary"),
             patch("the_architect.core.free_models.FreeModelRotator", return_value=mock_rotator),
-            patch("the_architect.cli.asyncio.run", side_effect=[None, (True, [], 1.0)]),
+            patch(
+                "the_architect.cli.asyncio.run",
+                side_effect=_fake_asyncio_run(None, (True, [], 1.0)),
+            ),
             patch("the_architect.config.write_config", return_value=tmp_path / "architect.toml"),
         ):
             with pytest.raises(SystemExit) as exc_info:  # noqa: F841
@@ -3980,11 +4009,14 @@ class TestRunMainExecutionPaths:
         ) -> tuple[bool, list[TaskResult], float]:
             return (True, [mock_result], 1.0)
 
+        async def _fake_retrospective(*args: object, **kwargs: object) -> object:
+            return mock_retro_result
+
         with (
             patch("the_architect.cli.discover_tasks", return_value=[mock_task]),
             patch("the_architect.cli._filter_and_set_status", return_value=[mock_task]),
             patch("the_architect.cli._run_tasks_raw", side_effect=_fake_run_tasks),
-            patch("the_architect.cli.run_retrospective", return_value=mock_retro_result),
+            patch("the_architect.cli.run_retrospective", new=_fake_retrospective),
             patch("the_architect.cli.write_success_md"),
             patch("the_architect.cli.print_success_summary"),
             patch("the_architect.cli._read_goal_from_instructions", return_value=""),
@@ -4030,11 +4062,14 @@ class TestRunMainExecutionPaths:
         ) -> tuple[bool, list[TaskResult], float]:
             return (True, [mock_result], 1.0)
 
+        async def _fake_retrospective(*args: object, **kwargs: object) -> object:
+            return mock_retro_result
+
         with (
             patch("the_architect.cli.discover_tasks", return_value=[mock_task]),
             patch("the_architect.cli._filter_and_set_status", return_value=[mock_task]),
             patch("the_architect.cli._run_tasks_raw", side_effect=_fake_run_tasks),
-            patch("the_architect.cli.run_retrospective", return_value=mock_retro_result),
+            patch("the_architect.cli.run_retrospective", new=_fake_retrospective),
             patch("the_architect.cli.write_success_md"),
             patch("the_architect.cli.print_success_summary"),
             patch("the_architect.cli._read_goal_from_instructions", return_value=""),
@@ -4075,11 +4110,14 @@ class TestRunMainExecutionPaths:
         ) -> tuple[bool, list[TaskResult], float]:
             return (True, [mock_result], 1.0)
 
+        async def _fake_retrospective_fail(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("retro failed")
+
         with (
             patch("the_architect.cli.discover_tasks", return_value=[mock_task]),
             patch("the_architect.cli._filter_and_set_status", return_value=[mock_task]),
             patch("the_architect.cli._run_tasks_raw", side_effect=_fake_run_tasks),
-            patch("the_architect.cli.run_retrospective", side_effect=RuntimeError("retro failed")),
+            patch("the_architect.cli.run_retrospective", new=_fake_retrospective_fail),
             patch("the_architect.cli.write_success_md"),
             patch("the_architect.cli.print_success_summary"),
             patch("the_architect.cli._read_goal_from_instructions", return_value=""),
@@ -4216,7 +4254,7 @@ class TestRetryCommandBranches:
             patch("the_architect.cli.discover_tasks", return_value=[mock_task]),
             patch("the_architect.cli.setup_logging"),
             patch("the_architect.cli.run_task", return_value=None),
-            patch("the_architect.cli.asyncio.run", return_value=None),
+            patch("the_architect.cli.asyncio.run", side_effect=_fake_asyncio_run(None)),
         ):
             runner = CliRunner()
             result = runner.invoke(main, ["retry", "-t", "T01", "-p", str(tmp_path)])
@@ -4247,7 +4285,7 @@ class TestRetryCommandBranches:
             patch("the_architect.cli.task_is_done", return_value=True),
             patch("the_architect.cli.discover_tasks", return_value=[mock_task]),
             patch("the_architect.cli.setup_logging"),
-            patch("the_architect.cli.asyncio.run"),
+            patch("the_architect.cli.asyncio.run", side_effect=_fake_asyncio_run(None)),
         ):
             runner = CliRunner()
             result = runner.invoke(main, ["retry", "-t", "T01", "-p", str(tmp_path)])  # noqa: F841
@@ -4323,7 +4361,7 @@ N/A
             patch("the_architect.cli.task_is_done", return_value=True),
             patch("the_architect.cli.discover_tasks", return_value=[mock_task]),
             patch("the_architect.cli.setup_logging"),
-            patch("the_architect.cli.asyncio.run"),
+            patch("the_architect.cli.asyncio.run", side_effect=_fake_asyncio_run(None)),
         ):
             runner = CliRunner()
             result = runner.invoke(main, ["retry", "-t", "T01", "-p", str(tmp_path)])  # noqa: F841

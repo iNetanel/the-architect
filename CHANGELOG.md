@@ -20,6 +20,8 @@ Added / Changed / Deprecated / Removed / Fixed / Security.
 
 ### Fixed
 
+- Cleaned up async test mocks that produced unawaited coroutine warnings during CI
+  runs (build 10220).
 - Fixed CI regressions around stale integration task fixtures, Claude Code tool-use
   visibility expectations, and headless TUI `push_and_wait` timing (build 10219).
 
