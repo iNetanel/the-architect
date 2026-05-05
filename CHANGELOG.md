@@ -13,6 +13,22 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ### Changed
 
+- **Existing-task TUI now hides new-goal fields until Replan is selected (build 10210):**
+  - Pending-task runs now start on a dedicated `Run` tab instead of mixing the action choice with
+    always-visible goal/scope inputs.
+  - `Execute existing tasks` keeps the screen focused on execution settings only.
+  - `Replan from a new goal` reveals the scope and goal fields, making the archive-and-replan path
+    explicit without confusing it with the normal execute path.
+
+- **Existing-task execution now uses the main tabbed pre-run screen (build 10209):**
+  - When pending tasks already exist, the TUI now opens the same tabbed setup screen used for a
+    fresh goal instead of the narrow resume-only form.
+  - Users can choose `Execute existing tasks` or `Replan from a new goal` while also changing
+    provider, models/agents, free/persistent mode, integrity, and token budget in the same screen.
+  - Replan from this screen feeds the normal planning flow and keeps the existing archive sequence:
+    the old tasks and `tasks/INSTRUCTIONS.md` are archived by the planner before fresh tasks are
+    written.
+
 - **Execution TUI tabs now separate live output, overall progress, and diagnostics (build 10208):**
   - Renamed `Live Output` to `Live` for the raw provider stream.
   - Replaced the vague `Events` / `Status` split with `Progress` and `Diagnostics`.

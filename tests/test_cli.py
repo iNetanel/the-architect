@@ -1268,6 +1268,74 @@ class TestRunMainExecution:
                 )
             assert exc_info.value.code == 0
 
+    def test_run_main_tui_pending_tasks_uses_tabbed_pre_run(self, tmp_path: Path) -> None:
+        """TUI pending-task flow uses the unified tabbed pre-run screen."""
+        from the_architect.cli import _run_main
+        from the_architect.tui.screens.pre_run_tabbed import PreRunValues
+
+        mock_task = Task(
+            name="T01_test",
+            prefix="T01",
+            number=1,
+            path=tmp_path / "T01_test.md",
+            title="Test task",
+            status=TaskStatus.PENDING,
+        )
+        config = ArchitectConfig()
+        mock_provider = MagicMock()
+        mock_provider.name = "opencode"
+        mock_provider.display_name = "OpenCode"
+        mock_provider.supports_free_tier.return_value = True
+        mock_provider.get_resolved_model.return_value = "model"
+        mock_provider.ensure_setup.return_value = tmp_path
+
+        pre_run_values = PreRunValues(
+            action="execute",
+            provider_name="opencode",
+            execution_agent="backend",
+            persistent=True,
+            integrity=False,
+            token_budget_per_hour=123,
+        )
+
+        async def _fake_run_tasks(
+            *args: object, **kwargs: object
+        ) -> tuple[bool, list[TaskResult], float]:
+            return (True, [], 1.0)
+
+        with (
+            patch("the_architect.cli.discover_tasks", return_value=[mock_task]),
+            patch("the_architect.cli._filter_and_set_status", return_value=[mock_task]),
+            patch("the_architect.cli._tui_mode_enabled", return_value=True),
+            patch("the_architect.cli.detect_available_providers", return_value=[mock_provider]),
+            patch(
+                "the_architect.tui.screens.pre_run_tabbed.run_pre_run_tabbed",
+                return_value=pre_run_values,
+            ) as mock_tabbed,
+            patch("the_architect.cli._prompt_resume_screen") as mock_resume,
+            patch("the_architect.cli._run_tasks_raw", side_effect=_fake_run_tasks),
+            patch("the_architect.cli.write_success_md"),
+            patch("the_architect.cli.print_success_summary"),
+            patch("the_architect.config.write_config", return_value=tmp_path / "architect.toml"),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                _run_main(
+                    project=tmp_path,
+                    plan=False,
+                    headless=False,
+                    _pre_loaded_config=config,
+                    provider=mock_provider,
+                    use_tui=True,
+                )
+
+        assert exc_info.value.code == 0
+        mock_tabbed.assert_called_once()
+        mock_resume.assert_not_called()
+        assert config.execution_agent == "backend"
+        assert config.persistent is True
+        assert config.integrity is False
+        assert config.token_budget_per_hour == 123
+
     def test_run_main_execution_error(self, tmp_path: Path) -> None:
         """Should handle RuntimeError from execution."""
         from the_architect.cli import _run_main

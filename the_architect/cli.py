@@ -3776,13 +3776,59 @@ def _run_main(
     if not headless and not plan and not only_task and not from_task:
         any_mode_flag = persistent or free_mode
         if not any_mode_flag:
-            resume = _prompt_resume_screen(pending, config, provider=provider)
-            # Clear the resume-screen UI before the next content renders.
-            # _prompt_resume_screen uses full_screen=False so its rendered
-            # text stays in the scroll buffer.  Without this clear the
-            # execution header (or planning prompts) would start below the
-            # leftover resume-screen text instead of at the top.
-            console.clear()
+            if (use_tui or _tui_mode_enabled()) and provider is not None:
+                from the_architect.tui.screens.pre_run_tabbed import run_pre_run_tabbed
+
+                _all_providers = detect_available_providers()
+                if not _all_providers:
+                    _all_providers = [provider]
+
+                pre_run = run_pre_run_tabbed(
+                    providers=_all_providers,
+                    config=config,
+                    project_dir=project,
+                    goal_text=goal_text,
+                    scope_text=scope_text,
+                    architect_model=architect_model,
+                    execution_model=execution_model or "",
+                    free_mode=free_mode,
+                    persistent=persistent,
+                    pending_tasks=pending,
+                    action="execute",
+                )
+                if pre_run is None:
+                    raise SystemExit(0)
+                resume: dict[str, bool | int | str] = {
+                    "free": pre_run.free,
+                    "persistent": pre_run.persistent,
+                    "integrity": pre_run.integrity,
+                    "token_budget_per_hour": pre_run.token_budget_per_hour,
+                    "action": pre_run.action,
+                }
+                goal_text = pre_run.goal
+                scope_text = pre_run.scope
+                architect_model = pre_run.architect_model or ""
+                execution_model = pre_run.execution_agent or ""
+                config.execution_agent = execution_model
+                if pre_run.provider_name:
+                    config.provider = pre_run.provider_name
+                    if provider.name != pre_run.provider_name:
+                        try:
+                            provider = detect_provider(pre_run.provider_name)
+                            os.environ["ARCHITECT_PROVIDER"] = provider.name
+                        except Exception as exc:
+                            logger.debug(
+                                f"Could not re-resolve provider {pre_run.provider_name!r}: "
+                                f"{exc!r} — keeping current provider"
+                            )
+            else:
+                resume = _prompt_resume_screen(pending, config, provider=provider)
+                # Clear the resume-screen UI before the next content renders.
+                # _prompt_resume_screen uses full_screen=False so its rendered
+                # text stays in the scroll buffer.  Without this clear the
+                # execution header (or planning prompts) would start below the
+                # leftover resume-screen text instead of at the top.
+                console.clear()
             if resume.get("action") == "replan":
                 run_planning_mode(
                     project,
@@ -3793,6 +3839,7 @@ def _run_main(
                     context_paths=context_paths,
                     architect_model_override=architect_model,
                     execution_model_override=execution_model,
+                    _skip_pending_guard=bool(use_tui or _tui_mode_enabled()),
                     provider=provider,
                 )
                 # After planning, reload and execute

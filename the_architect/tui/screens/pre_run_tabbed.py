@@ -50,6 +50,7 @@ from the_architect.tui.widgets import BlankOffCheckbox, BlankOffRadioButton
 if TYPE_CHECKING:
     from the_architect.config import ArchitectConfig
     from the_architect.core.provider import ArchitectProvider
+    from the_architect.core.tasks import Task
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -119,6 +120,7 @@ class PreRunValues(BaseModel):
     persistent: bool = False
     integrity: bool = True
     token_budget_per_hour: int = 0
+    action: str = "plan"
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -276,11 +278,14 @@ class PreRunScreen(Screen[PreRunValues]):
         execution_model: str = "",
         free_mode: bool = False,
         persistent: bool = False,
+        pending_tasks: list[Task] | None = None,
+        action: str = "plan",
     ) -> None:
         super().__init__()
         self._providers = providers
         self._config = config
         self._project_dir = project_dir
+        self._pending_tasks = pending_tasks or []
 
         # Hydrate values from config + CLI flags
         self._values = PreRunValues(
@@ -297,6 +302,7 @@ class PreRunScreen(Screen[PreRunValues]):
             persistent=persistent or config.persistent,
             integrity=config.integrity,
             token_budget_per_hour=config.token_budget_per_hour,
+            action=action,
         )
 
         # Track which tabs to show
@@ -318,13 +324,39 @@ class PreRunScreen(Screen[PreRunValues]):
             yield Static("Configure run", id="prerun_title")
             yield Static(f"Project: {self._project_dir}", id="prerun_subtitle")
             with TabbedContent(id="prerun_tabs"):
-                # Tab 1: Goal (Scope radio + Goal textarea, in that order)
-                with TabPane(self._tab_label("Goal", False), id=_TAB_GOAL):
-                    yield Static("Scope", classes="tab_title")
+                # Tab 1: Goal for fresh runs, Run decision for existing-task runs.
+                first_tab_name = "Run" if self._pending_tasks else "Goal"
+                with TabPane(self._tab_label(first_tab_name, False), id=_TAB_GOAL):
+                    if self._pending_tasks:
+                        yield Static("Existing tasks", classes="tab_title")
+                        yield Static(
+                            self._format_pending_tasks(),
+                            classes="tab_hint",
+                            markup=False,
+                        )
+                        yield Static("Action", classes="tab_title")
+                        yield Static(
+                            "Execute keeps the current task plan. Replan archives it and creates "
+                            "a fresh plan from a new goal.",
+                            classes="tab_hint",
+                        )
+                        with RadioSet(id="action_set"):
+                            yield BlankOffRadioButton(
+                                "Execute existing tasks",
+                                id="rb_action_execute",
+                                value=self._values.action != "replan",
+                            )
+                            yield BlankOffRadioButton(
+                                "Replan from a new goal",
+                                id="rb_action_replan",
+                                value=self._values.action == "replan",
+                            )
+                    yield Static("Scope", id="scope_title", classes="tab_title")
                     yield Static(
                         "Choose how wide each planned task should be. This is not a target "
                         "task count: smaller scope usually creates more smaller tasks, while "
                         "larger scope usually creates fewer broader tasks.",
+                        id="scope_hint",
                         classes="tab_hint",
                     )
                     with RadioSet(id="scope_set"):
@@ -345,10 +377,11 @@ class PreRunScreen(Screen[PreRunValues]):
                             id="rb_complex",
                             value=self._values.scope == "complex",
                         )
-                    yield Static("Goal", classes="tab_title")
+                    yield Static("Goal", id="goal_title", classes="tab_title")
                     yield Static(
                         "Describe what you want built. Minimum 10 characters.  "
                         "Enter = submit, Shift+Enter = newline.",
+                        id="goal_hint",
                         classes="tab_hint",
                     )
                     yield GoalTextArea(id="goal_text", soft_wrap=True)
@@ -455,11 +488,15 @@ class PreRunScreen(Screen[PreRunValues]):
 
         # Apply cross-tab state (free checkbox visibility)
         self._update_free_checkbox_visibility()
+        self._update_replan_controls_visibility()
 
         # Focus the first field
         try:
             area = self.query_one("#goal_text", TextArea)
-            area.focus()
+            if self._pending_tasks:
+                self.query_one("#action_set", RadioSet).focus()
+            else:
+                area.focus()
         except Exception as exc:
             logger.debug(f"PreRunScreen: initial focus failed: {exc!r}")
 
@@ -657,9 +694,17 @@ class PreRunScreen(Screen[PreRunValues]):
         try:
             tabs = self.query_one("#prerun_tabs", TabbedContent)
             tabs.active = tab_id
-            self.call_after_refresh(self._auto_focus_active_tab)
+            self.call_after_refresh(self._activate_and_focus_tab, tab_id)
         except Exception as exc:
             logger.debug(f"PreRunScreen: activate_tab({tab_id}) failed: {exc!r}")
+
+    def _activate_and_focus_tab(self, tab_id: str) -> None:
+        """Re-assert tab activation after pending tab messages, then focus it."""
+        try:
+            self.query_one("#prerun_tabs", TabbedContent).active = tab_id
+        except Exception as exc:
+            logger.debug(f"PreRunScreen: deferred activate_tab({tab_id}) failed: {exc!r}")
+        self._auto_focus_active_tab()
 
     def _auto_focus_active_tab(self) -> None:
         """Focus the first interactive widget in the active tab."""
@@ -670,7 +715,7 @@ class PreRunScreen(Screen[PreRunValues]):
                 return
             pane = self.query_one(f"#{active_id}", TabPane)
             for widget in pane.children:
-                if widget.focusable:
+                if widget.focusable and widget.display:
                     # RadioSet has can_focus_children=False, so we focus the
                     # container itself — don't try to focus inner RadioButtons.
                     widget.focus()
@@ -697,8 +742,11 @@ class PreRunScreen(Screen[PreRunValues]):
         stops: list[Widget] = []
         for widget in pane.children:
             widget_id = getattr(widget, "id", "")
+            if not widget.display:
+                continue
             if widget_id in {
                 "scope_set",
+                "action_set",
                 "provider_set",
                 "model_list",
                 "agent_list",
@@ -729,6 +777,12 @@ class PreRunScreen(Screen[PreRunValues]):
                 }:
                     current_index = i
                     break
+                if stop_id == "action_set" and focused_id in {
+                    "rb_action_execute",
+                    "rb_action_replan",
+                }:
+                    current_index = i
+                    break
                 if stop_id == "provider_set" and focused_id.startswith("rb_prov_"):
                     current_index = i
                     break
@@ -752,7 +806,9 @@ class PreRunScreen(Screen[PreRunValues]):
 
     @property
     def _goal_complete(self) -> bool:
-        """Goal tab is complete when text is ≥10 chars."""
+        """Goal tab is complete when required goal text is present."""
+        if self._pending_tasks and self._selected_action() == "execute":
+            return True
         try:
             text = self.query_one("#goal_text", TextArea).text.strip()
             return len(text) >= 10
@@ -802,7 +858,8 @@ class PreRunScreen(Screen[PreRunValues]):
         """Recompute and update all tab labels with dot indicators."""
         try:
             tabs = self.query_one("#prerun_tabs", TabbedContent)
-            tabs.get_tab(_TAB_GOAL).label = self._tab_label("Goal", self._goal_complete)
+            first_tab_name = "Run" if self._pending_tasks else "Goal"
+            tabs.get_tab(_TAB_GOAL).label = self._tab_label(first_tab_name, self._goal_complete)
             if self._show_provider_tab:
                 tabs.get_tab(_TAB_PROVIDER).label = self._tab_label(
                     "Provider", self._provider_complete
@@ -863,6 +920,8 @@ class PreRunScreen(Screen[PreRunValues]):
                     scope = "complex"
         except Exception:
             pass
+
+        action = self._selected_action()
 
         # Provider
         provider_name = self._values.provider_name
@@ -939,6 +998,7 @@ class PreRunScreen(Screen[PreRunValues]):
             persistent=persistent,
             integrity=integrity,
             token_budget_per_hour=budget,
+            action=action,
         )
 
     # ── Actions ──────────────────────────────────────────────────────
@@ -985,6 +1045,20 @@ class PreRunScreen(Screen[PreRunValues]):
 
         if event.radio_set.id == "provider_set":
             self._on_provider_changed()
+        elif event.radio_set.id == "action_set":
+            self._update_replan_controls_visibility()
+
+    def _selected_action(self) -> str:
+        """Return the existing-task action selected on the Goal tab."""
+        if not self._pending_tasks:
+            return "plan"
+        try:
+            pressed = self.query_one("#action_set", RadioSet).pressed_button
+            if pressed is not None and pressed.id == "rb_action_replan":
+                return "replan"
+        except Exception:
+            pass
+        return "execute"
 
     def on_checkbox_changed(self) -> None:
         """Update footer when checkboxes change."""
@@ -1021,6 +1095,28 @@ class PreRunScreen(Screen[PreRunValues]):
         except Exception as exc:
             logger.debug(f"PreRunScreen: free checkbox visibility failed: {exc!r}")
 
+    def _update_replan_controls_visibility(self) -> None:
+        """Show goal/scope fields only when existing-task runs choose replan."""
+        if not self._pending_tasks:
+            return
+        show_replan_fields = self._selected_action() == "replan"
+        for widget_id in (
+            "scope_title",
+            "scope_hint",
+            "scope_set",
+            "goal_title",
+            "goal_hint",
+            "goal_text",
+        ):
+            try:
+                self.query_one(f"#{widget_id}").display = show_replan_fields
+            except Exception as exc:
+                logger.debug(
+                    f"PreRunScreen: replan field visibility failed for {widget_id}: {exc!r}"
+                )
+        self._update_tab_labels()
+        self._update_footer()
+
     # ── Helpers ──────────────────────────────────────────────────────
 
     def _get_active_provider(self) -> ArchitectProvider | None:
@@ -1030,6 +1126,16 @@ class PreRunScreen(Screen[PreRunValues]):
             if p.name == name:
                 return p
         return self._providers[0] if self._providers else None
+
+    def _format_pending_tasks(self) -> str:
+        """Return a compact pending-task summary for existing-task runs."""
+        n = len(self._pending_tasks)
+        lines = [f"{n} pending task{'s' if n != 1 else ''} found:"]
+        for task in self._pending_tasks[:5]:
+            lines.append(f"  {task.prefix}  {task.title or task.name}")
+        if n > 5:
+            lines.append(f"  ... and {n - 5} more")
+        return "\n".join(lines)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1048,6 +1154,8 @@ def run_pre_run_tabbed(
     execution_model: str = "",
     free_mode: bool = False,
     persistent: bool = False,
+    pending_tasks: list[Task] | None = None,
+    action: str = "plan",
 ) -> PreRunValues | None:
     """Show the tabbed pre-run screen and return the chosen values.
 
@@ -1072,6 +1180,8 @@ def run_pre_run_tabbed(
         execution_model=execution_model,
         free_mode=free_mode,
         persistent=persistent,
+        pending_tasks=pending_tasks,
+        action=action,
     )
     result = run_single_screen(screen)
     if result is None:

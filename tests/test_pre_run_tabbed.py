@@ -73,6 +73,7 @@ class TestPreRunValues:
         assert v.persistent is False
         assert v.integrity is True
         assert v.token_budget_per_hour == 0
+        assert v.action == "plan"
 
     def test_custom_values(self) -> None:
         """PreRunValues accepts custom values and stores them correctly."""
@@ -87,6 +88,7 @@ class TestPreRunValues:
             persistent=True,
             integrity=False,
             token_budget_per_hour=5000,
+            action="replan",
         )
         assert v.goal == "Build auth"
         assert v.scope == "complex"
@@ -98,6 +100,7 @@ class TestPreRunValues:
         assert v.persistent is True
         assert v.integrity is False
         assert v.token_budget_per_hour == 5000
+        assert v.action == "replan"
 
     def test_serialization_round_trip(self) -> None:
         """model_dump + model_validate preserves all values."""
@@ -279,6 +282,138 @@ class TestPreRunScreen:
         await _run_complete()
         assert isinstance(result, PreRunValues)
         assert result.goal == "Build the feature"
+
+    @pytest.mark.asyncio
+    async def test_existing_tasks_execute_can_submit_without_goal(self) -> None:
+        """Existing-task execute path uses the main tabbed screen without requiring a goal."""
+        from textual.app import App
+
+        from the_architect.core.tasks import Task, TaskStatus
+
+        providers = [_mock_provider("opencode")]
+        config = _mock_config()
+        task = Task(
+            name="T01_existing",
+            prefix="T01",
+            number=1,
+            path=Path("/tmp/T01_existing.md"),
+            status=TaskStatus.PENDING,
+            title="Existing task",
+        )
+        screen = PreRunScreen(
+            providers=providers,
+            config=config,
+            project_dir=Path("/tmp/test_project"),
+            pending_tasks=[task],
+            action="execute",
+        )
+        result: Any = None
+
+        class CApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(screen, self._cb)
+
+            def _cb(self, value: Any) -> None:
+                nonlocal result
+                result = value
+
+        async with CApp().run_test() as pilot:
+            await pilot.pause()
+            assert screen.query_one("#goal_text", TextArea).display is False
+            assert screen.query_one("#scope_set").display is False
+            screen.action_submit()
+            await pilot.pause()
+
+        assert isinstance(result, PreRunValues)
+        assert result.action == "execute"
+        assert result.goal == ""
+
+    @pytest.mark.asyncio
+    async def test_existing_tasks_replan_requires_goal(self) -> None:
+        """Replan path still requires the Goal tab before submitting."""
+        from textual.app import App
+
+        from the_architect.core.tasks import Task, TaskStatus
+
+        providers = [_mock_provider("opencode")]
+        config = _mock_config()
+        task = Task(
+            name="T01_existing",
+            prefix="T01",
+            number=1,
+            path=Path("/tmp/T01_existing.md"),
+            status=TaskStatus.PENDING,
+            title="Existing task",
+        )
+        screen = PreRunScreen(
+            providers=providers,
+            config=config,
+            project_dir=Path("/tmp/test_project"),
+            pending_tasks=[task],
+            action="replan",
+        )
+        result: Any = "<not-dismissed>"
+
+        class CApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(screen, self._cb)
+
+            def _cb(self, value: Any) -> None:
+                nonlocal result
+                result = value
+
+        async with CApp().run_test() as pilot:
+            await pilot.pause()
+            assert screen.query_one("#goal_text", TextArea).display is True
+            assert screen.query_one("#scope_set").display is True
+            screen.action_submit()
+            await pilot.pause()
+            assert result == "<not-dismissed>"
+            area = screen.query_one("#goal_text", TextArea)
+            area.text = "Build a replacement plan"
+            screen.action_submit()
+            await pilot.pause()
+
+        assert isinstance(result, PreRunValues)
+        assert result.action == "replan"
+        assert result.goal == "Build a replacement plan"
+
+    @pytest.mark.asyncio
+    async def test_existing_tasks_replan_selection_reveals_goal_fields(self) -> None:
+        """Goal/scope fields stay hidden until the user explicitly selects Replan."""
+        from textual.app import App
+
+        from the_architect.core.tasks import Task, TaskStatus
+
+        task = Task(
+            name="T01_existing",
+            prefix="T01",
+            number=1,
+            path=Path("/tmp/T01_existing.md"),
+            status=TaskStatus.PENDING,
+            title="Existing task",
+        )
+        screen = PreRunScreen(
+            providers=[_mock_provider("opencode")],
+            config=_mock_config(),
+            project_dir=Path("/tmp/test_project"),
+            pending_tasks=[task],
+            action="execute",
+        )
+
+        class CApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(screen, lambda value: None)
+
+        async with CApp().run_test() as pilot:
+            await pilot.pause()
+            assert screen.query_one("#goal_text", TextArea).display is False
+            rb_replan = screen.query_one("#rb_action_replan")
+            rb_replan.value = True
+            screen._update_replan_controls_visibility()
+            await pilot.pause()
+            assert screen.query_one("#goal_text", TextArea).display is True
+            assert screen.query_one("#scope_set").display is True
 
     @pytest.mark.asyncio
     async def test_required_bindings_exist(self) -> None:
