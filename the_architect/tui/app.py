@@ -237,6 +237,7 @@ class ArchitectApp(App[None]):
         self._execution_screen: ExecutionScreen | None = None
         self._wait_screen: WaitScreen | None = None
         self._pause_menu_visible: bool = False
+        self._shutdown_started: bool = False
         self._initial_screen: Screen[Any] = initial_screen or SplashScreen()
         # Wall-clock time when the splash was first painted. Set in
         # on_mount so push_and_wait can enforce a minimum display window.
@@ -278,20 +279,28 @@ class ArchitectApp(App[None]):
     # ── Run-scoped status (Phase 18) ───────────────────────────────────
 
     async def action_quit(self) -> None:
-        """Show a shutdown splash then exit cleanly.
+        """Show a shutdown splash, stop providers, then exit cleanly."""
+        self.begin_shutdown()
 
-        Pops the screen stack back to the :class:`SplashScreen` (if it
-        is in the stack), updates its subtitle to a shutdown message, and
-        waits one second so the user sees the animated card rather than a
-        blank terminal during the cleanup window.  Also wakes the
-        worker-thread splash-hold so it doesn't add its own delay on top.
+    def begin_shutdown(self) -> None:
+        """Show the branded shutdown screen while provider cleanup runs.
+
+        Confirmed exits from the pause menu and Ctrl+C both route here.
+        The Textual app stays open on the animated splash while active
+        provider subprocesses are killed on a background thread. Only
+        after cleanup and a short minimum display window do we close the
+        alternate screen, avoiding a blank terminal during teardown.
         """
+        if self._shutdown_started:
+            return
+        self._shutdown_started = True
         self._quit_event.set()
+        started_at = time.monotonic()
 
-        # Walk the stack and pop everything above the SplashScreen.
-        # If there is no SplashScreen in the stack (e.g. during execution)
-        # just push a fresh one so there's always something to show.
         try:
+            # Walk the stack and pop everything above the SplashScreen.
+            # If there is no SplashScreen in the stack (e.g. during execution)
+            # just push a fresh one so there's always something to show.
             while len(self.screen_stack) > 1:
                 if isinstance(self.screen_stack[-1], SplashScreen):
                     break
@@ -312,8 +321,34 @@ class ArchitectApp(App[None]):
         except Exception:
             pass
 
-        # Give the animation one second to play before the process ends.
-        self.set_timer(1.0, self.exit)
+        def _cleanup_then_exit() -> None:
+            try:
+                from the_architect.core.runner import kill_active_subprocesses
+
+                kill_active_subprocesses()
+            except Exception:
+                pass
+
+            remaining = 1.0 - (time.monotonic() - started_at)
+            if remaining > 0:
+                time.sleep(remaining)
+            try:
+                loop = getattr(self, "_loop", None)
+                if loop is not None and not loop.is_closed():
+                    loop.call_soon_threadsafe(self.exit)
+            except Exception:
+                pass
+
+        threading.Thread(
+            target=_cleanup_then_exit,
+            name="architect-shutdown-cleanup",
+            daemon=True,
+        ).start()
+
+    @property
+    def shutdown_started(self) -> bool:
+        """True once a user-requested shutdown is already in progress."""
+        return self._shutdown_started
 
     def set_status(self, text: str) -> None:
         """Update the app-wide status line shown in every screen header.
@@ -649,7 +684,7 @@ class ArchitectApp(App[None]):
             if decision == "exit":
                 # Same shutdown path as Ctrl+C / action_quit.
                 try:
-                    self.exit()
+                    self.begin_shutdown()
                 except Exception:
                     pass
             # "continue" and "detach" need no extra handling here —

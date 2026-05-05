@@ -118,10 +118,11 @@ class ArchitectAppRunner:
                 # Schedule app exit on the event loop thread. Safe from
                 # worker thread via call_from_thread. Wrapped in try
                 # because the app may already be exiting.
-                try:
-                    self.app.call_from_thread(self.app.exit)
-                except Exception:
-                    pass
+                if not self.app.shutdown_started:
+                    try:
+                        self.app.call_from_thread(self.app.exit)
+                    except Exception:
+                        pass
 
         # Start the worker after the app's event loop is running —
         # call_later fires on the next event loop iteration, which is

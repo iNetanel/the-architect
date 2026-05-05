@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import threading
 from unittest.mock import patch
 
 import pytest
+from textual.widgets import Static
 
-from the_architect.tui.app import ArchitectApp
+from the_architect.tui.app import ArchitectApp, SplashScreen
 from the_architect.tui.screens.execution import ExecutionScreen
 from the_architect.tui.screens.pause import PauseMenuScreen
 
@@ -144,6 +146,31 @@ class TestExecutionScreenEscapeOpensPauseMenu:
             # The active screen on top of the stack should now be the
             # pause menu overlay.
             assert isinstance(app.screen, PauseMenuScreen)
+
+    @pytest.mark.asyncio
+    async def test_confirmed_exit_shows_shutdown_splash_during_cleanup(self) -> None:
+        """Confirmed pause-menu exit must not drop to a blank TUI during cleanup."""
+        cleanup_can_finish = threading.Event()
+
+        def _block_cleanup() -> None:
+            cleanup_can_finish.wait(timeout=5)
+
+        with patch(
+            "the_architect.core.runner.kill_active_subprocesses", side_effect=_block_cleanup
+        ):
+            app = ArchitectApp(initial_screen=ExecutionScreen())
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await pilot.press("escape")
+                await pilot.pause()
+                await pilot.press("e")
+                await pilot.pause()
+
+                assert isinstance(app.screen, SplashScreen)
+                subtitle = app.screen.query_one("#splash_subtitle", Static)
+                assert "Shutting down" in str(subtitle.render())
+
+                cleanup_can_finish.set()
 
 
 class TestPauseMenuArrowNavigation:

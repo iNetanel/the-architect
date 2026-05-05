@@ -65,6 +65,13 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ### Fixed
 
+- **Confirmed ESC exit could leave a blank TUI while shutdown cleanup continued (build 10216):**
+  - Pause-menu `Exit` now routes through the same branded shutdown path as Ctrl+C.
+  - The animated splash remains visible while active provider subprocesses are killed on a background
+    cleanup thread, and the app exits only after cleanup plus a short minimum display window.
+  - The persistent TUI runner no longer forces an immediate app exit when a user-requested shutdown
+    is already showing the shutdown splash.
+
 - **Pre-run footer said `Ctrl+Tab` even though tab navigation should use `Tab` (build 10215):**
   - Added `Tab` / `Shift+Tab` as the primary tab-switch shortcuts on the setup screen.
   - Kept `Ctrl+Tab` / `Ctrl+Shift+Tab` as hidden aliases for compatibility.
