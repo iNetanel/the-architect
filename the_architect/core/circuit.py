@@ -1247,7 +1247,7 @@ def load_circuit_state(
             detection to free-mode rotation while free models are still available.
         provider: Optional :class:`~the_architect.core.provider.ArchitectProvider`
             instance.  Used by the replan path to call the architect via the
-            correct provider (OpenCode or Claude Code).
+            correct provider (OpenCode, Codex CLI, Claude Code, or Gemini CLI).
 
     Returns:
         A ready-to-use :class:`CircuitBreaker` instance.

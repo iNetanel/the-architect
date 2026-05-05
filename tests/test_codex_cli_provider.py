@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from the_architect.core.codex_cli_provider import CodexCliProvider
+from the_architect.core.codex_cli_provider import _FALLBACK_CODEX_MODELS, CodexCliProvider
 
 # ---------------------------------------------------------------------------
 # Identity
@@ -167,7 +167,11 @@ class TestCodexCliProviderParsing:
         assert result is not None
         assert result.display_lines == []
 
-    def test_item_completed_agent_message(self) -> None:
+    def test_item_completed_agent_message_no_prior_delta(self) -> None:
+        # item.completed with agent_message MUST produce display lines when no
+        # item.delta text events were received in the same turn.  This is the
+        # common case with older Codex builds that never emit item.delta events
+        # and send the full agent text only in item.completed.
         line = json.dumps(
             {
                 "type": "item.completed",
@@ -178,14 +182,86 @@ class TestCodexCliProviderParsing:
         assert result is not None
         assert "Hello from Codex!" in result.display_lines
 
+    def test_item_completed_agent_message_suppressed_after_delta(self) -> None:
+        # item.completed with agent_message MUST produce NO display lines when
+        # item.delta text events were already streamed in the same turn.
+        # This prevents double-printing the same content.
+        provider = CodexCliProvider()
+        # First simulate a turn.started to reset state
+        provider.parse_output_line(json.dumps({"type": "turn.started"}))
+        # Then simulate an item.delta that streamed text
+        provider.parse_output_line(
+            json.dumps({"type": "item.delta", "delta": {"type": "text_delta", "text": "Hello"}})
+        )
+        # Now item.completed should be suppressed
+        line = json.dumps(
+            {
+                "type": "item.completed",
+                "item": {"type": "agent_message", "text": "Hello from Codex!"},
+            }
+        )
+        result = provider.parse_output_line(line)
+        assert result is not None
+        assert result.display_lines == []
+
+    def test_item_delta_text_delta(self) -> None:
+        # item.delta with text_delta shape is the primary streaming path for Codex
+        line = json.dumps(
+            {
+                "type": "item.delta",
+                "delta": {"type": "text_delta", "text": "Hello from Codex!"},
+            }
+        )
+        result = CodexCliProvider().parse_output_line(line)
+        assert result is not None
+        assert "Hello from Codex!" in result.display_lines
+
+    def test_item_delta_content_delta(self) -> None:
+        # item.delta with nested content_delta shape (alternative Codex format)
+        line = json.dumps(
+            {
+                "type": "item.delta",
+                "delta": {
+                    "type": "content_delta",
+                    "delta": {"type": "text", "text": "Streaming content"},
+                },
+            }
+        )
+        result = CodexCliProvider().parse_output_line(line)
+        assert result is not None
+        assert "Streaming content" in result.display_lines
+
+    def test_item_delta_empty_text_silent(self) -> None:
+        # item.delta with empty text produces no display lines
+        line = json.dumps(
+            {
+                "type": "item.delta",
+                "delta": {"type": "text_delta", "text": ""},
+            }
+        )
+        result = CodexCliProvider().parse_output_line(line)
+        assert result is not None
+        assert result.display_lines == []
+
     def test_item_completed_command_execution(self) -> None:
+        # command_execution items now show the command with $ prefix
+        line = json.dumps(
+            {"type": "item.completed", "item": {"type": "command_execution", "command": "ls -la"}}
+        )
+        result = CodexCliProvider().parse_output_line(line)
+        assert result is not None
+        assert len(result.display_lines) > 0
+        assert any("$" in dl for dl in result.display_lines)
+
+    def test_item_completed_command_execution_id_fallback(self) -> None:
+        # Falls back to id field when command is absent
         line = json.dumps(
             {"type": "item.completed", "item": {"type": "command_execution", "id": "cmd_123"}}
         )
         result = CodexCliProvider().parse_output_line(line)
         assert result is not None
         assert len(result.display_lines) > 0
-        assert any("→" in dl for dl in result.display_lines)
+        assert any("$" in dl for dl in result.display_lines)
 
     def test_turn_completed_with_usage(self) -> None:
         line = json.dumps(
@@ -307,20 +383,55 @@ class TestCodexCliProviderModel:
         models = CodexCliProvider().list_models()
         assert models == ["gpt-5.4"]
 
-    def test_list_models_from_config_toml(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_list_models_from_debug_catalog(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """list_models uses codex debug models JSON catalog as the live source."""
         monkeypatch.delenv("CODEX_MODEL", raising=False)
-        with patch(
-            "the_architect.core.codex_cli_provider._read_codex_config_model",
-            return_value="o3",
+        catalog = {
+            "models": [
+                {"slug": "gpt-5.5", "visibility": "list", "priority": 0},
+                {"slug": "gpt-5.4", "visibility": "list", "priority": 2},
+                {"slug": "hidden-model", "visibility": "hide", "priority": 1},
+            ]
+        }
+        import json as _json
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = _json.dumps(catalog)
+        with patch("subprocess.run", return_value=mock_result):
+            models = CodexCliProvider().list_models()
+        # Hidden model must be excluded; order follows priority (ascending)
+        assert models == ["gpt-5.5", "gpt-5.4"]
+
+    def test_list_models_from_config_toml_when_debug_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When codex debug models fails, config.toml model is used."""
+        monkeypatch.delenv("CODEX_MODEL", raising=False)
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stdout = ""
+        with (
+            patch("subprocess.run", return_value=mock_result),
+            patch(
+                "the_architect.core.codex_cli_provider._read_codex_config_model",
+                return_value="o3",
+            ),
         ):
             models = CodexCliProvider().list_models()
         assert models == ["o3"]
 
     def test_list_models_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("CODEX_MODEL", raising=False)
-        with patch(
-            "the_architect.core.codex_cli_provider._read_codex_config_model",
-            return_value="",
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stdout = ""
+        with (
+            patch("subprocess.run", return_value=mock_result),
+            patch(
+                "the_architect.core.codex_cli_provider._read_codex_config_model",
+                return_value="",
+            ),
         ):
             models = CodexCliProvider().list_models()
         assert len(models) > 0
@@ -330,14 +441,45 @@ class TestCodexCliProviderModel:
         result = CodexCliProvider().get_resolved_model(Path("/tmp"))
         assert result == "o3"
 
-    def test_get_resolved_model_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_get_resolved_model_from_debug_catalog(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """get_resolved_model picks the first visible model from the live catalog."""
         monkeypatch.delenv("CODEX_MODEL", raising=False)
-        with patch(
-            "the_architect.core.codex_cli_provider._read_codex_config_model",
-            return_value="",
+        import json as _json
+
+        catalog = {
+            "models": [
+                {"slug": "gpt-5.5", "visibility": "list", "priority": 0},
+                {"slug": "gpt-5.4", "visibility": "list", "priority": 2},
+            ]
+        }
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = _json.dumps(catalog)
+        with (
+            patch("subprocess.run", return_value=mock_result),
+            patch(
+                "the_architect.core.codex_cli_provider._read_codex_config_model",
+                return_value="",
+            ),
         ):
             result = CodexCliProvider().get_resolved_model(Path("/tmp"))
-        assert result == "gpt-5.4"
+        assert result == "gpt-5.5"
+
+    def test_get_resolved_model_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """get_resolved_model falls back to static list when all live calls fail."""
+        monkeypatch.delenv("CODEX_MODEL", raising=False)
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stdout = ""
+        with (
+            patch("subprocess.run", return_value=mock_result),
+            patch(
+                "the_architect.core.codex_cli_provider._read_codex_config_model",
+                return_value="",
+            ),
+        ):
+            result = CodexCliProvider().get_resolved_model(Path("/tmp"))
+        assert result in _FALLBACK_CODEX_MODELS
 
 
 # ---------------------------------------------------------------------------

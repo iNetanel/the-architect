@@ -96,8 +96,8 @@ class ResumeScreen(Screen[dict[str, bool | int | str]]):
         # Arrow keys move focus between form fields, matching the
         # arrow navigation the other form screens use. Space toggles
         # the focused Checkbox / RadioButton (Textual's default).
-        Binding("up", "focus_previous", "Previous field", show=False),
-        Binding("down", "focus_next", "Next field", show=False),
+        Binding("up", "focus_previous", "Previous field", show=False, priority=True),
+        Binding("down", "focus_next", "Next field", show=False, priority=True),
         Binding("escape", "cancel", "Cancel", priority=True),
         Binding("ctrl+c", "cancel", "Cancel", priority=True),
     ]
@@ -173,11 +173,13 @@ class ResumeScreen(Screen[dict[str, bool | int | str]]):
         yield Footer()
 
     def on_mount(self) -> None:
-        # Focus the RadioSet first so arrow keys immediately move
-        # between Execute / Replan — users see the primary decision
-        # before the secondary mode toggles.
+        # Focus the first actual RadioButton child (not the RadioSet
+        # container itself) so up/down move through the form instead of
+        # getting trapped on the group widget.
         try:
-            self.query_one("#action_set", RadioSet).focus()
+            first_rb = self.query("#action_set RadioButton").first()
+            if first_rb is not None:
+                first_rb.focus()
         except Exception:
             pass
 

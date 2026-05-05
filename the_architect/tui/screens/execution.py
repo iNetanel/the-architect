@@ -1,9 +1,17 @@
-"""Textual Execution screen with tabbed output / events / details.
+"""Textual Execution screen with tabbed output / events / status.
 
 This screen hosts the live provider stream, circuit/retry/reassessment
 events, and per-task metadata while a run is active. The business logic
 continues to run in :mod:`the_architect.core.runner`; this screen only
 renders what the renderer pushes into it.
+
+Layout mirrors :class:`~the_architect.tui.screens.wait.WaitScreen`:
+
+- An animated Matrix-rain title at the top (same spinner, same brand green)
+- Three tabs below it:
+  - **Live Output** — raw provider stream, token by token
+  - **Events** — timestamped circuit / retry / model-switch events
+  - **Status** — structured per-task metadata (task, model, attempt, tokens)
 """
 
 from __future__ import annotations
@@ -13,9 +21,11 @@ from datetime import datetime
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Footer, Header, RichLog, Static, TabbedContent, TabPane
+
+from the_architect.tui.widgets import next_matrix_frame
 
 
 def _idle_footer_text() -> str:
@@ -26,14 +36,14 @@ def _idle_footer_text() -> str:
     tmux detach shortcut so users know the "step away and come back
     later" path is available without even opening the menu.
     """
-    base = "(idle)  [o]utput / [e]vents / [d]etails  ·  Esc=pause menu  ·  Ctrl+C=stop"
+    base = "(idle)  [o]utput / [e]vents / [s]tatus  ·  Esc=pause menu  ·  Ctrl+C=stop"
     if os.environ.get("TMUX"):
         base += "  ·  Ctrl+B D detaches"
     return base
 
 
 class ExecutionScreen(Screen[None]):
-    """Main execution screen with a tabbed viewport and a status footer."""
+    """Main execution screen with animated header, tabbed viewport, and status footer."""
 
     # ESC intentionally opens the pause menu instead of quitting —
     # a stray Escape after focusing a field must never drop the
@@ -48,8 +58,39 @@ class ExecutionScreen(Screen[None]):
         layout: vertical;
     }
 
+    #exec_header_row {
+        height: 1;
+        padding: 0 1;
+        margin: 0 0 0 0;
+    }
+
+    #exec_anim_title {
+        color: $accent;
+        text-style: bold;
+        width: 1fr;
+    }
+
+    #exec_task_badge {
+        color: $text-muted;
+        text-align: right;
+        width: auto;
+        padding: 0 1;
+    }
+
     #exec_tabs {
         height: 1fr;
+    }
+
+    /* Green tab underline + active/hover tab text — matches The Architect brand. */
+    ExecutionScreen Underline > .underline--bar {
+        color: $accent;
+    }
+    ExecutionScreen Tab.-active {
+        color: $accent;
+        text-style: bold;
+    }
+    ExecutionScreen Tab:hover {
+        color: $accent;
     }
 
     #exec_output, #exec_events {
@@ -58,7 +99,7 @@ class ExecutionScreen(Screen[None]):
         padding: 0 1;
     }
 
-    #exec_details {
+    #exec_status {
         height: 1fr;
         border: round $panel;
         padding: 1 2;
@@ -81,18 +122,28 @@ class ExecutionScreen(Screen[None]):
             "attempt": "",
             "model": "",
             "tokens": "",
+            "last_activity": "",
+            "current_op": "",
         }
+        self._frame_index = 0
+        self._current_frame = next_matrix_frame(self._frame_index)
         # Pending updates buffered before first mount so callers who
         # push content while the screen is still being composed don't
         # silently lose their messages. Flushed from on_mount.
         self._pending_output: list[str] = []
         self._pending_events: list[tuple[str, dict[str, object] | None]] = []
         self._pending_footer: str | None = None
+        # Track whether any real provider output has been received so the
+        # placeholder can be cleared on the first write.
+        self._output_received: bool = False
 
     def compose(self) -> ComposeResult:
         yield Header()
+        with Horizontal(id="exec_header_row"):
+            yield Static(self._render_anim_title(), id="exec_anim_title")
+            yield Static("", id="exec_task_badge")
         with TabbedContent(id="exec_tabs"):
-            with TabPane("Output", id="tab_output"):
+            with TabPane("Live Output", id="tab_output"):
                 yield RichLog(
                     id="exec_output",
                     highlight=False,
@@ -108,8 +159,8 @@ class ExecutionScreen(Screen[None]):
                     wrap=True,
                     auto_scroll=True,
                 )
-            with TabPane("Details", id="tab_details"):
-                with Vertical(id="exec_details"):
+            with TabPane("Status", id="tab_details"):
+                with Vertical(id="exec_status"):
                     yield Static(self._render_details(), id="exec_details_text")
         yield Static(
             _idle_footer_text(),
@@ -118,19 +169,30 @@ class ExecutionScreen(Screen[None]):
         yield Footer()
 
     def on_mount(self) -> None:
-        # Defer writes until after the initial refresh so all tabbed
-        # children (especially non-active tab contents) are mounted.
-        self.call_after_refresh(self._write_default_placeholders)
+        # Start the spinner at 10 FPS — same cadence as WaitScreen.
+        self.set_interval(0.1, self._tick_spinner)
+        # Flush any output that arrived before the DOM was ready first,
+        # then write placeholders only for tabs that received nothing.
+        # Both callbacks are deferred to the post-refresh tick so every
+        # TabPane child is mounted before we query widgets.
+        # Order matters: flush → placeholder, so that if real output
+        # arrived before mount, _output_received is True by the time
+        # _write_default_placeholders runs and the placeholder is skipped.
         self.call_after_refresh(self._flush_pending)
+        self.call_after_refresh(self._write_default_placeholders)
 
     def _flush_pending(self) -> None:
         """Apply any output/events/footer updates queued before mount."""
-        for line in self._pending_output:
+        if self._pending_output:
             try:
-                self.query_one("#exec_output", RichLog).write(line)
+                log = self.query_one("#exec_output", RichLog)
+                if not self._output_received:
+                    self._output_received = True
+                for line in self._pending_output:
+                    log.write(line)
             except Exception:
                 pass
-        self._pending_output.clear()
+            self._pending_output.clear()
         for event, data in self._pending_events:
             self._write_event_line(event, data)
         self._pending_events.clear()
@@ -142,26 +204,62 @@ class ExecutionScreen(Screen[None]):
             self._pending_footer = None
 
     def _write_default_placeholders(self) -> None:
-        try:
-            self.query_one("#exec_output", RichLog).write("Waiting for run to start…")
-        except Exception:
-            pass
+        # Only write the output placeholder when no real provider output
+        # has arrived yet.  _flush_pending runs before this callback and
+        # sets _output_received=True when it drains buffered lines, so
+        # fast providers that send output before the DOM is ready won't
+        # have their content overwritten by this placeholder.
+        if not self._output_received:
+            try:
+                self.query_one("#exec_output", RichLog).write("Waiting for provider output…")
+            except Exception:
+                pass
         try:
             self.query_one("#exec_events", RichLog).write(
-                "No events yet. Events appear here as the run progresses."
+                "No events yet. Circuit / retry / model-switch events appear here."
             )
         except Exception:
             pass
 
+    # ── Spinner ────────────────────────────────────────────────────────
+
+    def _tick_spinner(self) -> None:
+        """Advance the Matrix-rain frame on the animated title line."""
+        self._frame_index += 1
+        self._current_frame = next_matrix_frame(self._frame_index)
+        try:
+            self.query_one("#exec_anim_title", Static).update(self._render_anim_title())
+        except Exception:
+            pass
+
+    def _render_anim_title(self) -> str:
+        phase = self._details.get("phase", "idle")
+        task = self._details.get("task", "")
+        if task and task != "(waiting)":
+            label = f"executing  ·  {task}"
+        else:
+            label = "execution  ·  waiting for task…"
+        return f"{self._current_frame}  {label}  [dim]({phase})[/dim]"
+
     # ── Renderer hooks ─────────────────────────────────────────────────
 
     def push_output_line(self, line: str) -> None:
-        """Append a provider output line to the Output tab."""
+        """Append a provider output line to the Live Output tab."""
+        # Update last-activity timestamp whenever output arrives.
+        self._details["last_activity"] = datetime.now().strftime("%H:%M:%S")
         try:
             log = self.query_one("#exec_output", RichLog)
         except Exception:
             self._pending_output.append(line)
             return
+        # On the first real output line, clear the placeholder text so it
+        # doesn't sit above every provider message in the log.
+        if not self._output_received:
+            self._output_received = True
+            try:
+                log.clear()
+            except Exception:
+                pass
         log.write(line)
 
     def push_event_line(self, event: str, data: dict[str, object] | None = None) -> None:
@@ -177,8 +275,8 @@ class ExecutionScreen(Screen[None]):
         try:
             log = self.query_one("#exec_events", RichLog)
             now = datetime.now().strftime("%H:%M:%S")
-            payload = " ".join(f"{k}={v}" for k, v in (data or {}).items())
-            log.write(f"[dim]{now}[/dim]  [bold]{event}[/bold]  {payload}")
+            payload = " ".join(f"{k}=[cyan]{v}[/cyan]" for k, v in (data or {}).items())
+            log.write(f"[dim]{now}[/dim]  [#7cc800]{event}[/#7cc800]  {payload}")
         except Exception:
             pass
 
@@ -192,11 +290,24 @@ class ExecutionScreen(Screen[None]):
         footer.update(text)
 
     def update_details(self, **fields: str) -> None:
-        """Merge fields into the Details tab."""
+        """Merge fields into the Status tab and refresh the animated title."""
         self._details.update({k: v for k, v in fields.items() if v is not None})
+        # Also update the task badge in the header row.
+        try:
+            badge = self.query_one("#exec_task_badge", Static)
+            task = self._details.get("task", "")
+            if task and task != "(waiting)":
+                badge.update(f"[dim]{task}[/dim]")
+        except Exception:
+            pass
         try:
             static = self.query_one("#exec_details_text", Static)
             static.update(self._render_details())
+        except Exception:
+            pass
+        # Refresh the animated title so it shows the new task label immediately.
+        try:
+            self.query_one("#exec_anim_title", Static).update(self._render_anim_title())
         except Exception:
             pass
 
@@ -220,12 +331,48 @@ class ExecutionScreen(Screen[None]):
 
     def _render_details(self) -> str:
         d = self._details
+        task = d.get("task", "(waiting)")
+        phase = d.get("phase", "idle")
+        attempt = d.get("attempt", "—")
+        model = d.get("model", "—")
+        tokens = d.get("tokens", "—")
+        last_activity = d.get("last_activity", "—")
+        current_op = d.get("current_op", "")
+
         lines = [
-            "[bold]Current task[/bold]",
-            f"  task:    {d.get('task', '')}",
-            f"  phase:   {d.get('phase', '')}",
-            f"  attempt: {d.get('attempt', '')}",
-            f"  model:   {d.get('model', '')}",
-            f"  tokens:  {d.get('tokens', '')}",
+            "[$accent][bold]Agent Status[/bold][/$accent]",
+            "",
+        ]
+
+        # Phase badge
+        phase_colour = {
+            "executing": "$accent",
+            "starting": "yellow",
+            "cooldown": "yellow",
+            "replanning": "yellow",
+            "replan_done": "$accent",
+            "resumed": "$accent",
+            "idle": "dim",
+        }.get(phase, "dim")
+        lines.append(f"  Phase        [{phase_colour}]{phase}[/{phase_colour}]")
+
+        lines.append(f"  Task         [bold]{task}[/bold]")
+        if attempt:
+            lines.append(f"  Attempt      {attempt}")
+        if model and model not in ("", "—"):
+            lines.append(f"  Model        [dim]{model}[/dim]")
+        if tokens and tokens not in ("", "—"):
+            lines.append(f"  Tokens       [dim]{tokens}[/dim]")
+        if current_op:
+            lines.append(f"  Operation    [cyan]{current_op}[/cyan]")
+        if last_activity and last_activity != "—":
+            lines.append(f"  Last output  [dim]{last_activity}[/dim]")
+
+        lines += [
+            "",
+            "[dim]─────────────────────────────[/dim]",
+            "",
+            "[dim]Tabs:  [o] Live Output  [e] Events  [s] Status[/dim]",
+            "[dim]Keys:  Esc = pause menu  ·  Ctrl+C = stop[/dim]",
         ]
         return "\n".join(lines)

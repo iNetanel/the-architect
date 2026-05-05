@@ -41,6 +41,11 @@ if TYPE_CHECKING:
 
 T = TypeVar("T")
 
+# Sentinel returned when the user presses "back" on a pre-run screen.
+# Distinguishes "go back" from "cancel" (None) so the orchestration loop
+# can navigate to the previous screen instead of exiting.
+BACK_SENTINEL: object = object()
+
 
 # ══════════════════════════════════════════════════════════════════════
 # Provider selection
@@ -83,13 +88,15 @@ class ProviderSelectionScreen(Screen[int]):
 
     BINDINGS = [
         Binding("enter", "confirm", "Select"),
+        Binding("backspace", "go_back", "Back"),
         Binding("escape", "cancel", "Cancel"),
         Binding("ctrl+c", "cancel", "Cancel"),
     ]
 
-    def __init__(self, options: list[ProviderOption]) -> None:
+    def __init__(self, options: list[ProviderOption], initial_provider_name: str = "") -> None:
         super().__init__()
         self._options = options
+        self._initial_provider_name = initial_provider_name
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -103,7 +110,13 @@ class ProviderSelectionScreen(Screen[int]):
             for opt in self._options:
                 suffix = f"  (v{opt.version})" if opt.version and opt.version != "unknown" else ""
                 items.append(ListItem(Label(f"{opt.display_name}{suffix}")))
-            yield ListView(*items, id="provider_list", initial_index=0)
+            # Find initial index matching the persisted provider name
+            initial_idx = 0
+            for i, opt in enumerate(self._options):
+                if opt.provider.name == self._initial_provider_name:
+                    initial_idx = i
+                    break
+            yield ListView(*items, id="provider_list", initial_index=initial_idx)
             yield Static(
                 "[dim]↑↓ navigate · Enter confirm · Esc cancel[/dim]",
                 id="provider_instructions",
@@ -125,15 +138,25 @@ class ProviderSelectionScreen(Screen[int]):
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         self.action_confirm()
 
+    def action_go_back(self) -> None:
+        """Navigate back to the previous pre-run screen."""
+        self.dismiss(BACK_SENTINEL)  # type: ignore[arg-type]
 
-def run_provider_selection(options: list[ProviderOption]) -> int:
+
+def run_provider_selection(
+    options: list[ProviderOption], initial_provider_name: str = ""
+) -> int | object:
     """Boot the Architect app, show the provider screen, return the index.
 
-    Raises ``SystemExit(0)`` on cancel.
+    Raises ``SystemExit(0)`` on cancel. Returns ``BACK_SENTINEL`` on back.
     """
     from the_architect.tui.app import run_single_screen
 
-    result = run_single_screen(ProviderSelectionScreen(options=options))
+    result = run_single_screen(
+        ProviderSelectionScreen(options=options, initial_provider_name=initial_provider_name)
+    )
+    if result is BACK_SENTINEL:
+        return BACK_SENTINEL
     if result is None:
         raise SystemExit(0)
     return int(result)
@@ -173,6 +196,7 @@ class GoalScreen(Screen[str]):
         # or Ctrl+S. priority so the binding runs before the widget.
         Binding("ctrl+enter", "submit", "Submit", priority=True),
         Binding("ctrl+s", "submit", "Submit", priority=True),
+        Binding("backspace", "go_back", "Back"),
         Binding("escape", "cancel", "Cancel", priority=True),
         Binding("ctrl+c", "cancel", "Cancel", priority=True),
     ]
@@ -205,15 +229,22 @@ class GoalScreen(Screen[str]):
     def action_cancel(self) -> None:
         self.dismiss(None)
 
+    def action_go_back(self) -> None:
+        """Navigate back to the previous pre-run screen."""
+        self.dismiss(BACK_SENTINEL)  # type: ignore[arg-type]
 
-def run_goal_screen() -> str:
+
+def run_goal_screen() -> str | object:
     """Boot the Architect app, show the goal screen, return the text.
 
     Raises ``SystemExit(0)`` on cancel or ``SystemExit(1)`` on empty input.
+    Returns ``BACK_SENTINEL`` on back.
     """
     from the_architect.tui.app import run_single_screen
 
     result = run_single_screen(GoalScreen())
+    if result is BACK_SENTINEL:
+        return BACK_SENTINEL
     if result is None:
         raise SystemExit(0)
     text = str(result).strip()
@@ -254,6 +285,7 @@ class ScopeScreen(Screen[str]):
 
     BINDINGS = [
         Binding("enter", "confirm", "Select"),
+        Binding("backspace", "go_back", "Back"),
         Binding("escape", "cancel", "Cancel"),
         Binding("ctrl+c", "cancel", "Cancel"),
     ]
@@ -273,6 +305,10 @@ class ScopeScreen(Screen[str]):
         ),
     )
 
+    def __init__(self, initial_scope: str = "standard") -> None:
+        super().__init__()
+        self._initial_scope = initial_scope
+
     def compose(self) -> ComposeResult:
         yield Header()
         with Vertical(id="scope_body"):
@@ -285,7 +321,10 @@ class ScopeScreen(Screen[str]):
             items: list[ListItem] = []
             for _, label in self._CHOICES:
                 items.append(ListItem(Label(label)))
-            yield ListView(*items, id="scope_list", initial_index=0)
+            # Resolve initial scope selection
+            scope_map = {"standard": 0, "simple": 1, "complex": 2}
+            initial_idx = scope_map.get(self._initial_scope, 0)
+            yield ListView(*items, id="scope_list", initial_index=initial_idx)
             yield Static(
                 "[dim]↑↓ navigate · Enter confirm · Esc cancel[/dim]",
                 id="scope_instructions",
@@ -308,12 +347,21 @@ class ScopeScreen(Screen[str]):
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         self.action_confirm()
 
+    def action_go_back(self) -> None:
+        """Navigate back to the previous pre-run screen."""
+        self.dismiss(BACK_SENTINEL)  # type: ignore[arg-type]
 
-def run_scope_screen() -> str:
-    """Boot the Architect app, show the scope screen, return the scope."""
+
+def run_scope_screen(initial_scope: str = "standard") -> str | object:
+    """Boot the Architect app, show the scope screen, return the scope.
+
+    Returns ``BACK_SENTINEL`` on back.
+    """
     from the_architect.tui.app import run_single_screen
 
-    result = run_single_screen(ScopeScreen())
+    result = run_single_screen(ScopeScreen(initial_scope=initial_scope))
+    if result is BACK_SENTINEL:
+        return BACK_SENTINEL
     if result is None:
         raise SystemExit(0)
     return str(result)
@@ -351,6 +399,7 @@ class StringListPickerScreen(Screen[str]):
 
     BINDINGS = [
         Binding("enter", "confirm", "Select"),
+        Binding("backspace", "go_back", "Back"),
         Binding("escape", "cancel", "Cancel"),
         Binding("ctrl+c", "cancel", "Cancel"),
     ]
@@ -362,11 +411,18 @@ class StringListPickerScreen(Screen[str]):
         hint: str,
         choices: list[tuple[str, str]],
         initial_index: int = 0,
+        initial_value: str = "",
     ) -> None:
         super().__init__()
         self._title = title
         self._hint = hint
         self._choices = choices
+        # Resolve initial_index from initial_value if provided
+        if initial_value:
+            for i, (val, _) in enumerate(choices):
+                if val == initial_value:
+                    initial_index = i
+                    break
         self._initial_index = max(0, min(initial_index, len(choices) - 1)) if choices else 0
 
     def compose(self) -> ComposeResult:
@@ -398,14 +454,21 @@ class StringListPickerScreen(Screen[str]):
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         self.action_confirm()
 
+    def action_go_back(self) -> None:
+        """Navigate back to the previous pre-run screen."""
+        self.dismiss(BACK_SENTINEL)  # type: ignore[arg-type]
+
 
 def run_model_picker(
     *,
     provider_name: str,
     models: list[str],
     current: str,
-) -> str | None:
-    """Run the architect-model picker. Returns selected model or None for default."""
+) -> str | None | object:
+    """Run the architect-model picker.
+
+    Returns selected model, None for default, or BACK_SENTINEL.
+    """
     from the_architect.tui.app import run_single_screen
 
     ordered = list(models)
@@ -429,6 +492,8 @@ def run_model_picker(
         choices=choices,
     )
     result = run_single_screen(screen)
+    if result is BACK_SENTINEL:
+        return BACK_SENTINEL
     if result is None:
         raise SystemExit(0)
     if not result:
@@ -436,8 +501,8 @@ def run_model_picker(
     return str(result)
 
 
-def run_agent_picker(*, provider_name: str, agents: list[str]) -> str:
-    """Run the execution-agent picker. Returns agent name or "" for default."""
+def run_agent_picker(*, provider_name: str, agents: list[str]) -> str | object:
+    """Run the execution-agent picker. Returns agent name, "" for default, or BACK_SENTINEL."""
     from the_architect.tui.app import run_single_screen
 
     choices: list[tuple[str, str]] = [("", f"  (use {provider_name} default)")]
@@ -450,6 +515,8 @@ def run_agent_picker(*, provider_name: str, agents: list[str]) -> str:
         choices=choices,
     )
     result = run_single_screen(screen)
+    if result is BACK_SENTINEL:
+        return BACK_SENTINEL
     if result is None:
         raise SystemExit(0)
     return str(result)
@@ -476,18 +543,14 @@ class UpdateActionScreen(Screen[str]):
         background: $panel 20%;
     }
 
-    #update_title { color: $warning; text-style: bold; }
+    #update_title { color: #7cc800; text-style: bold; }
     #update_msg { padding: 1 0; }
     #update_hint { color: $text-muted; padding: 0 0 1 0; }
     #update_instructions { color: $text-muted; padding: 1 0 0 0; }
     """
 
     BINDINGS = [
-        Binding("c", "confirm", "Continue"),
-        Binding("C", "confirm", "Continue"),
         Binding("enter", "confirm", "Continue"),
-        Binding("q", "exit", "Exit"),
-        Binding("Q", "exit", "Exit"),
         Binding("escape", "exit", "Exit"),
         Binding("ctrl+c", "exit", "Exit"),
     ]
@@ -504,7 +567,7 @@ class UpdateActionScreen(Screen[str]):
             yield Static(self._update_msg, id="update_msg")
             yield Static(f"Update:  {self._install_hint}", id="update_hint")
             yield Static(
-                "[dim]Enter / C continue · Q / Esc exit[/dim]",
+                "[dim]Enter continue · Esc exit[/dim]",
                 id="update_instructions",
                 markup=True,
             )
@@ -524,6 +587,94 @@ def run_update_action_screen(update_msg: str, install_hint: str) -> str:
     screen = UpdateActionScreen(update_msg=update_msg, install_hint=install_hint)
     result = run_single_screen(screen)
     return str(result) if result else "exit"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Self-update notification
+# ══════════════════════════════════════════════════════════════════════
+
+
+class SelfUpdateScreen(Screen[str]):
+    """Notification screen shown when a newer version of The Architect is available."""
+
+    DEFAULT_CSS = """
+    SelfUpdateScreen {
+        align: center middle;
+    }
+
+    #selfupdate_body {
+        width: 82;
+        height: auto;
+        padding: 1 2;
+        border: round $panel;
+        background: $panel 20%;
+    }
+
+    #selfupdate_title { color: #7cc800; text-style: bold; }
+    #selfupdate_msg { padding: 1 0; }
+    #selfupdate_hint { color: $text-muted; padding: 0 0 1 0; }
+    #selfupdate_instructions { color: $text-muted; padding: 1 0 0 0; }
+    """
+
+    BINDINGS = [
+        Binding("enter", "continue_run", "Continue"),
+        Binding("u", "update", "Update"),
+        Binding("U", "update", "Update"),
+        Binding("escape", "continue_run", "Continue"),
+        Binding("ctrl+c", "continue_run", "Continue"),
+    ]
+
+    def __init__(self, current_version: str, latest_version: str) -> None:
+        super().__init__()
+        self._current = current_version
+        self._latest = latest_version
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Vertical(id="selfupdate_body"):
+            yield Static("The Architect — update available", id="selfupdate_title")
+            yield Static(
+                f"Version [bold]{self._latest}[/bold] is available  "
+                f"(you have [dim]{self._current}[/dim])",
+                id="selfupdate_msg",
+                markup=True,
+            )
+            yield Static(
+                "pip install --upgrade the-architect",
+                id="selfupdate_hint",
+            )
+            yield Static(
+                "[dim]Enter continue · U update & restart[/dim]",
+                id="selfupdate_instructions",
+                markup=True,
+            )
+        yield Footer()
+
+    def action_continue_run(self) -> None:
+        """Continue with the current version."""
+        self.dismiss("continue")
+
+    def action_update(self) -> None:
+        """Trigger the update and restart flow."""
+        self.dismiss("update")
+
+
+def run_self_update_screen(current_version: str, latest_version: str) -> str:
+    """Run the self-update notification screen.
+
+    Args:
+        current_version: The currently installed version string.
+        latest_version: The newer version available on PyPI.
+
+    Returns:
+        ``"continue"`` — user chose to proceed with the current version.
+        ``"update"``   — user chose to install the update and restart.
+    """
+    from the_architect.tui.app import run_single_screen
+
+    screen = SelfUpdateScreen(current_version=current_version, latest_version=latest_version)
+    result = run_single_screen(screen)
+    return str(result) if result else "continue"
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -607,6 +758,7 @@ def run_pending_tasks_screen(pending: list[str]) -> bool:
 
 
 __all__ = [
+    "BACK_SENTINEL",
     "GoalScreen",
     "PendingTasksScreen",
     "ProviderOption",

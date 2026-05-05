@@ -273,7 +273,7 @@ class OutputAnalysis(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-_PROMISE_PATTERN = re.compile(r"<promise>([TRS]\d+)_COMPLETE</promise>")
+_PROMISE_PATTERN = re.compile(r"<promise>([TR]\d+)_COMPLETE</promise>")
 
 _ERROR_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"I('m| am) (stuck|blocked|unable to)", re.IGNORECASE),
@@ -2634,7 +2634,9 @@ async def run_task(
                 except Exception:
                     pass
 
-            # Update the result with accumulated tokens and total attempts
+            # Update the result with accumulated tokens and total attempts.
+            # outcome_summary must be forwarded so downstream reassessment
+            # can check "Downstream impact: possible" on the returned result.
             return TaskResult(
                 prefix=result.prefix,
                 title=result.title,
@@ -2643,6 +2645,7 @@ async def run_task(
                 attempts=total_attempts,
                 tokens=accumulated_tokens,
                 model=result.model,
+                outcome_summary=result.outcome_summary,
             )
 
         # If cooldown was triggered, skip normal retry pause and loop immediately
@@ -2712,7 +2715,8 @@ async def run_task(
                 break
 
     logger.error(f"Task {task.prefix} failed after {config.max_retries} attempts")
-    # Return failed result with accumulated tokens
+    # Return failed result with accumulated tokens and the outcome summary from
+    # the last attempt so _record_task_outcome / SUCCESS.md have useful context.
     return TaskResult(
         prefix=task.prefix,
         title=task.title or task.name,
@@ -2721,6 +2725,7 @@ async def run_task(
         attempts=total_attempts,
         tokens=accumulated_tokens,
         model=last_result.model if last_result else "",
+        outcome_summary=last_result.outcome_summary if last_result else "",
     )
 
 

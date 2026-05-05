@@ -14,6 +14,7 @@ from textual.app import App
 from textual.widgets import Checkbox, Input
 
 from the_architect.tui.screens.mode_selection import ModeSelectionScreen
+from the_architect.tui.screens.pre_run import BACK_SENTINEL
 
 
 class _Harness(App[None]):
@@ -139,5 +140,44 @@ async def test_arrow_keys_move_focus_between_fields() -> None:
         assert back_focused == first_focused, (
             f"Up arrow did not move focus back: expected {first_focused!r}, got {back_focused!r}."
         )
+        screen.action_cancel()
+        await pilot.pause()
+
+
+# ── Phase A: Back navigation ─────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_back_returns_sentinel() -> None:
+    """Phase A: Backspace dismisses with BACK_SENTINEL instead of None."""
+    screen = ModeSelectionScreen(show_free=True)
+    harness = _Harness(screen)
+    async with harness.run_test() as pilot:
+        await pilot.pause()
+        screen.action_go_back()
+        await pilot.pause()
+    assert harness.dismissed is BACK_SENTINEL
+
+
+# ── Phase A: Pre-fill constructors ──────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_pre_fill_initial_values() -> None:
+    """Phase A: initial_* parameters pre-fill the screen controls."""
+    screen = ModeSelectionScreen(
+        show_free=True,
+        initial_free=True,
+        initial_persistent=True,
+        initial_integrity=False,
+        initial_budget=50000,
+    )
+    harness = _Harness(screen)
+    async with harness.run_test() as pilot:
+        await pilot.pause()
+        assert screen.query_one("#chk_free", Checkbox).value is True
+        assert screen.query_one("#chk_persistent", Checkbox).value is True
+        assert screen.query_one("#chk_integrity", Checkbox).value is False
+        assert screen.query_one("#inp_budget", Input).value == "50000"
         screen.action_cancel()
         await pilot.pause()

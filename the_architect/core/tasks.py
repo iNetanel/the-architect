@@ -104,10 +104,6 @@ def task_prefix(name: str) -> str:
     match = re.match(r"^(T\d+)", name)
     if match:
         return match.group(1)
-    # Also support legacy S-prefix
-    match = re.match(r"^(S\d+)", name)
-    if match:
-        return match.group(1)
     return name
 
 
@@ -128,7 +124,7 @@ def task_number(name: str) -> int:
         >>> task_number("T01")
         1
     """
-    match = re.search(r"[TRS](\d+)", name)
+    match = re.search(r"[TR](\d+)", name)
     if match:
         return int(match.group(1))
     return 0
@@ -160,15 +156,15 @@ def _extract_title(file_path: Path, fallback_name: str) -> str:
         # Strip leading "# " or "# " with multiple hashes
         heading = first_line.lstrip("#").strip()
         # Strip optional prefix like "T01 — ", "R01 - ", "T01 "
-        heading = re.sub(r"^[TRS]\d+\s*[—–\-]\s*", "", heading)
-        heading = re.sub(r"^[TRS]\d+\s+", "", heading)
+        heading = re.sub(r"^[TR]\d+\s*[—–\-]\s*", "", heading)
+        heading = re.sub(r"^[TR]\d+\s+", "", heading)
         if heading:
             return heading
 
     # Fallback: derive from filename stem
     # "T01_changelog_and_version" → "Changelog and version"
     # "R01_fix_missing_tests" → "Fix missing tests"
-    stripped = re.sub(r"^[TRS]\d+_", "", fallback_name)
+    stripped = re.sub(r"^[TR]\d+_", "", fallback_name)
     return stripped.replace("_", " ").capitalize()
 
 
@@ -196,7 +192,7 @@ def discover_tasks(tasks_dir: Path | str) -> list[Task]:
         return []
 
     tasks: list[Task] = []
-    pattern = re.compile(r"^[TRS](\d+)_.+\.md$")
+    pattern = re.compile(r"^[TR](\d+)_.+\.md$")
 
     for entry in tasks_dir.iterdir():
         if entry.name.startswith("architect_eval_"):
@@ -219,5 +215,9 @@ def discover_tasks(tasks_dir: Path | str) -> list[Task]:
                     )
                 )
 
-    tasks.sort(key=lambda t: (t.number, t.prefix))
+    # Sort by number first, then by prefix letter so that T-tasks always come
+    # before R-tasks with the same number ("R" < "T" alphabetically, so without
+    # an explicit map R-tasks would execute first — wrong).
+    _PREFIX_ORDER = {"T": 0, "R": 1}
+    tasks.sort(key=lambda t: (t.number, _PREFIX_ORDER.get(t.prefix[0], 2)))
     return tasks

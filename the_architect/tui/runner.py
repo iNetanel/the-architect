@@ -123,10 +123,12 @@ class ArchitectAppRunner:
                 except Exception:
                     pass
 
-        # Start the worker only *after* the app is running on the main
-        # thread — otherwise call_from_thread has no event loop to
-        # dispatch to and the whole thing hangs. Hook into the app's
-        # ``on_ready`` via a mount-time deferred call.
+        # Start the worker after the app's event loop is running —
+        # call_later fires on the next event loop iteration, which is
+        # after on_mount completes and the SplashScreen is pushed.
+        # The worker will block in push_and_wait() while the SplashScreen
+        # minimum display window runs out (enforced by ArchitectApp),
+        # so the animation plays freely on the event loop during that time.
         def _spawn_worker_when_ready() -> None:
             self._worker = threading.Thread(
                 target=_worker,

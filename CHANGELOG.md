@@ -5,13 +5,386 @@ All notable changes to The Architect are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning follows [Semantic Versioning](https://semver.org/) with a global build counter.
 See [README — Versioning](README.md#versioning) for the full scheme.
-Full rules in [`documentation/Best Practices.md`](documentation/Best%20Practices.md).
+Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ---
 
 ## [Unreleased]
 
+### Changed
+
+- **All providers detect models from the local CLI installation only — no external URLs (build 10162):**
+  - **Gemini CLI**: removed the `googleapis.com` API call from `list_models`.  Models are now
+    extracted from the installed Gemini CLI's JS bundle chunks by resolving `shutil.which("gemini")`
+    and scanning sibling `*.js` files for `gemini-<version>` string literals.  This is
+    OS-agnostic (works with nvm, Homebrew, system npm, Windows, etc.) and reflects exactly what
+    the installed CLI version supports — including custom or enterprise builds.  Falls back to
+    `~/.gemini/settings.json`, then to the static list.
+
+- **All providers now fetch model lists live from the provider instead of hardcoded lists (build 10161):**
+  - **Codex CLI**: `list_models` now calls `codex debug models` (JSON catalog built into the
+    binary), filters to visible entries, and sorts by `priority` so the dropdown order matches
+    the Codex UI.  `get_resolved_model` picks the first visible model from the same catalog.
+    The static `_FALLBACK_CODEX_MODELS` list is only used when the binary call fails entirely.
+  - **Claude Code**: `list_models` now calls `claude models` first (per-account live list,
+    returns only models the user's API key can actually access) and falls back to binary
+    extraction only when the network call fails.  `get_resolved_model` uses `claude models`
+    as the primary source for the default model, with binary extraction as offline fallback.
+  - **Gemini CLI**: `list_models` now queries
+    `https://generativelanguage.googleapis.com/v1beta/models` using `GEMINI_API_KEY`,
+    filters to models that support `generateContent`, and returns the live per-account list.
+    Falls back to `~/.gemini/settings.json` model, then static list.
+  - **OpenCode**: already called `opencode models` live — no change needed.
+
+### Fixed
+
+- **Provider update check showed wrong provider after user selected one in the tabbed pre-run screen (build 10166):**
+  - When the user selected a provider (e.g. Codex) in the tabbed pre-run screen and then submitted
+    their goal, the update check still ran against the originally auto-detected provider (e.g. OpenCode)
+    instead of the one they chose.  The root cause was that `_active_provider` was never re-resolved
+    after `_collect_planning_prompts` stored the user's selection in `config.provider`.  Fixed by
+    re-resolving `_active_provider` via `detect_provider` immediately after `_collect_planning_prompts`
+    returns, when `config.provider` differs from the current active provider.  All downstream calls
+    (update check, planning, execution) now use the correct provider object.
+
+- **Codex CLI model list showed non-existent model names (build 10160):**
+  - The `_FALLBACK_CODEX_MODELS` list contained `gpt-5.3`, `gpt-4.1`, `gpt-4.1-mini`,
+    `gpt-4.1-nano`, `o3-mini`, and `o4-mini` — none of which exist in Codex CLI 0.125.0.
+    The API returned `"The requested model 'gpt-5.3' does not exist."`.
+  - Fixed by extracting the actual model slugs baked into the Codex 0.125.0 binary:
+    `gpt-5.4` (default), `gpt-5.5`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.2`, `o3`.
+    The default (`_FALLBACK_CODEX_MODELS[0]`) is `gpt-5.4` to match the binary's own default.
+
+- **Provider output silently dropped — execution screen showed nothing (build 10159):**
+  - **Codex CLI**: `item.completed` events with `agent_message` text were always discarded
+    because the parser assumed `item.delta` events had already streamed the text live.
+    In practice many Codex builds (and the version used in this project) never emit
+    `item.delta` at all — all agent text arrives only in `item.completed`. Fixed by
+    tracking a per-turn `_delta_text_seen` flag: `item.completed` text is shown when no
+    delta events were received in the turn, and suppressed (de-duplicated) when deltas were.
+    The flag is reset on every `turn.started` event.
+  - **Gemini CLI**: `message` events where `content` is a list of parts
+    (`[{"text": "..."}]`) were silently dropped because the parser only handled the
+    plain-string shape. Fixed by handling both the string and list-of-parts shapes.
+  - **Claude Code**: `assistant` events with multiple `text` content parts only showed
+    the first part (`break` after first match). Fixed by iterating all parts.
+  - Tests updated: `test_item_completed_agent_message` split into two cases —
+    `test_item_completed_agent_message_no_prior_delta` (must show text) and
+    `test_item_completed_agent_message_suppressed_after_delta` (must suppress).
+
+- **Live Output tab stuck on "Waiting for provider output…" placeholder (build 10156):**
+  - Provider output arriving before the execution screen's DOM was fully mounted was queued
+    in `_pending_output`, then `_flush_pending` drained it — but `_write_default_placeholders`
+    ran in LIFO order after `_flush_pending`, overwriting the real output with the placeholder.
+  - Fixed by: (1) swapping the `call_after_refresh` registration order so `_flush_pending`
+    is always scheduled second (and therefore runs last in LIFO), and (2) guarding
+    `_write_default_placeholders` with `_output_received` so it skips the output placeholder
+    entirely when real content has already arrived.
+  - Regression test added: `test_output_before_mount_does_not_show_placeholder`.
+
+- **Events tab crash: `[$accent]` Textual CSS variable replaced with literal brand-green hex color in `RichLog` markup (build 10155):**
+  - Clicking the Events tab during execution crashed because `[$accent]` is a Textual CSS
+    variable, not a valid Rich markup color tag. `RichLog` uses Rich markup exclusively,
+    causing a `MarkupError` whenever an event line was rendered on screen.
+  - Fixed by replacing `[$accent]` / `[/$accent]` with `[#7cc800]` / `[/#7cc800]` (the
+    brand-green hex color) in `_write_event_line`.
+  - Regression test added to `test_tui_app.py` that switches to the Events tab and asserts
+    no unresolved `$accent` tokens appear in the rendered output.
+
+- **Codex provider: live output now streams in real time via `item.delta` events (build 10154):**
+  - The Codex parser previously only captured text from `item.completed` agent_message events,
+    meaning the TUI showed nothing until a full turn finished. Now handles `item.delta` with
+    both `text_delta` and `content_delta` shapes so output appears token-by-token.
+  - `item.completed` agent_message no longer duplicates the already-streamed text.
+  - `command_execution` items now show the actual command (with `$` prefix) rather than just the exec ID.
+
+- **Execution screen: "Waiting for provider output…" placeholder now clears on first real output (build 10154):**
+  - The placeholder was permanently prepended to every provider run's log. The screen now
+    tracks whether any output has arrived and clears the log on the first write so only
+    real provider content is visible.
+
+- **Gemini provider: tool_use events now show input details alongside the tool name (build 10154):**
+  - Previously only `→ tool_name` was shown. Now the most relevant input field (path, command,
+    pattern, query, etc.) is appended for better visibility.
+
+- **Removed legacy S-prefix (standalone) task support (build 10149):**
+  - The `S` prefix was a legacy concept never generated by the planner. Removed from
+    `discover_tasks` pattern, `task_prefix`, `task_number`, `_extract_title`,
+    `reconcile_task_status` regex, `check_pending_tasks`, `archive_previous_run`,
+    the promise-tag pattern, and all prompts and tests.
+  - Sort order simplified: T-tasks sort before R-tasks at the same number (explicit
+    priority map replaces the old string comparison which had `R < S < T`).
+
+- **`outcome_summary` dropped in `run_task` success path — inter-task reassessment never fired (build 10148):**
+  - `run_task` constructed a new `TaskResult` on success without forwarding `outcome_summary`
+    from `run_task_once`, so `_result_needs_reassessment` always saw an empty string and
+    never triggered. Added `outcome_summary=result.outcome_summary` to both the success
+    and failure return paths in `run_task`.
+
+- **Reassessment agent had no project memory — ARCHITECT.md not injected (build 10148):**
+  - `run_task_reassessment` built its instruction without reading ARCHITECT.md, so the
+    architect agent updating pending tasks had no knowledge of permanent decisions,
+    constraints, or lessons learned. Now reads ARCHITECT.md via `read_architect_md` and
+    injects it as a section in the reassessment prompt.
+
+- **Reassessment gate asymmetry — inner check was looser than outer check (build 10148):**
+  - The outer guard (`_result_needs_reassessment`) required `"Downstream impact: possible"`,
+    but the inner gate in `run_task_reassessment` only excluded `"Downstream impact: none"`,
+    meaning any non-empty summary without "none" would pass through. Both gates now
+    consistently require the explicit `"Downstream impact: possible"` signal.
+
+- **`asyncio.run()` inside sync callback could nest event loops (build 10148):**
+  - `on_task_done` called `asyncio.run(run_task_reassessment(...))` directly, which is
+    fragile when called from within an async context. Replaced with
+    `_run_reassessment_in_thread()` which runs the coroutine in a dedicated
+    `ThreadPoolExecutor` thread, giving it a clean event loop in all contexts.
+
+- **Execution agents clobbered `## Task Outcomes` table when rewriting PROGRESS.md (build 10148):**
+  - The PROGRESS.md template shown in `execution-protocol.md` was missing the
+    `## Task Outcomes` and separator sections that `PROGRESS_TEMPLATE` writes. Agents
+    following the protocol example literally would drop these sections on rewrite, silently
+    breaking `_record_task_outcome`. Added both sections to the protocol template and
+    added an explicit rule: "Preserve the `## Task Outcomes` table — copy all existing rows".
+
+- **R-tasks with same number as T-tasks sorted before them — wrong execution order (build 10148):**
+  - `discover_tasks` sorted by `(number, prefix)` string, and `"R" < "T"` lexicographically,
+    so an R05 fix task would execute before a pending T05 original task. Replaced string
+    comparison with an explicit priority map: T/S tasks always sort before R-tasks at the
+    same number.
+
+### Changed
+
+- **Graceful shutdown screen on Ctrl+C (build 10144):**
+  - Instead of a blank terminal during the cleanup window, `action_quit` now pops
+    back to the `SplashScreen` with subtitle "Shutting down…", lets the Matrix rain
+    animate for 1 second, then calls `exit()`. The `_quit_event` is set immediately
+    so any splash-hold sleep on the worker thread wakes up at once — no double delay.
+
+- **SplashScreen animation + minimum display time (build 10142):**
+  - Animation was not visible: worker started via `call_after_refresh` and immediately
+    called `push_and_wait(PreRunScreen)` before a single `MatrixRain._tick` had fired.
+  - Fix: moved the minimum-hold gate into `ArchitectApp.push_and_wait`. The worker
+    thread sleeps for the remaining time (`1.5s - elapsed`) before pushing the next
+    screen, keeping the event loop completely free so the animation runs at full 10 FPS.
+    Reverted runner back to `call_later` (no need for `call_after_refresh` now).
+
+- **Ctrl+C no longer flashes SplashScreen before exit (build 10143):**
+  - Root cause: `PreRunScreen` had `ctrl+c → action_cancel (priority=True)` which
+    called `self.dismiss(None)`, popping the screen and revealing the SplashScreen
+    underneath for a visible flash before `SystemExit` fired.
+  - Fix: removed the `ctrl+c` binding from `PreRunScreen.BINDINGS` entirely. The
+    app-level `ArchitectApp` binding (`ctrl+c → action_quit → app.exit()`) now handles
+    it directly, terminating without unwinding the screen stack.
+
+- **SplashScreen now visible at startup — worker deferred past first render (build 10142):**
+  - Root cause: `ArchitectAppRunner` scheduled the worker thread via `call_later`,
+    which fires in the same event loop tick as `on_mount`. The worker immediately called
+    `switch_and_wait(PreRunScreen)`, pushing it onto the app before the compositor had
+    painted a single frame of `SplashScreen` — so the splash was silently buried and
+    never visible.
+  - Fix: changed `call_later` → `call_after_refresh` in `runner.py`. This guarantees
+    one complete render cycle of `SplashScreen` before the worker thread is started,
+    so the centered animated card is always visible during the startup window.
+
+- **Startup SplashScreen restored as a proper centered card (build 10141):**
+  - The previous consolidation replaced `SplashScreen` with a `WaitScreen` alias.
+    `WaitScreen` is a full-screen log-viewer (title at top-left, scrolling log below)
+    — visually identical to the terminal background with no border, so the startup
+    screen was effectively invisible.
+  - `SplashScreen` is now its own class again: a small centered card
+    (`align: center middle` on the Screen, fixed 48×13 body with `border: round $panel`
+    and `background: $panel 20%`) containing the app title, Matrix rain block, and
+    subtitle — the same visual pattern as `ModeSelectionScreen` and other pre-run dialogs.
+  - Added `test_splash_is_centered` to pin the layout: body must be at `x=16` (centered
+    in an 80-wide terminal) and `y > 1` (not stuck at the top-left).
+
+- **Tabbed scope picker now explains task breadth instead of implying fixed task counts (build 10140):**
+  - Reworded the Goal tab scope hint to explain that scope controls how wide each planned task is, not how many tasks the planner should produce.
+  - Replaced the misleading `2-4`, `5-10`, and `10+` task labels with descriptions aligned to actual planner behavior: atomic task, feature-area task, or subsystem task.
+
+- **Loading screen invisible inside tmux — true-color forwarding (build 10139):**
+  - Root cause: tmux overrides `TERM` to its own `default-terminal` value
+    (`screen-256color`) for every pane it creates, and drops `COLORTERM` / `TERM_PROGRAM`
+    entirely. Textual therefore detected a non-true-color terminal and rendered the
+    animated `WaitScreen` with near-invisible colours (green on near-black background
+    became indistinguishable from the background).
+  - Fix 1: `_configure_terminal_colors()` is now called immediately after session
+    creation. It sets `default-terminal xterm-256color` and `terminal-overrides *:Tc`
+    at session scope (`-s -t SESSION`) so every pane starts with a proper xterm-compatible
+    `TERM` and true-color (`Tc`) capability.
+  - Fix 2: `TERM`, `COLORTERM`, `TERM_PROGRAM`, and `TERM_PROGRAM_VERSION` added to
+    `_FORWARD_ENV_VARS` so the parent terminal's capability values are forwarded as a
+    belt-and-braces fallback alongside the tmux option changes.
+
+- **Startup screen now uses the same WaitScreen as between-stage waits (build 10138):**
+  - Removed the separate `SplashScreen` class entirely. The startup screen is now
+    `WaitScreen(title="Starting up…")` — the identical animated surface used during
+    planning, retrospective, and reassessment waits. One consistent animated screen
+    across the whole app lifecycle instead of two divergent implementations.
+  - `SplashScreen` kept as a backwards-compatible alias (`SplashScreen = WaitScreen`)
+    so existing imports and `isinstance` checks in tests continue to work.
+
+- **Left/right arrow keys now reliably switch tabs (build 10138):**
+  - Root cause: `action_next_tab` / `action_prev_tab` called `_auto_focus_active_tab()`
+    synchronously, which focused a widget inside the new tab before the tab-switch event
+    had settled. Textual's `TabbedContent._on_tab_pane_focused` then fired for the old
+    focused widget and reset `active` back — making every first arrow press a no-op.
+  - Fix: defer `_auto_focus_active_tab()` via `call_after_refresh` so the tab switch
+    lands before focus moves. Same fix applied to `_try_activate_tab` (number-key jumps).
+  - Added regression test `test_right_arrow_actually_switches_tab_from_radioset` that
+    presses the right key while a `RadioSet` has focus and asserts the tab changes.
+
+
+  - Set theme `primary` to architect green (`#7cc800`) so all interactive widget highlights (ListView rows, RadioSet focus, DataTable cursor, Tabs underline) use green instead of the default Textual blue.
+  - All standalone TUI apps (`ConfigApp`, `ListApp`, `StatusApp`, `MonitorApp`, `CircuitApp`, `LogsApp`, `WaitApp`) now apply the architect theme on mount — previously only `ArchitectApp` applied it.
+  - Added green tab hover/active styling (`Tab.-active`, `Tab:hover`, `Underline > .underline--bar`) to `ExecutionScreen` (was already present on `PreRunScreen`).
+  - Exported `apply_architect_theme()` helper from `the_architect.tui.app` for any future standalone app.
+
+- **Splash screen animation now renders correctly (build 10137):**
+  - Replaced `align: center middle` on the screen root (which conflicts with docked `Header`/`Footer`) with a `1fr` container using `align: center middle` internally. The MatrixRain grid now has a guaranteed region to paint into on all terminal sizes.
+
+- **Left/right arrows always switch tabs (build 10137):**
+  - Removed the "smart" deferral that let left/right act as text-cursor movement when the Goal TextArea had focus. Both keys now unconditionally switch tabs on any pre-run screen, matching the user's intent.
+  - `action_next_tab_smart`, `action_prev_tab_smart`, and `_focus_is_in_goal_textarea` removed from `PreRunScreen`.
+  - Up/down key interception removed from `GoalTextArea._on_key` (screen-level priority bindings already handle vertical focus movement).
+
+- **Focus movement (`up`/`down`) bug in Goal tab (build 10137):**
+  - Fixed `_move_focus_within_active_tab` incorrectly calling `.first()` on a `query()` result (raises `NoMatches` in Textual 8.x, not return `None`) — the outer exception handler was swallowing the error and returning `False`, leaving focus unchanged.
+  - Fixed `RadioSet` focus: `RadioSet` has `can_focus_children=False`, so focusing inner `RadioButton` widgets directly is silently ignored. Now focus the `RadioSet` container itself.
+  - Simplified `_auto_focus_active_tab` to use the same approach: focus the first `focusable` child widget in the active tab (RadioSet or otherwise) without special-casing inner radio buttons.
+
+### Changed
+
+- **Renamed the pre-run `Run mode` tab to `Options` (build 10130):**
+  - The tab now uses the clearer `Options` label throughout the tabbed pre-run UI.
+  - The Options tab now also follows the same arrow-key contract as the rest of the app: left/right change tabs, up/down move between controls on the current page.
+  - The Goal text area now explicitly hands up/down back to the screen so section navigation stays consistent there too, while left/right remain text-cursor movement.
+
 ### Added
+
+- **Self-update check at startup (build 10152):**
+  - The Architect now checks PyPI for a newer version during the splash screen
+    animation (`https://pypi.org/pypi/the-architect/json`, 5 s timeout, silent
+    on network failure). Runs at the very start of `_tui_flow` — before provider
+    selection or any other prompts — so it never blocks the normal flow.
+  - If an update is found, a styled notification screen is shown with the
+    current and latest version numbers. `Enter` continues with the installed
+    version; `U` runs `pip install --upgrade the-architect` and re-executes
+    the original command via `os.execvp` so the user lands in the updated
+    version seamlessly. Skipped in `--headless` mode.
+  - New module: `the_architect/core/self_update.py` — `check_self_update()`,
+    `run_self_update()`, `_is_newer()`.
+  - New TUI screen: `SelfUpdateScreen` in `tui/screens/pre_run.py` — architect
+    green title, same visual language as `UpdateActionScreen`.
+  - 12 new unit tests in `tests/test_self_update.py`.
+
+
+- **Pre-run UI Phase A — back navigation, pre-fill, persistence (build 10109):**
+  - Backspace on any pre-run TUI screen (Goal, Scope, Model, Agent, Mode) now navigates back to the previous screen instead of cancelling the entire run. The orchestration loop in `_collect_planning_prompts` is now a state machine: pressing Back on the Scope screen returns to Goal, on the Model screen returns to Scope, and so on.
+  - Scope, architect model, and execution agent selections are **persisted** to `architect.toml` after each run and **pre-filled** on the next run. Repeat runs become "edit the goal, hit Enter" instead of re-answering every prompt.
+  - New `architect_model` and `last_scope` fields on `ArchitectConfig` store the user's last selections. Goal text is intentionally NOT persisted (risk of accidental re-submission).
+  - `BACK_SENTINEL` module-level object distinguishes "go back" from "cancel" (`None`) in screen dismiss values.
+  - New constructor parameters on all pre-run screens: `ScopeScreen(initial_scope=)`, `ProviderSelectionScreen(initial_provider_name=)`, `StringListPickerScreen(initial_value=)`, `ModeSelectionScreen(initial_free=, initial_persistent=, initial_integrity=, initial_budget=)`.
+  - 12 new tests covering back navigation, pre-fill, and config persistence.
+
+### Fixed
+
+- **Legacy stdout-ANSI spinners and countdowns removed — TUI is the only UI (build 10136):**
+  - Root cause of the leftover-animation-after-Ctrl+C: `_start_live_spinner` / `_start_wait_spinner` / `_spin` / `_countdown` / `_start_tui_startup_animation` all spawned background threads or blocked the main thread writing ANSI escape sequences to stdout **while the Textual app was mounted**. The two surfaces fought for the screen: Textual repaints overdrew the spinner, and when the Textual app tore down on Ctrl+C the still-running spinner thread's final frame (or its `\r\033[2K` erase sequence) briefly appeared before the shell prompt returned.
+  - Deleted: `_SpinnerHandle`, `_BlockAnimationHandle`, `_scanner_animate`, `_wait_animate`, `_tui_startup_animate`, `_start_live_spinner`, `_start_wait_spinner`, `_start_tui_startup_animation`, `_live_spinner`, `_spin`, `_countdown`, `_stop_spinner`. ~378 lines of legacy pre-TUI animation machinery.
+  - Deleted call sites: `_prompt_architect_model` (model list fetch), `_prompt_exec_agent` (agent list fetch), `run_planning_mode` (project context setup, planning start), `_run_tasks_raw` (task-start spinner, reassessment, between-task countdown), free-mode fetch, retrospective round spinner.
+  - Result: only the Textual `SplashScreen` / `WaitScreen` / `ExecutionScreen` paint animations now. Nothing outside Textual writes animated ANSI to stdout. No threads painting concurrently with the TUI, no leftover frames after app teardown.
+  - Tests: the three test classes that validated spinner behaviour (`TestCountdownANSI`, `TestSpinANSI`, `TestExecutionStartupStatus`, `TestSpinnersSilentInTuiMode`) are now empty placeholders documenting the removal so nobody re-introduces spinners without noticing.
+  - `_ansi_supported` is kept (still used by `alternate_screen` and TUI gating).
+
+- **Startup and wait loading screens consistently show The Architect animation (build 10131-10135):**
+  - **Build 10135:** Two user-visible regressions addressed.
+    - Removed the plain-ANSI pre-Textual startup loader that wrote a Matrix-rain block directly to stdout before the Textual app mounted. In practice it produced a left-aligned green flash for ~0.2s that users found distracting. The real `SplashScreen` already covers the gap once Textual takes over.
+    - Rain trail palette rebalanced for dark terminal backgrounds. The old palette used `dim $accent` / `dim $text-muted` which rendered as near-invisible dark green on VSCode / Ghostty dark themes — the rain was being painted, but at a brightness level close enough to the background that users saw an empty block. New palette keeps every trail cell at a readable brightness (`#5a9400` mid-green tail) so the animation is visible on any dark theme without relying on surrounding chrome for contrast. `$text-muted` is no longer emitted at all (it also couldn't be parsed by Rich — see build 10132 note below).
+  - Build 10134: Locked `#splash_body` to a fixed `48 × 13` size so the splash layout matches the working planning-screen pattern. Earlier `height: auto` + `align: center middle` caused the rain row to collapse in live terminals.
+  - Build 10133: `MatrixRain` is a `Static` subclass that calls `self.update(frame)` on mount and every tick instead of overriding `Widget.render()`. Earlier versions returned a `rich.text.Text` that some Textual releases skipped painting when its shape didn't match the widget region.
+  - Build 10132: `MatrixRain._resolve_style` never leaks Textual CSS tokens (`$accent`, `$accent-muted`) into Rich. Textual's `text-muted` theme variable is `"auto 60%"`, not a colour; Rich was raising `StyleSyntaxError` for every trail cell and Textual was swallowing the error.
+  - Regression tests: `test_splash_rain_styles_are_rich_parseable` (every emitted style parses as a Rich style), `test_splash_animation_fits_short_startup_panes` (rain region sits between title and subtitle).
+  - Planning, reassessment, and other wait screens now include the same Architect animation instead of relying only on a single spinner glyph.
+  - Added regression coverage for visible splash animation in short startup panes and wait-screen animation rendering.
+
+- **Planning and execution provider output no longer gets hidden behind screen switches (build 10117):**
+  - The TUI app's internal execution-screen helper was switching the active screen as a side effect of ordinary output/footer/detail updates.
+  - During planning, retrospective, and reassessment, those background writes could replace the visible wait overlay for a frame, producing a brief blink while leaving the provider log effectively invisible.
+  - Fixed by making execution-screen creation lazy without changing the active screen; only explicit transitions such as `switch_to_execution()` now replace the current screen.
+  - Added a regression test that verifies streamed execution output does not dislodge a visible wait overlay.
+
+- **Planning wait screens now keep early provider output instead of dropping it during mount (build 10118):**
+  - The standalone `WaitApp` path used during planning could receive provider log lines immediately after the background app thread started but before `WaitScreen` had mounted its `RichLog` widget.
+  - Those early `append_log()` and `set_detail()` calls were swallowed by broad exception handling, which made the planning window look empty except for an occasional blink.
+  - Fixed by buffering wait-screen detail/log updates until after the first refresh, then flushing them into the mounted widgets.
+  - Added regression tests for both standalone planning wait screens and in-app wait overlays.
+
+- **Planning start regression fixed after a TUI gating refactor (build 10120):**
+  - A follow-up change incorrectly switched `run_planning_mode()` to a `use_tui` gate even though that function does not own a `use_tui` parameter.
+  - That made planning unstable right at startup.
+  - Fixed by restoring the original planning gate so the planner again follows the established Textual-mode detection path.
+
+- **Wait-overlay teardown no longer pops unrelated top screens (build 10121):**
+  - `ArchitectApp.hide_wait()` previously called `pop_screen()` unconditionally.
+  - If another overlay was stacked above the wait screen, hiding wait would dismiss the wrong screen and corrupt the visible lifecycle.
+  - Fixed by only popping when the wait screen is actually the active top screen, and added a regression test for the stacked-overlay case.
+
+- **Arrow-key navigation is now consistent across the tabbed pre-run UI (build 10126):**
+  - Left/right arrows are now reserved for moving between tabs, except inside the goal text field where they still move the text cursor.
+  - Up/down arrows now move between sections and selectable controls on the active page.
+  - Initial focus now lands on concrete selectable controls instead of container widgets, so vertical navigation works consistently in resume and pre-run flows.
+  - Resume-screen up/down bindings now run at high priority so focused radio controls do not consume them for in-group navigation.
+  - The tabbed pre-run screen now scopes vertical focus movement to the active tab, including the Options tab, so left/right no longer act like option-selection keys there.
+  - Added regression coverage for both the binding map and real focus movement.
+
+- **PreRunScreen was blocking the event loop, freezing splash animation AND hiding planning/execution output (build 10116):**
+  - `on_mount()` called `provider.list_models()` and `provider.list_agents()` synchronously. Both shell out to `opencode models` / `claude agents` via `subprocess.run(... timeout=15)`, so the Textual event loop was frozen for up to 15s per provider while the screen mounted. During that freeze:
+    - the splash-screen Matrix-rain animation behind the pre-run screen stopped ticking,
+    - the user saw a blank-looking screen with no title / no animation,
+    - the subsequent planning/execution wait-screen RichLog stopped receiving updates because the event loop was still catching up to the queued work when the worker thread started streaming.
+  - Fixed by moving provider data fetching into a Textual ``run_worker(thread=True)`` worker. The UI now shows a "Loading models…" hint immediately; once the worker returns, ``call_from_thread`` hops the list update back onto the event loop. Same change for provider-switch refreshes.
+  - This one fix explains issues (1) "splash has no animation / no title" and (4) "planning screen not showing progress from agents" — both were downstream symptoms of the same blocked event loop.
+
+- **Arrow keys now switch tabs on the pre-run screen (build 10116):**
+  - Plain ``right`` / ``left`` switch to the next / previous tab. When focus is on the Goal TextArea the actions defer to the TextArea's cursor movement, so editing the goal text still works exactly like a normal editor. ``Ctrl+Tab`` / ``Ctrl+←`` / ``Ctrl+→`` still force a tab switch even from inside the TextArea.
+  - Implemented via two new screen actions — ``next_tab_smart`` / ``prev_tab_smart`` — that check the focused widget before delegating.
+  - Regression guards: ``test_right_key_binding_wired_to_smart_action`` and ``test_smart_arrow_defers_when_focus_in_goal_textarea``.
+
+- **Tab selector colour — fixed CSS selector so the override actually applies (build 10116):**
+  - Previous build (10115) tried ``PreRunScreen Tabs Underline > .underline--bar`` but Textual's selector matching on component classes needs the rule *without* the intermediate ``Tabs`` parent. The selector is now ``PreRunScreen Underline > .underline--bar`` and ``PreRunScreen Tab.-active``, which correctly overrides the default blue / grey with ``$accent`` (brand green).
+  - Added explanatory comment in the DEFAULT_CSS block so the next editor doesn't "tidy" the selectors back into a broken form.
+
+- **Architect model prompt shown again after tabbed PreRunScreen submit (build 10115):**
+  - When the user picked "(use provider default)" for the architect model in the tabbed screen, the value returned as empty string. `run_planning_mode` then saw a falsy string at its `if architect_model_override:` check and prompted again — exactly the behaviour the tabbed screen was meant to replace.
+  - Fixed by adding a `_tabbed_model_collected` flag on `ArchitectConfig` (same pattern as `_tabbed_mode_collected`). When set, `run_planning_mode` resolves the provider default explicitly instead of prompting.
+
+- **Tab selector colour matches The Architect green (build 10115):**
+  - The `TabbedContent` underline and active-tab text used Textual's default blue / grey. Overridden to `$accent` (brand green) via scoped CSS selectors on `Tabs Underline > .underline--bar` and `Tabs Tab.-active`. `Tabs Tab:hover` also picks up `$accent` so the hover state tracks the brand.
+
+- **Enter now submits the pre-run form — Shift+Enter inserts a newline (build 10115):**
+  - Matches chat-app convention (Claude, ChatGPT, etc.) so users coming from any modern prompt UX get the expected behaviour. The Goal tab's hint line now reads `Enter = submit, Shift+Enter = newline`.
+  - The screen-level `Enter` binding is `priority=True`, so Enter fires the submit regardless of focus. A new `GoalTextArea` subclass intercepts `shift+enter` to insert a literal `\n` into the TextArea.
+  - Added `test_enter_submits_from_goal_textarea` and `test_shift_enter_inserts_newline_in_goal_textarea` as regression guards.
+
+- **Scope moved back into the Goal tab (above the goal text) (build 10115):**
+  - User feedback: a separate Scope tab felt like over-fragmentation; Scope + Goal are tightly coupled concerns. Scope RadioSet now sits above the Goal TextArea inside the Goal tab. Number-key hotkeys reverted to `1=Goal, 2=Provider (or Models), 3=Models (or Options), 4=Options`.
+  - Regression guard: `test_scope_radio_lives_in_goal_tab` asserts there is no `tab_scope` and that the RadioSet + TextArea both live in the Goal tab pane.
+  - Also added `test_only_one_provider_radio_selected_at_a_time` that clicks multiple provider radio buttons in sequence and asserts `RadioSet.pressed_button` stays pinned to exactly one.
+
+- **PreRunScreen crash when switching to non-OpenCode provider (build 10114):**
+  - Selecting Codex / Claude Code / Gemini after OpenCode caused a crash because the Models tab used `remove_children() + mount()` to rebuild its contents on every provider change — a Textual mount/unmount race that left query_one lookups targeting widgets that were simultaneously being torn down and re-added.
+  - Fixed by switching the Models tab to in-place `ListView.clear() + append()` updates with `display` toggles for agent widgets. The tab is now composed once during `compose()` and only its contents change, never its widget tree.
+  - Also fixed `_show_agent` being computed once across all providers in `__init__` instead of recomputing per-active-provider. The tab now correctly hides the "Execution agent" ListView when the active provider doesn't support agents (e.g. Codex), regardless of what other installed providers support.
+  - Added regression test `test_switching_provider_does_not_crash` that switches from OpenCode to Codex and asserts no exception and correct list refresh.
+
+- **PreRunScreen Models tab was empty (build 10113):**
+  - `_rebuild_models_tab()` queried for `Vertical` but `TabPane` is not a `Vertical` subclass, so the query silently failed and the loading placeholder was never replaced with model/agent lists.
+  - Fixed by querying for `TabPane` instead. Added `loguru` logger calls in key failure paths so similar issues surface in debug logs.
+
+- **Mode selection screen shown again after tabbed PreRunScreen submit (build 10113):**
+  - The separate `_prompt_mode_selection()` call still fired even when the tabbed screen had already collected mode settings, because the guard condition only checked `persistent or free_mode` — both default to False.
+  - Fixed by adding `_tabbed_mode_collected` flag on `ArchitectConfig` after the tabbed screen returns, and checking it in both mode selection guard conditions.
 
 - **TUI — ESC pause menu during execution and wait screens (build 10100):**
   - ESC on the execution or wait screen now opens a modal pause menu with three choices: `[C]ontinue` (dismiss and resume), `[D]etach` (tmux detach-client so the run keeps going and can be reattached with `tmux attach`), or `[E]xit` (hard-kill the run, same as Ctrl+C).

@@ -24,11 +24,11 @@ from typing import ClassVar
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Footer, Header, RichLog, Static
 
-from the_architect.tui.widgets import next_matrix_frame
+from the_architect.tui.widgets import MatrixRain, next_matrix_frame
 
 
 class WaitScreen(Screen[None]):
@@ -45,6 +45,12 @@ class WaitScreen(Screen[None]):
     }
 
     #wait_title { color: $accent; text-style: bold; }
+    #wait_rain_row {
+        width: 100%;
+        height: 7;
+        align-horizontal: center;
+        margin: 1 0 0 0;
+    }
     #wait_detail { color: $text-muted; padding: 1 0; }
 
     RichLog { border: round $panel; height: 1fr; }
@@ -81,11 +87,19 @@ class WaitScreen(Screen[None]):
         self._detail = ""
         self._frame_index = 0
         self._current_frame = next_matrix_frame(self._frame_index)
+        # Buffer early provider lines/details that may arrive before the
+        # screen has fully mounted. This is especially important for the
+        # standalone planning WaitApp path, where the provider can start
+        # streaming immediately after the app thread starts.
+        self._pending_detail: str | None = None
+        self._pending_log_lines: list[str] = []
 
     def compose(self) -> ComposeResult:
         yield Header()
         with Vertical(id="wait_body"):
             yield Static(self._render_title(), id="wait_title")
+            with Horizontal(id="wait_rain_row"):
+                yield MatrixRain(id="wait_rain")
             yield Static("", id="wait_detail")
             with VerticalScroll():
                 yield RichLog(
@@ -101,6 +115,7 @@ class WaitScreen(Screen[None]):
     def on_mount(self) -> None:
         # 10 FPS spinner; matches the feel of the inline scanner.
         self.set_interval(0.1, self._tick_spinner)
+        self.call_after_refresh(self._flush_pending)
 
     # ── Actions ────────────────────────────────────────────────────────
 
@@ -133,14 +148,14 @@ class WaitScreen(Screen[None]):
         try:
             self.query_one("#wait_detail", Static).update(detail)
         except Exception:
-            pass
+            self._pending_detail = detail
 
     def append_log(self, line: str) -> None:
         try:
             log = self.query_one("#wait_log", RichLog)
             log.write(line)
         except Exception:
-            pass
+            self._pending_log_lines.append(line)
 
     # ── Internal ──────────────────────────────────────────────────────
 
@@ -157,6 +172,27 @@ class WaitScreen(Screen[None]):
 
     def _render_title(self) -> str:
         return f"{self._current_frame}  {self._title}"
+
+    def _flush_pending(self) -> None:
+        if self._pending_detail is not None:
+            try:
+                self.query_one("#wait_detail", Static).update(self._pending_detail)
+            except Exception:
+                pass
+            else:
+                self._pending_detail = None
+
+        if not self._pending_log_lines:
+            return
+
+        try:
+            log = self.query_one("#wait_log", RichLog)
+        except Exception:
+            return
+
+        for line in self._pending_log_lines:
+            log.write(line)
+        self._pending_log_lines.clear()
 
 
 class WaitApp(App[None]):
@@ -180,6 +216,9 @@ class WaitApp(App[None]):
         self._screen = WaitScreen(title=title)
 
     def on_mount(self) -> None:
+        from the_architect.tui.app import apply_architect_theme
+
+        apply_architect_theme(self)
         self.push_screen(self._screen)
 
     # Proxy convenience methods so existing callers keep working.

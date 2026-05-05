@@ -1,4 +1,4 @@
-# Best Practices — The Architect
+# PRACTICES — The Architect
 
 > **Canonical, tool-agnostic rules for every agent and contributor.**
 > Every agent — regardless of which CLI invoked it (OpenCode, Claude Code, or any
@@ -24,7 +24,7 @@ same rules in three places and they would drift. Instead:
 
 1. **This file** holds the canonical rules
 2. Every tool's convention file is a thin pointer that says *"read
-   `documentation/Best Practices.md` first"*
+   `documentation/PRACTICES.md` first"*
 3. Tool-specific notes (file layout quirks, which flag to use, etc.) stay in the
    tool's own convention file
 
@@ -48,6 +48,7 @@ These apply to every task, every agent, every PR. Violations are always CRITICAL
 9. **Never run destructive commands** (`rm -rf`, database drops, force pushes,
    history rewrites) without explicit human approval
 10. **Bump the build number on every completed task** — see the Build Number section
+11. **Follow the File Integrity Protocol when `integrity = true`** — see the File Integrity section
 
 ---
 
@@ -256,7 +257,7 @@ Agents never commit unless the human explicitly asks.
 
 ## Before Every Task — Checklist
 
-1. Read this document (`documentation/Best Practices.md`)
+1. Read this document (`documentation/PRACTICES.md`)
 2. Read the tool's convention file (e.g. `AGENTS.md`) for tool-specific notes
 3. Read `PROGRESS.md` if executing a task in a run
 4. Read the task file in full
@@ -369,6 +370,57 @@ Both lines MUST be present and correctly formatted at the end of every task.
 
 ---
 
+## File Integrity Protocol
+
+When `integrity = true` is active (the default), every build agent MUST follow this protocol before editing any **existing** file:
+
+```
+1. Copy the existing file to architect_eval_<filename> in the same directory.
+   Do NOT create snapshots for brand-new files.
+2. Make your change to the original file normally.
+   Never create snapshots for architect_eval_* files themselves.
+3. Validate the rewritten file against the snapshot:
+   check for truncation, missing sections, or large unexpected size shrinkage.
+4. If validation passes — delete the architect_eval_* snapshot immediately.
+5. If validation fails — restore from the snapshot, diagnose, retry, then delete.
+```
+
+**Never leave `architect_eval_*` files behind after a task completes.**
+Any leftover snapshot is treated by The Architect as a corruption signal
+and will block inter-task reassessment and retrospective review.
+
+This rule applies to all agents on all providers whenever `integrity = true`.
+
+---
+
+## Inter-Task Reassessment
+
+After each task, The Architect may run a lightweight reassessment pass.
+The build agent triggers this by including a structured outcome block at the end of its work:
+
+```
+=== TASK OUTCOME ===
+Summary:      brief description of what was done
+Files:        list of created/modified files
+Verification: tests run, linter result
+Impact:       Downstream impact: possible   ← or "none"
+```
+
+When `Downstream impact: possible` is set, the architect agent reviews the pending
+task files and updates them to reflect what just changed. This prevents later tasks
+from doing redundant or conflicting work.
+
+**Rules for build agents:**
+
+- Always include the `=== TASK OUTCOME ===` block at the end of the task
+- Set `Downstream impact: possible` when you added, renamed, or significantly changed
+  an interface, module, schema, or file that later tasks reference
+- Set `Downstream impact: none` when your changes are self-contained (e.g., a test fix,
+  a doc update, a style change)
+- Never fabricate `Downstream impact: possible` when the impact is genuinely local
+
+---
+
 ## Documentation Updates
 
 After any task that introduces or changes any of the following, update the
@@ -382,7 +434,7 @@ relevant documentation before reporting completion:
 Documentation updates do NOT require human approval.
 
 Changes to agent prompts (`dev/opencode/prompts/*.md`), `opencode.json`, or
-this file (`documentation/Best Practices.md`) REQUIRE human approval.
+this file (`documentation/PRACTICES.md`) REQUIRE human approval.
 Flag with `PROMPT UPDATE SUGGESTED` in the completion report.
 
 ---

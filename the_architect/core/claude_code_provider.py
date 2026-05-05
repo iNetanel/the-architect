@@ -157,27 +157,19 @@ class ClaudeCodeProvider:
     def list_models(self) -> list[str]:
         """Return model identifiers from the user's Claude Code installation.
 
-        Resolution order (fastest first):
-        1. **Binary extraction** — scan the Claude Code executable for
-           embedded model IDs (~0.1s, no network call).  The binary ships
-           with the full list of known models baked in.
-        2. **``claude models`` API call** — queries Anthropic's API to
-           return only the models the user's account has access to
-           (~8s, network required).  Used only when binary extraction
-           fails or returns no results.
-        3. **Static fallback list** — hardcoded list of known models.
-           Only used when both methods above fail.
+        Resolution order:
+        1. **``claude models`` CLI call** — queries Anthropic's API and returns
+           only the models the user's account can actually access.  This is the
+           authoritative source: the list changes per account and per release.
+        2. **Binary extraction** — scan the Claude Code executable for embedded
+           model IDs (~0.1s, no network).  Used when the CLI call fails or times
+           out (e.g. no network).
+        3. **Static fallback list** — last resort only.
 
         Returns:
-            List of model identifier strings, sorted alphabetically.
+            List of model identifier strings in the order the CLI reports them.
         """
-        # 1. Fast path: extract models from the binary itself
-        if self._binary_models_cache is None:
-            self._binary_models_cache = _extract_models_from_binary()
-        if self._binary_models_cache:
-            return list(self._binary_models_cache)
-
-        # 2. Slow path: claude models API call
+        # 1. Live list from claude models (per-account, always up to date)
         try:
             result = subprocess.run(
                 ["claude", "models"],
@@ -188,12 +180,17 @@ class ClaudeCodeProvider:
             if result.returncode == 0:
                 models = _parse_claude_models_output(result.stdout)
                 if models:
-                    self._binary_models_cache = sorted(models)
-                    return list(self._binary_models_cache)
-
-            logger.debug("claude models returned no parseable models, using fallback list")
+                    logger.debug(f"Claude Code: loaded {len(models)} models from claude models")
+                    return models
+            logger.debug("claude models returned no parseable models, trying binary extraction")
         except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError) as exc:
-            logger.debug(f"claude models call failed: {exc!r}, using fallback list")
+            logger.debug(f"claude models call failed: {exc!r}, trying binary extraction")
+
+        # 2. Binary extraction fallback (offline / no network)
+        if self._binary_models_cache is None:
+            self._binary_models_cache = _extract_models_from_binary()
+        if self._binary_models_cache:
+            return list(self._binary_models_cache)
 
         # 3. Last resort: static fallback
         return list(_FALLBACK_CLAUDE_MODELS)
@@ -298,19 +295,8 @@ class ClaudeCodeProvider:
             self._resolved_model_cache[cache_key] = model
             return model
 
-        # 4. Fast path: pick default model from binary-extracted list
-        #    Prefer the newest non-dated model ID (e.g. "claude-sonnet-4-6"
-        #    over "claude-sonnet-4-6-20251101").  These short IDs are the
-        #    aliases Claude Code uses by default.
-        if self._binary_models_cache is None:
-            self._binary_models_cache = _extract_models_from_binary()
-        if self._binary_models_cache:
-            default = _pick_default_model(self._binary_models_cache)
-            if default:
-                self._resolved_model_cache[cache_key] = default
-                return default
-
-        # 5. Slow path: claude models API call
+        # 4. Live default from claude models (same call as list_models, parses
+        #    the "You're currently running on..." prose line)
         try:
             result = subprocess.run(
                 ["claude", "models"],
@@ -325,6 +311,15 @@ class ClaudeCodeProvider:
                     return default_model
         except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
             pass
+
+        # 5. Binary extraction fallback (offline)
+        if self._binary_models_cache is None:
+            self._binary_models_cache = _extract_models_from_binary()
+        if self._binary_models_cache:
+            default = _pick_default_model(self._binary_models_cache)
+            if default:
+                self._resolved_model_cache[cache_key] = default
+                return default
 
         return ""
 
@@ -561,7 +556,6 @@ class ClaudeCodeProvider:
                         text = (part.get("text") or "").strip()
                         if text:
                             display_lines.extend(text.split("\n"))
-                        break
                     # "thinking" and "tool_use" content parts: skip silently
             # Claude Code sets error="rate_limit" on the assistant event when
             # the request is rejected before the model runs.

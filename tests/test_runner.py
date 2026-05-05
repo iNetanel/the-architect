@@ -53,7 +53,7 @@ from the_architect.core.tasks import Task, TaskPlan, TaskStatus
 def config(tmp_path: Path) -> ArchitectConfig:
     progress_file = tmp_path / "PROGRESS.md"
     progress_file.write_text(
-        "**Tasks completed:** 0\n**Next task to run:** S01\n",
+        "**Tasks completed:** 0\n**Next task to run:** T01\n",
         encoding="utf-8",
     )
     tasks_dir = tmp_path / "tasks"
@@ -74,11 +74,11 @@ def config(tmp_path: Path) -> ArchitectConfig:
 
 @pytest.fixture
 def task(config: ArchitectConfig) -> Task:
-    path = config.tasks_dir / "S01_test.md"
-    path.write_text("# S01 - Test Task\n", encoding="utf-8")
+    path = config.tasks_dir / "T01_test.md"
+    path.write_text("# T01 - Test Task\n", encoding="utf-8")
     return Task(
-        name="S01_test",
-        prefix="S01",
+        name="T01_test",
+        prefix="T01",
         number=1,
         path=path,
         status=TaskStatus.PENDING,
@@ -1112,12 +1112,12 @@ class TestExtractProgressSignals:
 class TestIsTaskComplete:
     def test_promise_alone_is_done(self):
         oa = OutputAnalysis(
-            completion_promises=["S01"],
+            completion_promises=["T01"],
             error_signals=[],
             progress_signals=[],
             agent_self_assessment="unknown",
         )
-        done, reasons = is_task_complete("S01", oa, False, 0)
+        done, reasons = is_task_complete("T01", oa, False, 0)
         assert done is True
 
     def test_two_signals_done(self):
@@ -1127,7 +1127,7 @@ class TestIsTaskComplete:
             progress_signals=["all tests pass"],
             agent_self_assessment="complete",
         )
-        done, reasons = is_task_complete("S01", oa, True, 0)
+        done, reasons = is_task_complete("T01", oa, True, 0)
         assert done is True
 
     def test_exit_code_alone_not_done(self):
@@ -1137,7 +1137,7 @@ class TestIsTaskComplete:
             progress_signals=[],
             agent_self_assessment="unknown",
         )
-        done, reasons = is_task_complete("S01", oa, False, 0)
+        done, reasons = is_task_complete("T01", oa, False, 0)
         assert done is False
 
     def test_progress_md_done_alone(self):
@@ -1147,14 +1147,14 @@ class TestIsTaskComplete:
             progress_signals=[],
             agent_self_assessment="unknown",
         )
-        done, reasons = is_task_complete("S01", oa, True, 1)
+        done, reasons = is_task_complete("T01", oa, True, 1)
         assert done is True
 
 
 class TestBuildInstruction:
     def test_basic_instruction(self, task, config):
         result = build_instruction(task, attempt=1, config=config)
-        assert "S01" in result
+        assert "T01" in result
         assert task.path.name in result
 
     def test_with_architect_md_content(self, task, config):
@@ -1197,32 +1197,32 @@ class TestBuildInstruction:
 
 class TestBuildAttemptSummary:
     def test_basic_summary(self, config, task):
-        log_path = config.log_dir / "S01_test.log"
+        log_path = config.log_dir / "T01_test.log"
         log_path.write_text("Some log content", encoding="utf-8")
         summary = build_attempt_summary(
-            task_id="S01",
+            task_id="T01",
             attempt_number=1,
             log_path=log_path,
             completion_detected=False,
             total_tokens=100,
         )
-        assert summary.task_id == "S01"
+        assert summary.task_id == "T01"
 
     def test_log_file_not_found(self, config, task):
         log_path = config.log_dir / "nonexistent.log"
         summary = build_attempt_summary(
-            task_id="S01",
+            task_id="T01",
             attempt_number=1,
             log_path=log_path,
             completion_detected=False,
             total_tokens=0,
         )
-        assert summary.task_id == "S01"
+        assert summary.task_id == "T01"
 
 
 class TestSummarizePreviousAttempt:
     def test_basic(self, config, task):
-        log_path = config.log_dir / "S01_test.log"
+        log_path = config.log_dir / "T01_test.log"
         log_path.write_text("Error: something failed", encoding="utf-8")
         result = summarize_previous_attempt(log_path=log_path)
         assert isinstance(result, str)
@@ -1262,9 +1262,9 @@ class TestRunTaskOnce:
     @pytest.mark.asyncio
     async def test_basic_run(self, task, config):
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
             "| Task | Title | Status | Completed |\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
         mock_result = StreamResult(exit_code=0, tokens=TokenUsage(), accumulated_text="")
@@ -1307,8 +1307,8 @@ class TestRunTaskCircuitBreaker:
         )
         cb.record_attempt.return_value = cb_state
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
         mock_stream = StreamResult(exit_code=0, tokens=TokenUsage(), accumulated_text="")
@@ -1328,8 +1328,8 @@ class TestRunTaskCircuitBreaker:
         ]
         cb.handle_cooldown_wait = AsyncMock(side_effect=RuntimeError("cooldown failed"))
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
         mock_stream = StreamResult(exit_code=0, tokens=TokenUsage(), accumulated_text="")
@@ -1351,8 +1351,8 @@ class TestRunTaskCircuitBreaker:
         )
         cb.record_attempt.return_value = cb_state
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
         with patch(
@@ -1382,8 +1382,8 @@ class TestRunTaskArchitectMdAndCallbacks:
     @pytest.mark.asyncio
     async def test_reads_architect_md(self, task, config):
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
         architect_md = config.progress_file.parent / "ARCHITECT.md"
@@ -1411,8 +1411,8 @@ class TestRunTaskArchitectMdAndCallbacks:
     @pytest.mark.asyncio
     async def test_on_attempt_start_callback_exception(self, task, config):
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
         mock_stream = StreamResult(exit_code=0, tokens=TokenUsage(), accumulated_text="")
@@ -1429,8 +1429,8 @@ class TestRunTaskArchitectMdAndCallbacks:
         from the_architect.core.provider import ArchitectProvider
 
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
         mock_provider = MagicMock(spec=ArchitectProvider)
@@ -1496,8 +1496,8 @@ class TestRunTaskFreeModeRotation:
             ]
         )
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
 
@@ -1518,8 +1518,8 @@ class TestRunTaskFreeModeRotation:
             ]
         )
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
 
@@ -1542,11 +1542,11 @@ class TestRunAll:
     @pytest.mark.asyncio
     async def test_acquire_lock_failure_raises(self, config, tmp_path):
         tasks_dir = tmp_path / "tasks"
-        s1_path = tasks_dir / "S01_first.md"
-        s1_path.parent.mkdir(parents=True, exist_ok=True)
-        s1_path.write_text("# S01\n", encoding="utf-8")
+        t1_path = tasks_dir / "T01_first.md"
+        t1_path.parent.mkdir(parents=True, exist_ok=True)
+        t1_path.write_text("# T01\n", encoding="utf-8")
         tasks = [
-            Task(name="S01_first", prefix="S01", number=1, path=s1_path, status=TaskStatus.PENDING)
+            Task(name="T01_first", prefix="T01", number=1, path=t1_path, status=TaskStatus.PENDING)
         ]
         plan = TaskPlan(tasks=tasks)
 
@@ -1559,23 +1559,23 @@ class TestRunAll:
         from the_architect.core.runner import _run_all_inner
 
         tasks_dir = tmp_path / "tasks"
-        s1_path = tasks_dir / "S01_first.md"
-        s1_path.parent.mkdir(parents=True, exist_ok=True)
-        s1_path.write_text("# S01\n", encoding="utf-8")
+        t1_path = tasks_dir / "T01_first.md"
+        t1_path.parent.mkdir(parents=True, exist_ok=True)
+        t1_path.write_text("# T01\n", encoding="utf-8")
         tasks = [
-            Task(name="S01_first", prefix="S01", number=1, path=s1_path, status=TaskStatus.PENDING)
+            Task(name="T01_first", prefix="T01", number=1, path=t1_path, status=TaskStatus.PENDING)
         ]
         plan = TaskPlan(tasks=tasks)
 
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
 
         async def mock_run_task(**kwargs):
             return TaskResult(
-                prefix="S01",
+                prefix="T01",
                 title="first",
                 status="done",
                 duration_seconds=1.0,
@@ -1596,17 +1596,17 @@ class TestRunAll:
         from the_architect.core.runner import _run_all_inner
 
         tasks_dir = tmp_path / "tasks"
-        s1_path = tasks_dir / "S01_first.md"
-        s1_path.parent.mkdir(parents=True, exist_ok=True)
-        s1_path.write_text("# S01\n", encoding="utf-8")
+        t1_path = tasks_dir / "T01_first.md"
+        t1_path.parent.mkdir(parents=True, exist_ok=True)
+        t1_path.write_text("# T01\n", encoding="utf-8")
         tasks = [
-            Task(name="S01_first", prefix="S01", number=1, path=s1_path, status=TaskStatus.PENDING)
+            Task(name="T01_first", prefix="T01", number=1, path=t1_path, status=TaskStatus.PENDING)
         ]
         plan = TaskPlan(tasks=tasks)
 
         async def mock_run_task(**kwargs):
             return TaskResult(
-                prefix="S01",
+                prefix="T01",
                 title="first",
                 status="failed",
                 duration_seconds=1.0,
@@ -1627,11 +1627,11 @@ class TestRunAll:
         from the_architect.core.runner import _run_all_inner
 
         tasks_dir = tmp_path / "tasks"
-        s1_path = tasks_dir / "S01_first.md"
-        s1_path.parent.mkdir(parents=True, exist_ok=True)
-        s1_path.write_text("# S01\n", encoding="utf-8")
+        t1_path = tasks_dir / "T01_first.md"
+        t1_path.parent.mkdir(parents=True, exist_ok=True)
+        t1_path.write_text("# T01\n", encoding="utf-8")
         tasks = [
-            Task(name="S01_first", prefix="S01", number=1, path=s1_path, status=TaskStatus.PENDING)
+            Task(name="T01_first", prefix="T01", number=1, path=t1_path, status=TaskStatus.PENDING)
         ]
         plan = TaskPlan(tasks=tasks)
 
@@ -1648,16 +1648,16 @@ class TestRunAll:
 
         config.token_budget_per_hour = 100
         tasks_dir = tmp_path / "tasks"
-        s1_path = tasks_dir / "S01_first.md"
-        s1_path.parent.mkdir(parents=True, exist_ok=True)
-        s1_path.write_text("# S01\n", encoding="utf-8")
+        t1_path = tasks_dir / "T01_first.md"
+        t1_path.parent.mkdir(parents=True, exist_ok=True)
+        t1_path.write_text("# T01\n", encoding="utf-8")
         tasks = [
-            Task(name="S01_first", prefix="S01", number=1, path=s1_path, status=TaskStatus.PENDING)
+            Task(name="T01_first", prefix="T01", number=1, path=t1_path, status=TaskStatus.PENDING)
         ]
         plan = TaskPlan(tasks=tasks)
 
         mock_result = TaskResult(
-            prefix="S01",
+            prefix="T01",
             title="first",
             status="done",
             duration_seconds=1.0,
@@ -1668,8 +1668,8 @@ class TestRunAll:
 
         async def mock_run_task(**kwargs):
             config.progress_file.write_text(
-                "**Tasks completed:** 1\n**Next task to run:** S02\n"
-                "| S01 | Test | Done | 2026-04-12 |\n",
+                "**Tasks completed:** 1\n**Next task to run:** T02\n"
+                "| T01 | Test | Done | 2026-04-12 |\n",
                 encoding="utf-8",
             )
             return mock_result
@@ -1689,21 +1689,21 @@ class TestRunAll:
 
         config.token_budget_per_hour = 100
         tasks_dir = tmp_path / "tasks"
-        s1_path = tasks_dir / "S01_first.md"
-        s1_path.parent.mkdir(parents=True, exist_ok=True)
-        s1_path.write_text("# S01\n", encoding="utf-8")
-        s2_path = tasks_dir / "S02_second.md"
-        s2_path.write_text("# S02\n", encoding="utf-8")
+        t1_path = tasks_dir / "T01_first.md"
+        t1_path.parent.mkdir(parents=True, exist_ok=True)
+        t1_path.write_text("# T01\n", encoding="utf-8")
+        t2_path = tasks_dir / "T02_second.md"
+        t2_path.write_text("# S02\n", encoding="utf-8")
         tasks = [
-            Task(name="S01_first", prefix="S01", number=1, path=s1_path, status=TaskStatus.PENDING),
+            Task(name="T01_first", prefix="T01", number=1, path=t1_path, status=TaskStatus.PENDING),
             Task(
-                name="S02_second", prefix="S02", number=2, path=s2_path, status=TaskStatus.PENDING
+                name="T02_second", prefix="T02", number=2, path=t2_path, status=TaskStatus.PENDING
             ),
         ]
         plan = TaskPlan(tasks=tasks)
 
         mock_result = TaskResult(
-            prefix="S01",
+            prefix="T01",
             title="first",
             status="done",
             duration_seconds=1.0,
@@ -1714,8 +1714,8 @@ class TestRunAll:
 
         async def mock_run_task(**kwargs):
             config.progress_file.write_text(
-                "**Tasks completed:** 1\n**Next task to run:** S02\n"
-                "| S01 | Test | Done | 2026-04-12 |\n",
+                "**Tasks completed:** 1\n**Next task to run:** T02\n"
+                "| T01 | Test | Done | 2026-04-12 |\n",
                 encoding="utf-8",
             )
             return mock_result
@@ -1736,27 +1736,27 @@ class TestRunAll:
         from the_architect.core.runner import _run_all_inner
 
         tasks_dir = tmp_path / "tasks"
-        s1_path = tasks_dir / "S01_first.md"
-        s1_path.parent.mkdir(parents=True, exist_ok=True)
-        s1_path.write_text("# S01\n", encoding="utf-8")
-        s2_path = tasks_dir / "S02_second.md"
-        s2_path.write_text("# S02\n", encoding="utf-8")
+        t1_path = tasks_dir / "T01_first.md"
+        t1_path.parent.mkdir(parents=True, exist_ok=True)
+        t1_path.write_text("# T01\n", encoding="utf-8")
+        t2_path = tasks_dir / "T02_second.md"
+        t2_path.write_text("# S02\n", encoding="utf-8")
         tasks = [
-            Task(name="S01_first", prefix="S01", number=1, path=s1_path, status=TaskStatus.PENDING),
+            Task(name="T01_first", prefix="T01", number=1, path=t1_path, status=TaskStatus.PENDING),
             Task(
-                name="S02_second", prefix="S02", number=2, path=s2_path, status=TaskStatus.PENDING
+                name="T02_second", prefix="T02", number=2, path=t2_path, status=TaskStatus.PENDING
             ),
         ]
         plan = TaskPlan(tasks=tasks)
 
         async def mock_run_task(**kwargs):
             config.progress_file.write_text(
-                "**Tasks completed:** 1\n**Next task to run:** S02\n"
-                "| S01 | Test | Done | 2026-04-12 |\n",
+                "**Tasks completed:** 1\n**Next task to run:** T02\n"
+                "| T01 | Test | Done | 2026-04-12 |\n",
                 encoding="utf-8",
             )
             return TaskResult(
-                prefix="S01",
+                prefix="T01",
                 title="first",
                 status="done",
                 duration_seconds=1.0,
@@ -1778,27 +1778,27 @@ class TestRunAll:
 
         config.pause_between_tasks = 1.0
         tasks_dir = tmp_path / "tasks"
-        s1_path = tasks_dir / "S01_first.md"
-        s1_path.parent.mkdir(parents=True, exist_ok=True)
-        s1_path.write_text("# S01\n", encoding="utf-8")
-        s2_path = tasks_dir / "S02_second.md"
-        s2_path.write_text("# S02\n", encoding="utf-8")
+        t1_path = tasks_dir / "T01_first.md"
+        t1_path.parent.mkdir(parents=True, exist_ok=True)
+        t1_path.write_text("# T01\n", encoding="utf-8")
+        t2_path = tasks_dir / "T02_second.md"
+        t2_path.write_text("# S02\n", encoding="utf-8")
         tasks = [
-            Task(name="S01_first", prefix="S01", number=1, path=s1_path, status=TaskStatus.PENDING),
+            Task(name="T01_first", prefix="T01", number=1, path=t1_path, status=TaskStatus.PENDING),
             Task(
-                name="S02_second", prefix="S02", number=2, path=s2_path, status=TaskStatus.PENDING
+                name="T02_second", prefix="T02", number=2, path=t2_path, status=TaskStatus.PENDING
             ),
         ]
         plan = TaskPlan(tasks=tasks)
 
         async def mock_run_task(**kwargs):
             config.progress_file.write_text(
-                "**Tasks completed:** 1\n**Next task to run:** S02\n"
-                "| S01 | Test | Done | 2026-04-12 |\n",
+                "**Tasks completed:** 1\n**Next task to run:** T02\n"
+                "| T01 | Test | Done | 2026-04-12 |\n",
                 encoding="utf-8",
             )
             return TaskResult(
-                prefix="S01",
+                prefix="T01",
                 title="first",
                 status="done",
                 duration_seconds=1.0,
@@ -1818,23 +1818,23 @@ class TestRunAll:
     async def test_circuit_breaker_load_failure(self, config, tmp_path):
 
         tasks_dir = tmp_path / "tasks"
-        s1_path = tasks_dir / "S01_first.md"
-        s1_path.parent.mkdir(parents=True, exist_ok=True)
-        s1_path.write_text("# S01\n", encoding="utf-8")
+        t1_path = tasks_dir / "T01_first.md"
+        t1_path.parent.mkdir(parents=True, exist_ok=True)
+        t1_path.write_text("# T01\n", encoding="utf-8")
         tasks = [
-            Task(name="S01_first", prefix="S01", number=1, path=s1_path, status=TaskStatus.PENDING)
+            Task(name="T01_first", prefix="T01", number=1, path=t1_path, status=TaskStatus.PENDING)
         ]
         plan = TaskPlan(tasks=tasks)
 
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
 
         async def mock_run_task(**kwargs):
             return TaskResult(
-                prefix="S01",
+                prefix="T01",
                 title="first",
                 status="done",
                 duration_seconds=1.0,
@@ -1961,8 +1961,8 @@ class TestRunTaskCircuitBreakerExtended:
         )
         cb.record_attempt.return_value = cb_state
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
 
@@ -2004,8 +2004,8 @@ class TestRunTaskCircuitBreakerExtended:
         cb.attempt_replan = AsyncMock()
 
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
 
@@ -2050,8 +2050,8 @@ class TestRunTaskCircuitBreakerExtended:
         cb.attempt_replan = AsyncMock(side_effect=RuntimeError("replan failed"))
 
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
 
@@ -2066,8 +2066,8 @@ class TestRunTaskCircuitBreakerExtended:
     async def test_on_attempt_done_callback_exception(self, task, config):
         """Exception in on_attempt_done callback should not stop the run."""
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
 
@@ -2098,8 +2098,8 @@ class TestRunTaskCircuitBreakerExtended:
         cb.reset_task.side_effect = RuntimeError("reset failed")
 
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
 
@@ -2114,8 +2114,8 @@ class TestRunTaskCircuitBreakerExtended:
     async def test_run_task_once_exception_handled(self, task, config):
         """If run_task_once raises unexpectedly, it should be handled."""
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
 
@@ -2130,8 +2130,8 @@ class TestRunTaskCircuitBreakerExtended:
     async def test_architect_md_read_exception(self, task, config):
         """If reading ARCHITECT.md fails, should continue without it."""
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
 
@@ -2154,8 +2154,8 @@ class TestRunTaskCircuitBreakerExtended:
         from the_architect.core.provider import ArchitectProvider
 
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
 
@@ -2215,8 +2215,8 @@ class TestRunTaskCircuitBreakerExtended:
         cb.handle_cooldown_wait = AsyncMock()
 
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
 
@@ -2244,8 +2244,8 @@ class TestRunTaskFreeModeRotationExtended:
         )
 
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
 
@@ -2286,8 +2286,8 @@ class TestRunTaskFreeModeRotationExtended:
         )
 
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
 
@@ -2367,8 +2367,8 @@ class TestRunTaskOnceExtended:
         mock_provider.parse_output_line = MagicMock(return_value=None)
 
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
 
@@ -2385,8 +2385,8 @@ class TestRunTaskOnceExtended:
     async def test_run_task_once_unexpected_exception(self, task, config):
         """If stream_provider raises unexpected exception, should return failed result."""
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
 
@@ -2401,8 +2401,8 @@ class TestRunTaskOnceExtended:
     async def test_nonzero_exit_rate_limit(self, task, config):
         """Non-zero exit with rate_limit_hit should set rate_limit on result."""
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
 
@@ -2420,8 +2420,8 @@ class TestRunTaskOnceExtended:
     async def test_zero_exit_rate_limit(self, task, config):
         """Zero exit with rate_limit_hit should still set rate_limit."""
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
 
@@ -2461,23 +2461,23 @@ class TestRunAllInnerExtended:
         from the_architect.core.runner import _run_all_inner
 
         tasks_dir = tmp_path / "tasks"
-        s1_path = tasks_dir / "S01_first.md"
-        s1_path.parent.mkdir(parents=True, exist_ok=True)
-        s1_path.write_text("# S01\n", encoding="utf-8")
+        t1_path = tasks_dir / "T01_first.md"
+        t1_path.parent.mkdir(parents=True, exist_ok=True)
+        t1_path.write_text("# T01\n", encoding="utf-8")
         tasks = [
-            Task(name="S01_first", prefix="S01", number=1, path=s1_path, status=TaskStatus.PENDING)
+            Task(name="T01_first", prefix="T01", number=1, path=t1_path, status=TaskStatus.PENDING)
         ]
         plan = TaskPlan(tasks=tasks)
 
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
 
         async def mock_run_task(**kwargs):
             return TaskResult(
-                prefix="S01",
+                prefix="T01",
                 title="first",
                 status="done",
                 duration_seconds=1.0,
@@ -2498,23 +2498,23 @@ class TestRunAllInnerExtended:
         from the_architect.core.runner import _run_all_inner
 
         tasks_dir = tmp_path / "tasks"
-        s1_path = tasks_dir / "S01_first.md"
-        s1_path.parent.mkdir(parents=True, exist_ok=True)
-        s1_path.write_text("# S01\n", encoding="utf-8")
+        t1_path = tasks_dir / "T01_first.md"
+        t1_path.parent.mkdir(parents=True, exist_ok=True)
+        t1_path.write_text("# T01\n", encoding="utf-8")
         tasks = [
-            Task(name="S01_first", prefix="S01", number=1, path=s1_path, status=TaskStatus.PENDING)
+            Task(name="T01_first", prefix="T01", number=1, path=t1_path, status=TaskStatus.PENDING)
         ]
         plan = TaskPlan(tasks=tasks)
 
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
 
         async def mock_run_task(**kwargs):
             return TaskResult(
-                prefix="S01",
+                prefix="T01",
                 title="first",
                 status="done",
                 duration_seconds=1.0,
@@ -2756,7 +2756,7 @@ class TestBuildAttemptSummaryExtended:
         )
         log_path.write_text(event, encoding="utf-8")
         summary = build_attempt_summary(
-            task_id="S01",
+            task_id="T01",
             attempt_number=1,
             log_path=log_path,
             completion_detected=False,
@@ -2782,7 +2782,7 @@ class TestBuildAttemptSummaryExtended:
         )
         log_path.write_text(event, encoding="utf-8")
         summary = build_attempt_summary(
-            task_id="S01",
+            task_id="T01",
             attempt_number=1,
             log_path=log_path,
             completion_detected=False,
@@ -2807,7 +2807,7 @@ class TestBuildAttemptSummaryExtended:
         )
         log_path.write_text(event, encoding="utf-8")
         summary = build_attempt_summary(
-            task_id="S01",
+            task_id="T01",
             attempt_number=1,
             log_path=log_path,
             completion_detected=False,
@@ -2832,7 +2832,7 @@ class TestBuildAttemptSummaryExtended:
         )
         log_path.write_text(event, encoding="utf-8")
         summary = build_attempt_summary(
-            task_id="S01",
+            task_id="T01",
             attempt_number=1,
             log_path=log_path,
             completion_detected=False,
@@ -2843,7 +2843,7 @@ class TestBuildAttemptSummaryExtended:
         log_path = tmp_path / "test.log"
         log_path.write_text('{"type":"tool_use","part":"not_a_dict"}', encoding="utf-8")
         summary = build_attempt_summary(
-            task_id="S01", attempt_number=1, log_path=log_path, completion_detected=False
+            task_id="T01", attempt_number=1, log_path=log_path, completion_detected=False
         )
         assert summary.files_written == []
 
@@ -2854,7 +2854,7 @@ class TestBuildAttemptSummaryExtended:
             encoding="utf-8",
         )
         summary = build_attempt_summary(
-            task_id="S01", attempt_number=1, log_path=log_path, completion_detected=False
+            task_id="T01", attempt_number=1, log_path=log_path, completion_detected=False
         )
         assert summary.files_written == []
 
@@ -2876,7 +2876,7 @@ class TestBuildAttemptSummaryExtended:
             encoding="utf-8",
         )
         summary = build_attempt_summary(
-            task_id="S01", attempt_number=1, log_path=log_path, completion_detected=False
+            task_id="T01", attempt_number=1, log_path=log_path, completion_detected=False
         )
         assert "test.py" not in summary.files_written
 
@@ -2898,7 +2898,7 @@ class TestBuildAttemptSummaryExtended:
             encoding="utf-8",
         )
         summary = build_attempt_summary(
-            task_id="S01", attempt_number=1, log_path=log_path, completion_detected=False
+            task_id="T01", attempt_number=1, log_path=log_path, completion_detected=False
         )
         assert summary.files_written == []
 
@@ -2906,7 +2906,7 @@ class TestBuildAttemptSummaryExtended:
         # When log_path doesn't exist, should return empty summary
         log_path = tmp_path / "nonexistent.log"
         summary = build_attempt_summary(
-            task_id="S01", attempt_number=1, log_path=log_path, completion_detected=False
+            task_id="T01", attempt_number=1, log_path=log_path, completion_detected=False
         )
         assert summary.files_written == []
 
@@ -2917,7 +2917,7 @@ class TestBuildAttemptSummaryExtended:
             encoding="utf-8",
         )
         summary = build_attempt_summary(
-            task_id="S01",
+            task_id="T01",
             attempt_number=1,
             log_path=log_path,
             completion_detected=False,
@@ -2932,7 +2932,7 @@ class TestBuildAttemptSummaryExtended:
             encoding="utf-8",
         )
         summary = build_attempt_summary(
-            task_id="S01",
+            task_id="T01",
             attempt_number=1,
             log_path=log_path,
             completion_detected=False,
@@ -2947,7 +2947,7 @@ class TestBuildAttemptSummaryExtended:
             encoding="utf-8",
         )
         summary = build_attempt_summary(
-            task_id="S01",
+            task_id="T01",
             attempt_number=1,
             log_path=log_path,
             completion_detected=False,
@@ -2959,7 +2959,7 @@ class TestBuildAttemptSummaryExtended:
         log_path = tmp_path / "test.log"
         log_path.write_text("plain text line from Claude Code", encoding="utf-8")
         summary = build_attempt_summary(
-            task_id="S01",
+            task_id="T01",
             attempt_number=1,
             log_path=log_path,
             completion_detected=False,
@@ -2970,7 +2970,7 @@ class TestBuildAttemptSummaryExtended:
     def test_rate_limit_and_cooldown_fields(self, tmp_path):
         log_path = tmp_path / "nonexistent.log"
         summary = build_attempt_summary(
-            task_id="S01",
+            task_id="T01",
             attempt_number=1,
             log_path=log_path,
             completion_detected=False,
@@ -3000,7 +3000,7 @@ class TestBuildAttemptSummaryExtended:
             encoding="utf-8",
         )
         summary = build_attempt_summary(
-            task_id="S01",
+            task_id="T01",
             attempt_number=1,
             log_path=log_path,
             completion_detected=False,
@@ -3028,7 +3028,7 @@ class TestBuildAttemptSummaryExtended:
             encoding="utf-8",
         )
         summary = build_attempt_summary(
-            task_id="S01",
+            task_id="T01",
             attempt_number=1,
             log_path=log_path,
             completion_detected=False,
@@ -3400,15 +3400,15 @@ class TestRunTaskOnceCarryContext:
         config.carry_context = True
 
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
 
         with patch(
             "the_architect.core.runner.stream_provider",
             return_value=StreamResult(
-                exit_code=0, accumulated_text="<promise>S01_COMPLETE</promise>"
+                exit_code=0, accumulated_text="<promise>T01_COMPLETE</promise>"
             ),
         ):
             result = await run_task_once(task=task, attempt=2, config=config)
@@ -3421,7 +3421,7 @@ class TestRunTaskNotDoneWarning:
     @pytest.mark.asyncio
     async def test_not_done_logs_warning(self, config, task):
         config.progress_file.write_text(
-            "**Tasks completed:** 0\n**Next task to run:** S01\n",
+            "**Tasks completed:** 0\n**Next task to run:** T01\n",
             encoding="utf-8",
         )
         # Return result with no completion signals
@@ -3479,12 +3479,12 @@ class TestRunTaskCircuitBreakerEvents:
             return StreamResult(
                 exit_code=0,
                 tokens=TokenUsage(),
-                accumulated_text="<promise>S01_COMPLETE</promise>",
+                accumulated_text="<promise>T01_COMPLETE</promise>",
             )
 
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
 
@@ -3545,12 +3545,12 @@ class TestRunTaskCircuitBreakerEvents:
             return StreamResult(
                 exit_code=0,
                 tokens=TokenUsage(),
-                accumulated_text="<promise>S01_COMPLETE</promise>",
+                accumulated_text="<promise>T01_COMPLETE</promise>",
             )
 
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
 
@@ -3610,12 +3610,12 @@ class TestRunTaskCircuitBreakerEvents:
             return StreamResult(
                 exit_code=0,
                 tokens=TokenUsage(),
-                accumulated_text="<promise>S01_COMPLETE</promise>",
+                accumulated_text="<promise>T01_COMPLETE</promise>",
             )
 
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
 
@@ -3674,12 +3674,12 @@ class TestRunTaskCircuitBreakerEvents:
             return StreamResult(
                 exit_code=0,
                 tokens=TokenUsage(),
-                accumulated_text="<promise>S01_COMPLETE</promise>",
+                accumulated_text="<promise>T01_COMPLETE</promise>",
             )
 
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
 
@@ -3740,14 +3740,14 @@ class TestRunTaskCooldownContinue:
             return StreamResult(
                 exit_code=0,
                 tokens=TokenUsage(),
-                accumulated_text="<promise>S01_COMPLETE</promise>",
+                accumulated_text="<promise>T01_COMPLETE</promise>",
             )
 
         config.retry_pause = 10  # would sleep 10s if not skipped
 
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
 
@@ -3819,7 +3819,7 @@ class TestBuildAttemptSummaryAccumulatedText:
             encoding="utf-8",
         )
         summary = build_attempt_summary(
-            task_id="S01",
+            task_id="T01",
             attempt_number=1,
             log_path=log_path,
             completion_detected=False,
@@ -3835,7 +3835,7 @@ class TestBuildAttemptSummaryAccumulatedText:
         log_path.write_text("{}", encoding="utf-8")
         # Pass caller-supplied accumulated_text which takes priority
         summary = build_attempt_summary(
-            task_id="S01",
+            task_id="T01",
             attempt_number=1,
             log_path=log_path,
             completion_detected=False,
@@ -3854,23 +3854,23 @@ class TestRunAllInnerCallbacksExtended:
             raise RuntimeError("start error")
 
         tasks_dir = tmp_path / "tasks"
-        s1_path = tasks_dir / "S01_first.md"
-        s1_path.parent.mkdir(parents=True, exist_ok=True)
-        s1_path.write_text("# S01\n", encoding="utf-8")
+        t1_path = tasks_dir / "T01_first.md"
+        t1_path.parent.mkdir(parents=True, exist_ok=True)
+        t1_path.write_text("# T01\n", encoding="utf-8")
         tasks = [
-            Task(name="S01_first", prefix="S01", number=1, path=s1_path, status=TaskStatus.PENDING)
+            Task(name="T01_first", prefix="T01", number=1, path=t1_path, status=TaskStatus.PENDING)
         ]
         plan = TaskPlan(tasks=tasks)
 
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
 
         async def mock_run_task(**kwargs):
             return TaskResult(
-                prefix="S01",
+                prefix="T01",
                 title="test",
                 status="done",
                 duration_seconds=1.0,
@@ -3894,23 +3894,23 @@ class TestRunAllInnerCallbacksExtended:
             raise RuntimeError("done error")
 
         tasks_dir = tmp_path / "tasks"
-        s1_path = tasks_dir / "S01_first.md"
-        s1_path.parent.mkdir(parents=True, exist_ok=True)
-        s1_path.write_text("# S01\n", encoding="utf-8")
+        t1_path = tasks_dir / "T01_first.md"
+        t1_path.parent.mkdir(parents=True, exist_ok=True)
+        t1_path.write_text("# T01\n", encoding="utf-8")
         tasks = [
-            Task(name="S01_first", prefix="S01", number=1, path=s1_path, status=TaskStatus.PENDING)
+            Task(name="T01_first", prefix="T01", number=1, path=t1_path, status=TaskStatus.PENDING)
         ]
         plan = TaskPlan(tasks=tasks)
 
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** S02\n"
-            "| S01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
 
         async def mock_run_task(**kwargs):
             return TaskResult(
-                prefix="S01",
+                prefix="T01",
                 title="test",
                 status="done",
                 duration_seconds=1.0,

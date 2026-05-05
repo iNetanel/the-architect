@@ -210,27 +210,39 @@ class GeminiCliProvider:
     # ── Model / agent discovery
 
     def list_models(self) -> list[str]:
-        """Return available model identifiers.
+        """Return available model identifiers from the user's local Gemini CLI installation.
 
-        Resolution order (fastest first):
-        1. ``GEMINI_MODEL`` env var
-        2. Parse ``~/.gemini/settings.json`` for model.name field
-        3. Static fallback list
+        Resolution order — all local, no external network calls:
+        1. ``GEMINI_MODEL`` env var — single model override.
+        2. **Bundle extraction** — locate the installed ``gemini`` binary via
+           ``shutil.which``, resolve the real path (following symlinks), then
+           scan the JS bundle chunks in the same directory for
+           ``gemini-*`` model name strings.  This is the set of models the
+           installed version of the CLI actually knows about, reflecting whatever
+           the user has installed (including custom or enterprise builds).
+        3. ``~/.gemini/settings.json`` ``model`` field — single model from the
+           user's local config.
+        4. Static fallback list — last resort when the binary is not found.
 
         Returns:
-            List of model identifier strings, sorted alphabetically.
+            List of model name strings (e.g. ``"gemini-2.5-pro"``), sorted.
         """
-        # 1. Fast path: GEMINI_MODEL env var
+        # 1. Env var override
         env_model = os.environ.get("GEMINI_MODEL", "").strip()
         if env_model:
             return [env_model]
 
-        # 2. Config file path
+        # 2. Bundle extraction from the installed binary
+        models = _extract_models_from_gemini_bundle()
+        if models:
+            return models
+
+        # 3. Config file
         model = _read_gemini_settings_model()
         if model:
             return [model]
 
-        # 3. Fallback list
+        # 4. Static fallback
         return list(_FALLBACK_GEMINI_MODELS)
 
     def list_agents(self, project_dir: Path) -> list[str]:
@@ -252,7 +264,8 @@ class GeminiCliProvider:
         Resolution order:
         1. ``GEMINI_MODEL`` env var
         2. ``~/.gemini/settings.json`` model.name field
-        3. First model from fallback list
+        3. First model from live API list (via list_models)
+        4. First model from static fallback list
 
         Results are cached per project directory.
 
@@ -283,11 +296,11 @@ class GeminiCliProvider:
             self._resolved_model_cache[cache_key] = model
             return model
 
-        # 3. First fallback model
-        if _FALLBACK_GEMINI_MODELS:
-            first_model = _FALLBACK_GEMINI_MODELS[0]
-            self._resolved_model_cache[cache_key] = first_model
-            return first_model
+        # 3. First model from live list (API or fallback)
+        live = self.list_models()
+        if live:
+            self._resolved_model_cache[cache_key] = live[0]
+            return live[0]
 
         return ""
 
@@ -499,16 +512,53 @@ class GeminiCliProvider:
             # Only display model messages, not user echoes
             role = event.get("role", "")
             if role == "model":
-                text = event.get("content", "") or event.get("text", "")
-                if isinstance(text, str) and text.strip():
-                    display_lines.extend(text.strip().split("\n"))
+                raw_content = event.get("content", "") or event.get("text", "")
+                # Gemini CLI may emit content as a plain string or as a list of
+                # parts: [{"text": "..."}, ...].  Handle both shapes.
+                if isinstance(raw_content, str):
+                    text = raw_content.strip()
+                    if text:
+                        display_lines.extend(text.split("\n"))
+                elif isinstance(raw_content, list):
+                    for part in raw_content:
+                        if isinstance(part, dict):
+                            part_text = (part.get("text") or "").strip()
+                            if part_text:
+                                display_lines.extend(part_text.split("\n"))
             # role == "user" → silent (no display lines)
 
         elif etype == "tool_use":
-            # Display tool name
+            # Display tool name and a short summary of inputs so the user can
+            # see what the model is doing without reading raw JSON.
             tool_name = event.get("name", "") or event.get("tool_name", "")
             if tool_name:
-                display_lines.append(f"→ {tool_name}")
+                inp = event.get("input", {}) or {}
+                # Build a brief description from the most informative input field
+                detail = ""
+                if isinstance(inp, dict):
+                    for key in (
+                        "path",
+                        "filePath",
+                        "file_path",
+                        "command",
+                        "pattern",
+                        "query",
+                        "url",
+                    ):
+                        val = inp.get(key, "")
+                        if val:
+                            detail = str(val)[:80]
+                            break
+                    if not detail and inp:
+                        # fallback: first non-empty value
+                        for v in inp.values():
+                            if v:
+                                detail = str(v)[:80]
+                                break
+                if detail:
+                    display_lines.append(f"→ {tool_name} {detail}")
+                else:
+                    display_lines.append(f"→ {tool_name}")
 
         elif etype == "tool_result":
             # Silent — no display lines needed
@@ -596,6 +646,66 @@ def _read_gemini_settings_model() -> str:
         return str(data.get("model", {}).get("name", "")).strip()
     except (OSError, json.JSONDecodeError, AttributeError):
         return ""
+
+
+def _extract_models_from_gemini_bundle() -> list[str]:
+    """Extract ``gemini-*`` model identifiers from the installed Gemini CLI bundle.
+
+    Locates the ``gemini`` binary via ``shutil.which``, resolves its real path
+    (following symlinks), then scans the sibling JS bundle chunks for model
+    name string literals.  This approach is OS-agnostic: it follows whatever
+    ``gemini`` resolves to on the current machine, so it works with system
+    installs, nvm, Homebrew, Windows ``%APPDATA%\\npm``, etc.
+
+    Only models whose names match the ``gemini-<version>`` pattern are
+    returned; internal identifiers (``gemini-cli``, ``gemini-api-key``, …)
+    are filtered out by requiring at least one digit in the version part.
+
+    Returns:
+        Sorted list of model name strings, or empty list if the binary is not
+        found or the bundle cannot be read.
+    """
+    import re as _re
+
+    gemini_bin = shutil.which("gemini")
+    if not gemini_bin:
+        return []
+
+    try:
+        bundle_dir = Path(gemini_bin).resolve().parent
+        # The resolved path may point directly inside the bundle directory
+        # (e.g. <prefix>/lib/node_modules/@google/gemini-cli/bundle/gemini.js)
+        # or one level above it.  Try both.
+        candidate_dirs = [bundle_dir, bundle_dir / "bundle"]
+        js_files: list[Path] = []
+        for d in candidate_dirs:
+            if d.is_dir():
+                js_files.extend(d.glob("*.js"))
+                if js_files:
+                    break
+
+        if not js_files:
+            return []
+
+        models: set[str] = set()
+        # Pattern: a quoted gemini-<major>.<minor> or gemini-<major>-<name>
+        # The version part must start with a digit to exclude internal names.
+        pattern = _re.compile(r'["\']gemini-([0-9][a-zA-Z0-9._-]*)["\']')
+        for js_file in js_files:
+            try:
+                content = js_file.read_text(encoding="utf-8", errors="ignore")
+                for m in pattern.finditer(content):
+                    models.add(f"gemini-{m.group(1)}")
+            except OSError:
+                continue
+
+        if models:
+            logger.debug(f"Gemini: extracted {len(models)} models from bundle at {bundle_dir}")
+        return sorted(models)
+
+    except Exception as exc:
+        logger.debug(f"Gemini bundle extraction failed: {exc!r}")
+        return []
 
 
 # ---------------------------------------------------------------------------

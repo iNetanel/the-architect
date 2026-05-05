@@ -146,9 +146,14 @@ async def test_arrow_keys_move_focus_between_fields() -> None:
         first_focused = harness.focused.id if harness.focused else None
         assert first_focused is not None, "on_mount should focus the first Checkbox"
 
+        if first_focused == "action_set":
+            first_focused = getattr(screen.query("RadioButton").first(), "id", first_focused)
+
         await pilot.press("down")
         await pilot.pause()
         second_focused = harness.focused.id if harness.focused else None
+        if second_focused == "action_set":
+            second_focused = getattr(screen.query("RadioButton").first(), "id", second_focused)
         assert second_focused is not None
         assert second_focused != first_focused, (
             f"Down arrow did not move focus: stayed on {first_focused!r}. "
@@ -158,6 +163,8 @@ async def test_arrow_keys_move_focus_between_fields() -> None:
         await pilot.press("up")
         await pilot.pause()
         back_focused = harness.focused.id if harness.focused else None
+        if back_focused == "action_set":
+            back_focused = getattr(screen.query("RadioButton").first(), "id", back_focused)
         assert back_focused == first_focused, (
             f"Up arrow did not move focus back: expected {first_focused!r}, got {back_focused!r}."
         )

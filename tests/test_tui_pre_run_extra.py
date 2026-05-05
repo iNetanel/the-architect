@@ -126,22 +126,9 @@ class TestPendingTasksScreen:
 
 
 class TestSpinnersSilentInTuiMode:
-    def test_live_spinner_is_noop_when_tui_enabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from the_architect.cli import _start_live_spinner
-
-        monkeypatch.setenv("ARCHITECT_TUI", "1")
-        handle = _start_live_spinner("planning…")
-        try:
-            assert handle._thread is None
-        finally:
-            handle.stop()
-
-    def test_wait_spinner_is_noop_when_tui_enabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from the_architect.cli import _start_wait_spinner
-
-        monkeypatch.setenv("ARCHITECT_TUI", "1")
-        handle = _start_wait_spinner("loading models…")
-        try:
-            assert handle._thread is None
-        finally:
-            handle.stop()
+    """Legacy spinner helpers (_start_live_spinner / _start_wait_spinner) were
+    deleted in build 10136 along with every other stdout-ANSI animation. The
+    TUI is now the sole UI surface, so there is nothing left to check for
+    TUI-silence. Placeholder kept so reviewers see the historical intent
+    of the now-deleted tests.
+    """

@@ -21,19 +21,19 @@ class TestTaskPrefix:
 
     def test_task_prefix_with_underscore(self) -> None:
         """Should extract prefix from task with underscore."""
-        assert task_prefix("S09_foo") == "S09"
+        assert task_prefix("T09_foo") == "T09"
 
     def test_task_prefix_without_underscore(self) -> None:
         """Should return as-is when no underscore."""
-        assert task_prefix("S01") == "S01"
+        assert task_prefix("T01") == "T01"
 
     def test_task_prefix_single_digit(self) -> None:
         """Should handle single digit numbers."""
-        assert task_prefix("S1_foo") == "S1"
+        assert task_prefix("T1_foo") == "T1"
 
     def test_task_prefix_double_digit(self) -> None:
         """Should handle double digit numbers."""
-        assert task_prefix("S99_foo") == "S99"
+        assert task_prefix("T99_foo") == "T99"
 
     def test_task_prefix_r_prefix(self) -> None:
         """Should extract an R-prefix (retrospective task)."""
@@ -55,19 +55,19 @@ class TestTaskNumber:
 
     def test_task_number_with_underscore(self) -> None:
         """Should extract number from task with underscore."""
-        assert task_number("S09_foo") == 9
+        assert task_number("T09_foo") == 9
 
     def test_task_number_without_underscore(self) -> None:
         """Should extract number from task without underscore."""
-        assert task_number("S01") == 1
+        assert task_number("T01") == 1
 
     def test_task_number_single_digit(self) -> None:
         """Should handle single digit numbers."""
-        assert task_number("S5_bar") == 5
+        assert task_number("T5_bar") == 5
 
     def test_task_number_double_digit(self) -> None:
         """Should handle double digit numbers."""
-        assert task_number("S42_baz") == 42
+        assert task_number("T42_baz") == 42
 
     def test_task_number_not_found(self) -> None:
         """Should return 0 when no task number found."""
@@ -81,17 +81,17 @@ class TestDiscoverTasks:
         """Should find all task files matching pattern."""
         with tempfile.TemporaryDirectory() as tmpdir:
             tasks_dir = Path(tmpdir)
-            (tasks_dir / "S01_first.md").touch()
-            (tasks_dir / "S02_second.md").touch()
-            (tasks_dir / "S10_foo.md").touch()
+            (tasks_dir / "T01_first.md").touch()
+            (tasks_dir / "T02_second.md").touch()
+            (tasks_dir / "T10_foo.md").touch()
             (tasks_dir / "ignore.txt").touch()
-            (tasks_dir / "S03_nope").touch()
+            (tasks_dir / "T03_nope").touch()
 
             tasks = discover_tasks(tasks_dir)
 
             assert len(tasks) == 3
             assert tasks[0].number == 1
-            assert tasks[0].name == "S01_first"
+            assert tasks[0].name == "T01_first"
             assert tasks[1].number == 2
             assert tasks[2].number == 10
 
@@ -99,10 +99,10 @@ class TestDiscoverTasks:
         """Should sort tasks by number, not lexicographically."""
         with tempfile.TemporaryDirectory() as tmpdir:
             tasks_dir = Path(tmpdir)
-            (tasks_dir / "S01_aaa.md").touch()
-            (tasks_dir / "S02_bbb.md").touch()
-            (tasks_dir / "S10_ccc.md").touch()
-            (tasks_dir / "S09_ddd.md").touch()
+            (tasks_dir / "T01_aaa.md").touch()
+            (tasks_dir / "T02_bbb.md").touch()
+            (tasks_dir / "T10_ccc.md").touch()
+            (tasks_dir / "T09_ddd.md").touch()
 
             tasks = discover_tasks(tasks_dir)
 
@@ -149,22 +149,22 @@ class TestTaskPlan:
         """Should correctly identify pending tasks."""
         tasks = [
             Task(
-                name="S01_first",
-                prefix="S01",
+                name="T01_first",
+                prefix="T01",
                 number=1,
                 path=Path("/fake/1"),
                 status=TaskStatus.DONE,
             ),
             Task(
-                name="S02_second",
-                prefix="S02",
+                name="T02_second",
+                prefix="T02",
                 number=2,
                 path=Path("/fake/2"),
                 status=TaskStatus.PENDING,
             ),
             Task(
-                name="S03_third",
-                prefix="S03",
+                name="T03_third",
+                prefix="T03",
                 number=3,
                 path=Path("/fake/3"),
                 status=TaskStatus.PENDING,
@@ -180,15 +180,15 @@ class TestTaskPlan:
         """Should correctly identify completed tasks."""
         tasks = [
             Task(
-                name="S01_first",
-                prefix="S01",
+                name="T01_first",
+                prefix="T01",
                 number=1,
                 path=Path("/fake/1"),
                 status=TaskStatus.DONE,
             ),
             Task(
-                name="S02_second",
-                prefix="S02",
+                name="T02_second",
+                prefix="T02",
                 number=2,
                 path=Path("/fake/2"),
                 status=TaskStatus.PENDING,
@@ -203,15 +203,15 @@ class TestTaskPlan:
         """Should return True when all tasks are done."""
         tasks = [
             Task(
-                name="S01_first",
-                prefix="S01",
+                name="T01_first",
+                prefix="T01",
                 number=1,
                 path=Path("/fake/1"),
                 status=TaskStatus.DONE,
             ),
             Task(
-                name="S02_second",
-                prefix="S02",
+                name="T02_second",
+                prefix="T02",
                 number=2,
                 path=Path("/fake/2"),
                 status=TaskStatus.DONE,
@@ -226,15 +226,15 @@ class TestTaskPlan:
         """Should return True when there are pending tasks."""
         tasks = [
             Task(
-                name="S01_first",
-                prefix="S01",
+                name="T01_first",
+                prefix="T01",
                 number=1,
                 path=Path("/fake/1"),
                 status=TaskStatus.DONE,
             ),
             Task(
-                name="S02_second",
-                prefix="S02",
+                name="T02_second",
+                prefix="T02",
                 number=2,
                 path=Path("/fake/2"),
                 status=TaskStatus.PENDING,
@@ -304,11 +304,11 @@ class TestExtractTitle:
         assert result == "My task"
 
     def test_s_prefix_heading(self) -> None:
-        """Should handle S-prefix task headings."""
+        """Should handle T-prefix task headings."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            f = Path(tmpdir) / "S01_test.md"
-            f.write_text("# S01 — Setup project\n")
-            result = _extract_title(f, "S01_test")
+            f = Path(tmpdir) / "T01_test.md"
+            f.write_text("# T01 — Setup project\n")
+            result = _extract_title(f, "T01_test")
             assert result == "Setup project"
 
 
@@ -346,21 +346,19 @@ class TestDiscoverTasksWithTitle:
 class TestDiscoverTasksSortOrder:
     """Tests for deterministic sort order across mixed T/R/S prefixes (T03 fix)."""
 
-    def test_sort_same_number_mixed_prefixes(self) -> None:
-        """T01 should come before R01 and S01 when all have number 1."""
+    def test_sort_r_task_comes_after_t_task_same_number(self) -> None:
+        """T-tasks must execute before R-tasks that share the same number."""
         with tempfile.TemporaryDirectory() as tmpdir:
             tasks_dir = Path(tmpdir)
             (tasks_dir / "T01_task.md").touch()
             (tasks_dir / "R01_retro.md").touch()
-            (tasks_dir / "S01_spec.md").touch()
 
             tasks = discover_tasks(tasks_dir)
 
-            # All have number 1; secondary key is prefix string so R < S < T
-            assert len(tasks) == 3
+            assert len(tasks) == 2
             prefixes = [t.prefix for t in tasks]
-            # After sort by (number, prefix): R01, S01, T01
-            assert prefixes == ["R01", "S01", "T01"]
+            # T01 must come before R01
+            assert prefixes.index("T01") < prefixes.index("R01")
 
     def test_sort_different_numbers_primary_by_number(self) -> None:
         """Tasks with different numbers should be sorted by number first."""

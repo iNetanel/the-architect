@@ -429,7 +429,7 @@ class TestRetrospectiveCoverage:
         tasks_dir = tmp_path / "tasks"
         tasks_dir.mkdir()
         (tasks_dir / "T01_init.md").write_text("# T01\n", encoding="utf-8")
-        (tasks_dir / "S01_setup.md").write_text("# S01\n", encoding="utf-8")
+        (tasks_dir / "T01_setup.md").write_text("# T01\n", encoding="utf-8")
 
         result = _next_r_task_number(tasks_dir)
         assert result == 1
@@ -774,7 +774,7 @@ class TestRendererPassthrough:
                 provider=provider,
                 config=config,
                 completed_task="T01",
-                outcome_summary="Downstream impact: high",
+                outcome_summary="Downstream impact: possible",
                 original_goal="test",
                 renderer=renderer,
             )

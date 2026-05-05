@@ -25,20 +25,24 @@ It is published to PyPI as `the-architect` and works on any project regardless o
 13. [Free Mode — Zero-Cost OpenRouter Rotation](#13-free-mode--zero-cost-openrouter-rotation)
 14. [Persistent Mode](#14-persistent-mode)
 15. [Headless Mode — CI/Automated Execution](#15-headless-mode--ciautomated-execution)
-16. [Interactive Screens](#16-interactive-screens)
+16. [Interactive Screens and TUI](#16-interactive-screens-and-tui)
 17. [Token Budget](#17-token-budget)
 18. [Retrospective Review](#18-retrospective-review)
-19. [Premature Exit Guard](#19-premature-exit-guard)
-20. [Lock File — Preventing Concurrent Runs](#20-lock-file--preventing-concurrent-runs)
-21. [Configuration](#21-configuration)
-22. [Task Files](#22-task-files)
-23. [PROGRESS.md](#23-progressmd)
-24. [SUCCESS.md — Run Summary](#24-successmd--run-summary)
-25. [ARCHITECT.md — Persistent Project Intelligence](#25-architectmd--persistent-project-intelligence)
-26. [tmux Dashboard — Live Monitoring](#26-tmux-dashboard--live-monitoring)
-27. [Error Handling](#27-error-handling)
-28. [Project Structure — What The Architect Creates](#28-project-structure--what-the-architect-creates)
-29. [Dependencies](#29-dependencies)
+19. [Inter-Task Reassessment](#19-inter-task-reassessment)
+20. [File Integrity Defense](#20-file-integrity-defense)
+21. [Standalone Mode](#21-standalone-mode)
+22. [Self-Update](#22-self-update)
+23. [Premature Exit Guard](#23-premature-exit-guard)
+24. [Lock File — Preventing Concurrent Runs](#24-lock-file--preventing-concurrent-runs)
+25. [Configuration](#25-configuration)
+26. [Task Files](#26-task-files)
+27. [PROGRESS.md](#27-progressmd)
+28. [SUCCESS.md — Run Summary](#28-successmd--run-summary)
+29. [ARCHITECT.md — Persistent Project Intelligence](#29-architectmd--persistent-project-intelligence)
+30. [tmux Dashboard — Live Monitoring](#30-tmux-dashboard--live-monitoring)
+31. [Error Handling](#31-error-handling)
+32. [Project Structure — What The Architect Creates](#32-project-structure--what-the-architect-creates)
+33. [Dependencies](#33-dependencies)
 
 ---
 
@@ -488,7 +492,7 @@ The number of tasks is never fixed — it emerges from goal size ÷ scope. The s
 
 ### Previous Run Archiving
 
-When a new planning session starts, previous task files (T, R, S prefixes) and `INSTRUCTIONS.md` are moved to `tasks/archive/YYYY-MM-DD_HHMMSS/` — history is preserved but the new session starts clean. `INSTRUCTIONS.md` is archived alongside the task files because it contains the original goal, stack information, and plan context that makes the archived tasks meaningful. A fresh `INSTRUCTIONS.md` is generated for the new plan. The log directory (`.architect/logs/`) is also cleared before each run.
+When a new planning session starts, previous task files (T and R prefixes) and `INSTRUCTIONS.md` are moved to `tasks/archive/YYYY-MM-DD_HHMMSS/` — history is preserved but the new session starts clean. `INSTRUCTIONS.md` is archived alongside the task files because it contains the original goal, stack information, and plan context that makes the archived tasks meaningful. A fresh `INSTRUCTIONS.md` is generated for the new plan. The log directory (`.architect/logs/`) is also cleared before each run.
 
 ---
 
@@ -978,9 +982,43 @@ This is the **Premature Exit Guard** — preventing accidental re-Architecting o
 
 ---
 
-## 16. Interactive Screens
+## 16. Interactive Screens and TUI
 
-The Architect shows different interactive screens depending on the state of the project.
+### Textual TUI (default on TTY)
+
+When stdout is a real TTY with colour support, The Architect opens a full-screen Textual TUI. The TUI is the default — no flag required. It owns the screen from the first prompt through planning, execution, retrospective review, and reassessment.
+
+**Opt out:**
+
+```bash
+architect --no-tui               # explicit opt-out
+NO_COLOR=1 architect             # globally honour NO_COLOR
+TERM=dumb architect              # minimal-terminal environments
+architect --headless             # CI / unattended runs
+architect > run.log 2>&1         # piped stdout
+```
+
+**TUI screens:**
+
+| Screen | When shown |
+|--------|-----------|
+| **Pre-run (tabbed)** | Goal / Provider / Models / Options tabs before planning |
+| **Execution** | Output / Events / Details tabs during task execution |
+| **Wait overlay** | Animated spinner during planning, retrospective, and reassessment |
+| **list** | `architect list --tui` |
+| **status** | `architect status --tui` |
+| **logs** | `architect logs --tui` |
+| **circuit** | `architect circuit --tui` |
+| **monitor** | `architect monitor --tui` |
+| **config** | `architect config --tui` |
+
+**Execution screen key bindings:** `o` Output tab · `e` Events tab · `d` Details tab · `q` / Ctrl+C quit.
+
+**Alternate screen buffer:** The Architect enters the terminal alternate screen on startup (like `vim`, `htop`, `lazygit`) and restores the original terminal content on exit — even on Ctrl+C or error.
+
+### Interactive Screens (non-TUI fallback)
+
+When the TUI is disabled, `prompt_toolkit` screens are used instead. They behave identically in terms of options and flow.
 
 ### Configure Run Screen (Fresh Start)
 
@@ -989,16 +1027,17 @@ When no pending tasks exist, the configure run screen is shown:
 ```
  The Architect  configure run
 
-  › [ ] Free Tier        (OpenRouter free models, rotate on rate limit)
-    [ ] Persistent       (30 retries, deeper retrospective)
-    Token budget/hr: 0  (0 = unlimited)
+  › [ ] Free Tier              (OpenRouter free models, rotate on rate limit)
+    [ ] Persistent             (30 retries, deeper retrospective)
+    [ ] File integrity defense (architect_eval snapshots before existing-file edits)
+    Token budget/hr: 0        (0 = unlimited)
 
   ↑↓ navigate   Space toggle   Enter confirm
 ```
 
 Navigate with ↑/↓, toggle checkboxes with Space, type digits for the budget field, and press Enter to confirm.
 
-> **Provider-aware:** The Free Tier option is only shown when the active provider supports OpenRouter (OpenCode + OpenRouter configured). Claude Code users and OpenCode users without OpenRouter see only Persistent and Token Budget. Token Budget is always shown for all providers.
+> **Provider-aware:** The Free Tier option is only shown when the active provider supports OpenRouter (OpenCode + OpenRouter configured). Claude Code users and OpenCode users without OpenRouter see only Persistent, File integrity defense, and Token Budget.
 
 ### Resume Screen (Pending Tasks)
 
@@ -1013,9 +1052,10 @@ When pending tasks exist from a previous run, the resume screen is shown:
     T03  Add dark mode
 
   Settings
-  › [ ] Free Tier        (OpenRouter free models)
-    [x] Persistent       (30 retries, deeper retrospective)
-    Token budget/hr: 500000  (0 = unlimited)
+  › [ ] Free Tier              (OpenRouter free models)
+    [x] Persistent             (30 retries, deeper retrospective)
+    [x] File integrity defense (architect_eval snapshots before existing-file edits)
+    Token budget/hr: 500000   (0 = unlimited)
 
   Replan               (start fresh with a new goal)
   Execute              (continue running pending tasks)
@@ -1025,13 +1065,11 @@ When pending tasks exist from a previous run, the resume screen is shown:
 - **Replan** — navigate to Replan and press Enter/Space to discard old tasks and start planning fresh
 - **Cancel** — Ctrl+C to exit without doing anything
 
-Settings are pre-filled from `architect.toml` (saved from the previous run). Change them or press Enter to accept as-is.
-
-> **Provider-aware:** Same as the configure run screen — Free Tier is only shown when the active provider supports OpenRouter. Token Budget is always shown.
+Settings are pre-filled from `architect.toml` (saved from the previous run).
 
 ### Provider Selection Screen
 
-When multiple supported providers are installed and `provider = "auto"` (default), a provider selection screen is shown before any other prompts:
+When multiple supported providers are installed and `provider = "auto"` (default), a provider selection screen is shown:
 
 ```
  The Architect  select provider
@@ -1047,17 +1085,14 @@ When multiple supported providers are installed and `provider = "auto"` (default
   ↑↓ navigate   Enter confirm
 ```
 
-The selection is saved to `ARCHITECT_PROVIDER` env var and forwarded into the tmux session so it is not asked again during the same run.
-
 ### Settings Persistence
 
 When settings are changed via either interactive screen, they are automatically saved to `architect.toml`:
 
 - `free_mode`
 - `persistent`
+- `integrity`
 - `token_budget_per_hour`
-
-This means the next run pre-fills the same settings — no need to re-enter them.
 
 ### When Screens Are Skipped
 
@@ -1193,7 +1228,145 @@ class RetrospectiveRequest(BaseModel):
 
 ---
 
-## 19. Premature Exit Guard
+## 19. Inter-Task Reassessment
+
+After each task completes, The Architect runs a lightweight **between-task reassessment** pass when the task's outcome indicates downstream impact.
+
+### When It Triggers
+
+The build agent is instructed to include a structured outcome section in its output:
+
+```
+=== TASK OUTCOME ===
+Summary:      ...
+Files:        ...
+Verification: ...
+Impact:       Downstream impact: possible
+```
+
+When the outcome contains `Downstream impact: possible`, The Architect automatically invokes the architect agent on the **pending task files** — not a full replan, just a targeted review to update or adjust remaining tasks based on what was just completed.
+
+### What the Reassessment Does
+
+1. Reads the task outcome summary and the list of affected files
+2. Reads `ARCHITECT.md` for full project memory
+3. Sends the architect agent a targeted prompt: "Review pending tasks in light of what T02 just changed — update them if needed"
+4. Writes any updated task files to `tasks/`
+5. Does **not** modify `PROGRESS.md` or archived tasks
+
+### When It Is Skipped
+
+- Outcome summary is empty or does not contain `Downstream impact: possible`
+- `--only` or `--from` targeted runs (reassessment is not meaningful for single-task runs)
+- Reassessment errors are caught and logged — they never abort the run
+
+### File Integrity Snapshot Cleanup
+
+If `integrity` mode is on and the just-completed task left `architect_eval_*` snapshot files behind (a sign of a truncated or corrupt write), the reassessment pass also handles cleanup and validation before proceeding.
+
+---
+
+## 20. File Integrity Defense
+
+When `integrity = true` (the default), The Architect instructs the build agent to snapshot existing files before editing them.
+
+### How It Works
+
+Before modifying any **existing** file, the agent creates a same-directory copy named `architect_eval_<filename>`. After writing the modified file, the agent validates the rewrite against the snapshot — checking for obvious truncation, missing sections, or unexpected size shrinkage. If validation passes, the snapshot is deleted. If it fails, the agent restores from the snapshot, diagnoses the problem, and retries.
+
+### Leftover Snapshot Detection
+
+Any `architect_eval_*` file remaining after a task is treated as a **corruption signal** — the edit was not validated. The Architect detects these files during:
+
+- **Reassessment** — after the task that left them, before any downstream task runs
+- **Retrospective review** — the reviewer is warned and lists the affected files
+
+### Protocol Summary (injected into every task instruction when enabled)
+
+```
+1. Before editing an existing file, copy it to architect_eval_<filename> in the same directory.
+   Do not create snapshots for brand-new files.
+2. Make your change to the original file normally.
+3. Validate the rewritten file against the snapshot (size, structure, completeness).
+4. If validation passes, delete the architect_eval_* snapshot immediately.
+5. If validation fails, restore from snapshot, diagnose, retry, then delete.
+Never leave architect_eval_* files behind after a successful task.
+```
+
+### Configuration
+
+```toml
+[architect]
+integrity = true   # default: true
+```
+
+Toggle via the interactive configure/resume screen (checkbox: "File integrity defense") or:
+
+```bash
+architect config --set integrity=false
+```
+
+---
+
+## 21. Standalone Mode
+
+Standalone mode bypasses the provider's own configuration entirely and forces a specific model for all operations — planning, execution, and retrospective.
+
+### When to Use It
+
+- You want to use an OpenRouter model without setting up a full `opencode.json` config
+- You want to override every model selection with one flag
+- CI/scripted runs where the model must be deterministic regardless of local config
+
+### Usage
+
+```bash
+architect --standalone openrouter/anthropic/claude-sonnet-4.5
+```
+
+Or set in `architect.toml`:
+
+```toml
+[architect]
+standalone_mode = "openrouter/anthropic/claude-sonnet-4.5"
+```
+
+### Behaviour
+
+- The specified model is used for the architect (planner), the reviewer, and all execution runs
+- `retry_model_2` / `retry_model_3` are still used for retry fallbacks if set
+- Incompatible with Claude Code (`claude` CLI does not accept arbitrary model strings via `--standalone`); The Architect detects this and clears `standalone_mode` with a warning
+
+---
+
+## 22. Self-Update
+
+At startup, The Architect checks PyPI for a newer version. The check uses a single HTTPS request with a 5-second timeout. Network errors are silenced — a failed check never prevents the tool from running.
+
+### Prompt
+
+When a newer version is found, a single-keypress screen is shown:
+
+```
+  The Architect — update available
+
+  Version 1.2.0 is available  (you have 1.1.0)
+
+  pip install --upgrade the-architect
+
+  Enter  continue anyway    U  update & restart
+```
+
+- **Enter / Esc** — continue with the installed version
+- **U** — runs `pip install --upgrade the-architect` and re-executes the original command via `os.execvp`, so the updated version starts seamlessly with the same arguments
+
+### Disabling
+
+The check runs every startup. It can be skipped by running offline — there is no explicit disable flag. The 5-second timeout ensures it never adds meaningful delay to normal startup.
+
+---
+
+## 23. Premature Exit Guard
 
 The Premature Exit Guard prevents The Architect from accidentally re-planning an already-complete project.
 
@@ -1244,7 +1417,7 @@ This prevents accidentally starting a new goal on top of incomplete work.
 
 ---
 
-## 20. Lock File — Preventing Concurrent Runs
+## 24. Lock File — Preventing Concurrent Runs
 
 The Architect uses a lock file at `.architect/runner.lock` to prevent concurrent runs of The Architect on the same project.
 
@@ -1268,7 +1441,7 @@ The lock file is just a plain text file containing the PID as a string (e.g., `1
 
 ---
 
-## 21. Configuration
+## 25. Configuration
 
 The Architect is zero-config by default. All settings have sensible defaults.
 
@@ -1314,6 +1487,9 @@ free_mode = false                    # Use free OpenRouter models, rotate on rat
 # ── Persistent Mode ──────────────────────────────────────────────────────────
 persistent = false                   # 30 retries, 2 retrospective rounds
 
+# ── File Integrity Defense ───────────────────────────────────────────────────
+integrity = true                     # Snapshot existing files before edits (architect_eval_*)
+
 # ── Circuit Breaker ──────────────────────────────────────────────────────────
 circuit_no_progress_threshold = 3    # Zero-file-writes attempts before trip (0=off)
 circuit_same_error_threshold = 3     # Same-error attempts before trip (0=off)
@@ -1349,6 +1525,7 @@ token_budget_per_hour = 0           # Max tokens/rolling hour (0 = disabled)
 | `retrospective_rounds` | int | `1` | Retrospective review rounds (0 = disabled) |
 | `free_mode` | bool | `false` | Use free OpenRouter models |
 | `persistent` | bool | `false` | Persistent mode (30 retries, 2 retrospective rounds) |
+| `integrity` | bool | `true` | Snapshot existing files before edits (`architect_eval_*`) |
 | `circuit_no_progress_threshold` | int | `3` | No-progress threshold (0 = disabled) |
 | `circuit_same_error_threshold` | int | `3` | Same-error threshold (0 = disabled) |
 | `circuit_token_decline_pct` | int | `60` | Token decline % to trip (0 = disabled) |
@@ -1382,7 +1559,7 @@ architect init --force          # Overwrite existing files
 
 ---
 
-## 22. Task Files
+## 26. Task Files
 
 Tasks are Markdown files in `tasks/` with a specific naming format:
 
@@ -1406,7 +1583,6 @@ tasks/
 |--------|------|-----------|
 | `T01`, `T02`, … | Normal tasks | Architect agent during planning |
 | `R01`, `R02`, … | Retrospective fix-up tasks | Reviewer agent during retrospective |
-| `S01`, `S02`, … | Standalone / special tasks | Reserved for manual use |
 
 Numbers are sequential and never reused within a planning session.
 
@@ -1448,11 +1624,11 @@ When a new planning session starts, previous task files and `INSTRUCTIONS.md` ar
 
 ### Stray Task File Rescue
 
-The architect model sometimes writes task files into a subdirectory mentioned in the goal (e.g., `mbi/tasks/T01_foo.md`) instead of the canonical `tasks/` directory. After planning, The Architect scans the entire project tree for files matching `TXX_*.md`, `RXX_*.md`, or `SXX_*.md` that are outside `tasks/`, and moves them to the canonical location automatically. Conflicting filenames are skipped.
+The architect model sometimes writes task files into a subdirectory mentioned in the goal (e.g., `mbi/tasks/T01_foo.md`) instead of the canonical `tasks/` directory. After planning, The Architect scans the entire project tree for files matching `TXX_*.md` or `RXX_*.md` that are outside `tasks/`, and moves them to the canonical location automatically. Conflicting filenames are skipped.
 
 ---
 
-## 23. PROGRESS.md
+## 27. PROGRESS.md
 
 `PROGRESS.md` is The Architect's persistent memory between runs. It tracks which tasks are complete and what to run next.
 
@@ -1526,7 +1702,7 @@ Both must be present and correctly formatted. The Architect **always** writes PR
 
 ---
 
-## 24. SUCCESS.md — Run Summary
+## 28. SUCCESS.md — Run Summary
 
 After every run, The Architect writes `SUCCESS.md` to the project root with a complete summary of what happened.
 
@@ -1603,9 +1779,76 @@ Only present when retrospective rounds were configured. Shows what the reviewer 
 
 `Total tokens` = input + output only. Cache tokens are **not** included because they represent infrastructure efficiency, not thinking work. A large `cache read` number is **good** — it means the system is efficiently reusing context instead of re-sending it fresh.
 
+### Why Cache Read Can Be 100× Bigger Than Total Tokens
+
+Looking at a typical run:
+
+```
+Total tokens:    50.8K
+cache write:    343.7K
+cache read:   5,210.4K
+```
+
+This looks wrong at first glance. It makes complete sense:
+
+Every task sends the AI a large context: project files, task instructions, the execution protocol, and conversation history. This context can be hundreds of thousands of tokens long.
+
+Anthropic's prompt caching means:
+- The first time a large prompt is sent → tokens counted as **cache write** (stored)
+- Every subsequent call that reuses that prompt prefix → tokens counted as **cache read** (retrieved at ~10% cost)
+- Only the small new part of each prompt counts as **input**
+
+| Token type | What it is | Price |
+|---|---|---|
+| `input` | Fresh tokens sent per call — tiny when almost everything is cached | Full price |
+| `output` | Tokens the model generated — the actual work product | Full price |
+| `cache read` | Cached context retrieved — same large prompt reused across many calls | ~10% of normal |
+| `cache write` | Large shared context stored once | ~125% of normal (one-time) |
+
+With 12 tasks × multiple API calls per task, cache read accumulates fast. **A large cache read number is a good sign** — the system is efficiently reusing context.
+
+### Token Types — Quick Reference
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  WHAT YOU SEND TO THE AI                                        │
+│                                                                 │
+│  ┌──────────────────────────────┐  ┌──────────────────────┐    │
+│  │  CACHED CONTEXT              │  │  FRESH INPUT         │    │
+│  │  (project files, prompts,    │  │  (new instruction    │    │
+│  │   history)                   │  │   or question)       │    │
+│  │                              │  │                      │    │
+│  │  → cache_write (first time)  │  │  → input_tokens      │    │
+│  │  → cache_read  (reuse)       │  │                      │    │
+│  └──────────────────────────────┘  └──────────────────────┘    │
+│                                                                 │
+│  WHAT THE AI SENDS BACK                                         │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  GENERATED RESPONSE (code, analysis, decisions)          │  │
+│  │  → output_tokens                                         │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  total = input_tokens + output_tokens  (cache excluded)        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+> **Note:** When using Claude Code (plain-text output), token counts are not available — there are no structured usage events. Token columns show `0` for those runs. OpenCode, Codex CLI, and Gemini CLI report token usage via structured events.
+
+### Known Gaps — What SUCCESS.md Does Not Show
+
+The following information exists in the system but is not yet surfaced in `SUCCESS.md`:
+
+| Missing info | Where the data exists |
+|---|---|
+| Per-attempt details (what failed on attempt 1 vs 2) | `.architect/logs/T01.log`, `.architect/logs/T01.attempt2.log` |
+| Circuit breaker events (opened, replanned, cooldown) | `.architect/circuit.json` |
+| Tool calls / steps (file reads, edits, bash commands) | The raw log files above |
+| Reassessment runs | `.architect/logs/<task>_reassess.log` |
+
 ---
 
-## 25. ARCHITECT.md — Persistent Project Intelligence
+## 29. ARCHITECT.md — Persistent Project Intelligence
 
 `ARCHITECT.md` is The Architect's long-term memory for a specific project. It accumulates knowledge across all planning sessions and execution cycles. It is **read at the start of every planning session and every task execution**, and updated by the planner, the build agent, and the reviewer.
 
@@ -1667,7 +1910,7 @@ During planning, execution, and retrospective, entries are appended to:
 
 ---
 
-## 26. tmux Dashboard — Live Monitoring
+## 30. tmux Dashboard — Live Monitoring
 
 When **tmux** is installed and you are not already inside a tmux session, The Architect automatically opens a split-pane session:
 
@@ -1744,7 +1987,7 @@ Use `--no-monitor` to skip all tmux and window-launching logic. The Architect ru
 
 ---
 
-## 27. Error Handling
+## 31. Error Handling
 
 The Architect handles failures robustly at every layer:
 
@@ -1791,7 +2034,7 @@ When The Architect launches itself inside tmux (auto-launch), it kills the tmux 
 
 ---
 
-## 28. Project Structure — What The Architect Creates
+## 32. Project Structure — What The Architect Creates
 
 ```
 your-project/
@@ -1865,7 +2108,7 @@ the_architect/              # Python package (published to PyPI as "the-architec
 
 ---
 
-## 29. Dependencies
+## 33. Dependencies
 
 ```toml
 [project]
@@ -1911,4 +2154,4 @@ The Architect is built on:
 
 ## License
 
-MIT License
+Apache License 2.0

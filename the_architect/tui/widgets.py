@@ -37,7 +37,6 @@ from textual.content import Content
 from textual.message import Message
 from textual.reactive import reactive
 from textual.style import Style
-from textual.widget import Widget
 from textual.widgets import Checkbox, RadioButton, Static
 
 
@@ -195,7 +194,7 @@ def next_matrix_frame(frame_index: int) -> str:
 # ── Multi-column rain widget for the splash screen ─────────────────────
 
 
-class MatrixRain(Widget):
+class MatrixRain(Static):
     """Compact Matrix-rain animation for the splash screen.
 
     Renders a fixed-size grid of falling glyphs. Each column advances
@@ -204,10 +203,15 @@ class MatrixRain(Widget):
     trailing glyphs fade through dimmer greens. Columns respawn at the
     top at random intervals so the effect never becomes periodic.
 
-    The widget is self-contained — :meth:`on_mount` starts the tick
-    timer, :meth:`render` returns a freshly assembled
-    :class:`rich.text.Text`. No external state, no reactive props the
-    caller has to set, so the splash screen just yields the widget.
+    Implementation note: this widget is deliberately a :class:`Static`
+    subclass rather than a custom :class:`Widget`. An earlier revision
+    returned a :class:`rich.text.Text` from :meth:`Widget.render` and,
+    depending on the installed Textual version, the compositor would
+    silently fail to paint the lines when the text's shape didn't exactly
+    match the widget's region — leaving the rain invisible even though
+    frame state was advancing. ``Static.update`` bypasses that class of
+    bug entirely: Textual owns the renderable lifecycle and the widget
+    paints reliably in every terminal we've tested.
     """
 
     DEFAULT_CSS = """
@@ -226,10 +230,11 @@ class MatrixRain(Widget):
     # to feel animated, slow enough not to chew CPU.
     TICK_INTERVAL: ClassVar[float] = 0.1
 
-    # Grid size. Kept small and centred so the splash still reads as
-    # "branded loader" rather than "screensaver". Keep DEFAULT_CSS's
-    # `width` / `height` in sync with these — Textual CSS does not
-    # speak Python, so the numbers are duplicated on purpose.
+    # Grid size. Kept at 7 rows — the "long" loader silhouette is the
+    # intended brand feel; shorter versions looked like a spinner strip
+    # rather than a Matrix-rain loader. Keep DEFAULT_CSS's `width` /
+    # `height` in sync with these — Textual CSS does not speak Python,
+    # so the numbers are duplicated on purpose.
     COLS: ClassVar[int] = 24
     ROWS: ClassVar[int] = 7
 
@@ -237,7 +242,7 @@ class MatrixRain(Widget):
     frame: reactive[int] = reactive(0)
 
     def __init__(self, id: str | None = None) -> None:
-        super().__init__(id=id)
+        super().__init__("", id=id)
         # Per-column state: (head_row, stream_length). Heads start at
         # staggered rows so the first frame isn't a flat line.
         self._rng = random.Random(0x4D415452)  # b"MATR"
@@ -247,6 +252,9 @@ class MatrixRain(Widget):
         self._lengths: list[int] = [self._rng.randint(2, self.ROWS) for _ in range(self.COLS)]
 
     def on_mount(self) -> None:
+        # Paint the initial frame immediately so the widget isn't blank
+        # for the first 100ms before the first tick fires.
+        self.update(self._build_frame())
         self.set_interval(self.TICK_INTERVAL, self._tick)
 
     def _tick(self) -> None:
@@ -260,8 +268,14 @@ class MatrixRain(Widget):
                 self._heads[col] = -self._rng.randint(0, self.ROWS // 2)
                 self._lengths[col] = self._rng.randint(2, self.ROWS)
         self.frame += 1
+        self.update(self._build_frame())
 
+    # Kept as a public alias for the regression test that ticks the
+    # widget outside of a running App.
     def render(self) -> Text:
+        return self._build_frame()
+
+    def _build_frame(self) -> Text:
         """Assemble the current frame as styled rich text.
 
         Each visible cell gets one of three styles:
@@ -285,14 +299,23 @@ class MatrixRain(Widget):
                     # Use a per-cell glyph that also rotates with the
                     # frame so trails shimmer instead of being static.
                     glyph = next_matrix_frame(self.frame * self.COLS + col * 7 + trail)
+                    # Trail brightness: the old style used `dim $accent`
+                    # / `dim $text-muted` which, on dark terminal themes,
+                    # rendered as near-invisible dark green against the
+                    # near-black default screen background. On a splash
+                    # that has nothing else drawn around it, that made
+                    # the whole rain block read as empty space. The new
+                    # palette keeps every trail cell at a readable
+                    # brightness — bright head, solid mid, readable
+                    # tail — so the animation is visible on any dark
+                    # theme without relying on the surrounding chrome
+                    # for contrast.
                     if trail == 0:
                         style = "bold $accent"
-                    elif trail == 1:
+                    elif trail < length - 2:
                         style = "$accent"
-                    elif trail < length - 1:
-                        style = "dim $accent"
                     else:
-                        style = "dim $text-muted"
+                        style = "$accent-muted"
                     rows[row][col] = (glyph, style)
 
         text = Text()
@@ -310,22 +333,43 @@ class MatrixRain(Widget):
         return text
 
     def _resolve_style(self, style: str) -> str:
-        """Map ``$accent`` / ``$text-muted`` tokens to concrete Rich styles.
+        """Map ``$accent`` / ``$accent-muted`` tokens to concrete Rich styles.
 
-        Rich's ``Text.append`` doesn't speak Textual CSS variables, so
-        we substitute the two tokens we care about with literal colours
-        drawn from the current theme. Falls back to a hard-coded brand
-        green if the theme lookup ever fails.
+        Rich's :class:`rich.text.Text` does not speak Textual CSS variables,
+        so we substitute the tokens with literal colours before handing the
+        style string back to Rich.
+
+        Two real-world gotchas this function defends against:
+
+        1. ``theme_variables["text-muted"]`` is ``"auto 60%"``. That is a
+           valid Textual component-class fragment but *not* a valid Rich
+           colour — passing it into :func:`rich.style.Style.parse` raises
+           :class:`StyleSyntaxError`, which Textual silently swallows
+           while painting the widget. The whole rain block then comes
+           back empty even though frame state is advancing fine. We
+           never emit ``$text-muted`` any more for exactly this reason.
+        2. A previous palette used ``dim $accent`` / ``dim $text-muted``
+           for the trail, which rendered as near-invisible dark green on
+           VSCode's default dark terminal background. Bumped the trail
+           to a readable mid-green (``$accent-muted`` here) so the
+           animation reads on any dark theme.
+
+        Both tokens always resolve to a plain ``#rrggbb`` hex colour by
+        the time the returned string reaches Rich.
         """
+        # Brand green for the head + mid-trail cells.
         accent = "#7cc800"
-        muted = "#4a7a00"
+        # Mid-brightness green for the trail tail. Chosen to stay
+        # clearly visible on a near-black terminal background without
+        # competing with the bright head glyph.
+        accent_muted = "#5a9400"
         try:
             theme_accent = self.app.theme_variables.get("accent")
-            if theme_accent:
+            if theme_accent and theme_accent.startswith("#"):
                 accent = theme_accent
         except Exception:
             pass
-        return style.replace("$accent", accent).replace("$text-muted", muted)
+        return style.replace("$accent-muted", accent_muted).replace("$accent", accent)
 
 
 # ── Matrix-style button ────────────────────────────────────────────────

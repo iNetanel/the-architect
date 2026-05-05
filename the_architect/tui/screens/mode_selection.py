@@ -23,6 +23,7 @@ from textual.containers import Vertical
 from textual.screen import Screen
 from textual.widgets import Checkbox, Footer, Header, Input, Label, Static
 
+from the_architect.tui.screens.pre_run import BACK_SENTINEL
 from the_architect.tui.widgets import BlankOffCheckbox
 
 
@@ -66,6 +67,7 @@ class ModeSelectionScreen(Screen[dict[str, bool | int]]):
         # Checkbox sees it — Space is the accepted key for toggling
         # checkboxes (Textual's default), Enter always submits.
         Binding("enter", "submit", "Submit", priority=True),
+        Binding("backspace", "go_back", "Back"),
         # Arrow keys move focus between form fields, matching the
         # arrow navigation the ListView-based screens use.
         Binding("up", "focus_previous", "Previous field", show=False),
@@ -74,9 +76,21 @@ class ModeSelectionScreen(Screen[dict[str, bool | int]]):
         Binding("ctrl+c", "cancel", "Cancel", priority=True),
     ]
 
-    def __init__(self, show_free: bool = True) -> None:
+    def __init__(
+        self,
+        show_free: bool = True,
+        *,
+        initial_free: bool = False,
+        initial_persistent: bool = False,
+        initial_integrity: bool = True,
+        initial_budget: int = 0,
+    ) -> None:
         super().__init__()
         self._show_free = show_free
+        self._initial_free = initial_free
+        self._initial_persistent = initial_persistent
+        self._initial_integrity = initial_integrity
+        self._initial_budget = initial_budget
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -88,24 +102,36 @@ class ModeSelectionScreen(Screen[dict[str, bool | int]]):
             )
             yield Static("")
             if self._show_free:
-                yield BlankOffCheckbox("Free Tier  (OpenRouter rotation)", id="chk_free")
+                yield BlankOffCheckbox(
+                    "Free Tier  (OpenRouter rotation)",
+                    id="chk_free",
+                    value=self._initial_free,
+                )
                 yield Static(
                     "rotate to the next free model on rate-limit",
                     classes="mode_help",
                 )
             yield BlankOffCheckbox(
-                "Persistent  (30 retries, 2 retrospective rounds)", id="chk_persistent"
+                "Persistent  (30 retries, 2 retrospective rounds)",
+                id="chk_persistent",
+                value=self._initial_persistent,
             )
             yield Static("deeper retry + review loop", classes="mode_help")
             yield BlankOffCheckbox(
-                "Integrity defense  (snapshot before edits)", id="chk_integrity", value=True
+                "Integrity defense  (snapshot before edits)",
+                id="chk_integrity",
+                value=self._initial_integrity,
             )
             yield Static(
                 "architect_eval snapshots catch truncated/corrupted writes",
                 classes="mode_help",
             )
             yield Label("Token budget/hour (0 = unlimited):")
-            yield Input(placeholder="0", id="inp_budget", value="")
+            yield Input(
+                placeholder="0",
+                id="inp_budget",
+                value=str(self._initial_budget) if self._initial_budget > 0 else "",
+            )
             yield Static("")
             yield Static(
                 "[dim]↑↓ navigate · Space toggle · Enter submit · Esc cancel[/dim]",
@@ -167,12 +193,20 @@ class ModeSelectionScreen(Screen[dict[str, bool | int]]):
     def action_cancel(self) -> None:
         self.dismiss(None)
 
+    def action_go_back(self) -> None:
+        """Navigate back to the previous pre-run screen."""
+        self.dismiss(BACK_SENTINEL)  # type: ignore[arg-type]
+
 
 # Legacy alias for tests that still reference the old class name.
 ModeSelectionApp = ModeSelectionScreen
 
 
-def run_mode_selection(show_free: bool = True) -> dict[str, bool | int]:
+def run_mode_selection(
+    show_free: bool = True,
+    *,
+    initial_mode: dict[str, bool | int] | None = None,
+) -> dict[str, bool | int] | object:
     """Show the mode-selection screen and return the chosen settings.
 
     Uses the currently active :class:`ArchitectAppRunner` if one is in
@@ -180,10 +214,26 @@ def run_mode_selection(show_free: bool = True) -> dict[str, bool | int]:
     minimal harness when no runner is hosting the CLI flow.
 
     Raises :class:`SystemExit` with code 0 when the user cancels.
+    Returns ``BACK_SENTINEL`` on back.
     """
     from the_architect.tui.app import run_single_screen
 
-    result = run_single_screen(ModeSelectionScreen(show_free=show_free))
+    mode = initial_mode or {
+        "free": False,
+        "persistent": False,
+        "integrity": True,
+        "token_budget_per_hour": 0,
+    }
+    screen = ModeSelectionScreen(
+        show_free=show_free,
+        initial_free=bool(mode.get("free", False)),
+        initial_persistent=bool(mode.get("persistent", False)),
+        initial_integrity=bool(mode.get("integrity", True)),
+        initial_budget=int(mode.get("token_budget_per_hour", 0)),
+    )
+    result = run_single_screen(screen)
+    if result is BACK_SENTINEL:
+        return BACK_SENTINEL
     if result is None:
         raise SystemExit(0)
     return result

@@ -36,14 +36,11 @@ if TYPE_CHECKING:
 
 _FALLBACK_CODEX_MODELS = [
     "gpt-5.4",
+    "gpt-5.5",
+    "gpt-5.4-mini",
     "gpt-5.3-codex",
-    "gpt-5.3",
-    "gpt-4.1",
-    "gpt-4.1-mini",
-    "gpt-4.1-nano",
+    "gpt-5.2",
     "o3",
-    "o3-mini",
-    "o4-mini",
 ]
 
 
@@ -91,6 +88,11 @@ class CodexCliProvider:
         # which can take time — callers in hot paths must never pay that cost
         # on every invocation. A fresh CLI invocation creates a new instance.
         self._version_cache: str | None = None
+        # Tracks whether any item.delta text events were received in the
+        # current turn.  When True we suppress the item.completed agent_message
+        # text to avoid duplicating output that was already streamed live.
+        # Reset to False on every turn.started event.
+        self._delta_text_seen: bool = False
 
     # ── Identity.truncated
 
@@ -217,27 +219,64 @@ class CodexCliProvider:
     # ── Model / agent discovery.truncated
 
     def list_models(self) -> list[str]:
-        """Return available model identifiers.
+        """Return available model identifiers from the Codex CLI.
 
-        Resolution order (fastest first):
-        1. ``CODEX_MODEL`` env var
-        2. Parse ``~/.codex/config.toml`` for model field
-        3. Static fallback list
+        Resolution order:
+        1. ``CODEX_MODEL`` env var — single model override.
+        2. ``codex debug models`` — live catalog from the installed binary,
+           filtered to visible models (``visibility != "hide"``), sorted by
+           ``priority`` (lower = more prominent).  This is the correct source
+           because OpenAI controls the catalog and it changes with each
+           Codex CLI release — hardcoded lists go stale immediately.
+        3. ``~/.codex/config.toml`` ``model`` field — single model from config.
+        4. Static fallback list — only used when the binary call fails.
 
         Returns:
-            List of model identifier strings, sorted alphabetically.
+            List of model identifier strings in display order.
         """
+        import json as _json
+
         # 1. Fast path: CODEX_MODEL env var
         env_model = os.environ.get("CODEX_MODEL", "").strip()
         if env_model:
             return [env_model]
 
-        # 2. Config file path
+        # 2. Live catalog from the binary
+        try:
+            result = subprocess.run(
+                ["codex", "debug", "models"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                catalog = _json.loads(result.stdout)
+                raw_models = catalog.get("models", [])
+                # Filter out hidden entries; sort by priority (ascending = most
+                # prominent first) so the dropdown order matches the Codex UI.
+                visible = [
+                    m for m in raw_models if isinstance(m, dict) and m.get("visibility") != "hide"
+                ]
+                visible.sort(key=lambda m: m.get("priority", 999))
+                slugs = [m["slug"] for m in visible if m.get("slug")]
+                if slugs:
+                    logger.debug(f"Codex: loaded {len(slugs)} models from debug catalog")
+                    return slugs
+        except (
+            subprocess.TimeoutExpired,
+            subprocess.SubprocessError,
+            FileNotFoundError,
+            _json.JSONDecodeError,
+            KeyError,
+        ) as exc:
+            logger.debug(f"codex debug models failed: {exc!r}, falling back")
+
+        # 3. Config file
         model = _read_codex_config_model()
         if model:
             return [model]
 
-        # 3. Fallback list
+        # 4. Static fallback — last resort
         return list(_FALLBACK_CODEX_MODELS)
 
     def list_agents(self, project_dir: Path) -> list[str]:
@@ -259,7 +298,8 @@ class CodexCliProvider:
         Resolution order:
         1. ``CODEX_MODEL`` env var
         2. ``~/.codex/config.toml`` model field
-        3. First model from fallback list
+        3. First visible model from ``codex debug models`` catalog
+        4. First model from static fallback list
 
         Results are cached per project directory.
 
@@ -290,11 +330,11 @@ class CodexCliProvider:
             self._resolved_model_cache[cache_key] = model
             return model
 
-        # 3. First fallback model
-        if _FALLBACK_CODEX_MODELS:
-            first_model = _FALLBACK_CODEX_MODELS[0]
-            self._resolved_model_cache[cache_key] = first_model
-            return first_model
+        # 3. First visible model from live catalog (same call as list_models)
+        live = self.list_models()
+        if live:
+            self._resolved_model_cache[cache_key] = live[0]
+            return live[0]
 
         return ""
 
@@ -495,26 +535,73 @@ class CodexCliProvider:
             return ParsedEvent(event_type=etype, display_lines=[], tokens=None)
 
         elif etype == "turn.started":
-            # Silent event (turn about to start)
+            # Silent event (turn about to start). Reset delta-seen flag so
+            # item.completed agent_message text is emitted fresh for this turn.
+            self._delta_text_seen = False
             return ParsedEvent(event_type=etype, display_lines=[], tokens=None)
 
         elif etype == "item.started":
             # Silent event (item about to start)
             return ParsedEvent(event_type=etype, display_lines=[])
 
+        elif etype == "item.delta":
+            # Streaming delta from the agent — emitted token-by-token while the
+            # model is generating.  Extract text from content_delta parts so the
+            # TUI shows live output rather than waiting for item.completed.
+            # Codex delta shapes observed in the wild:
+            #   {"type":"item.delta","delta":{"type":"text_delta","text":"..."}}
+            #   {"type":"item.delta","delta":{"type":"content_delta",
+            #     "delta":{"type":"text","text":"..."}}}
+            delta = event.get("delta", {})
+            if isinstance(delta, dict):
+                delta_type = delta.get("type", "")
+                if delta_type == "text_delta":
+                    text = delta.get("text", "")
+                    if isinstance(text, str) and text:
+                        # Emit non-empty text chunks; split on newlines so each
+                        # line is its own RichLog entry.
+                        for chunk_line in text.split("\n"):
+                            if chunk_line:
+                                display_lines.append(chunk_line)
+                elif delta_type == "content_delta":
+                    inner = delta.get("delta", {})
+                    if isinstance(inner, dict) and inner.get("type") == "text":
+                        text = inner.get("text", "")
+                        if isinstance(text, str) and text:
+                            for chunk_line in text.split("\n"):
+                                if chunk_line:
+                                    display_lines.append(chunk_line)
+            # Mark that this turn received streamed delta text so that the
+            # subsequent item.completed agent_message event is suppressed.
+            if display_lines:
+                self._delta_text_seen = True
+
         elif etype == "item.completed":
-            # Extract display content based on item type
+            # Extract display content based on item type.
             item = event.get("item", {})
             item_type = item.get("type") if isinstance(item, dict) else None
 
             if item_type == "agent_message":
                 text = item.get("text", "") if isinstance(item, dict) else ""
                 if isinstance(text, str) and text.strip():
-                    display_lines.extend(text.strip().split("\n"))
+                    if self._delta_text_seen:
+                        # This turn already streamed text via item.delta events;
+                        # item.completed would duplicate it — suppress.
+                        pass
+                    else:
+                        # No deltas were streamed (common with older Codex builds
+                        # or when the response arrives as a single completed event).
+                        # Emit the full text now so it's not silently dropped.
+                        for completed_line in text.strip().split("\n"):
+                            display_lines.append(completed_line)
             elif item_type == "command_execution":
-                # Display tool name similar to Claude Code
-                exec_id = item.get("id", "") if isinstance(item, dict) else ""
-                display_lines.append(f"→ {exec_id or 'command_execution'}")
+                # Show the command that was executed
+                cmd = ""
+                if isinstance(item, dict):
+                    cmd = item.get("command", "") or item.get("id", "") or "command_execution"
+                if cmd and len(cmd) > 80:
+                    cmd = cmd[:80] + "…"
+                display_lines.append(f"$ {cmd}")
 
         elif etype == "turn.completed":
             # Extract token usage from turn completion

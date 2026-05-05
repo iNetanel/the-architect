@@ -1,6 +1,6 @@
 # AGENTS.md — The Architect
 
-> **Canonical rules live in `documentation/Best Practices.md`. Read it before every task.**
+> **Canonical rules live in `documentation/PRACTICES.md`. Read it before every task.**
 > This file adds tool-specific notes for OpenCode sessions working on this repo.
 
 ---
@@ -10,7 +10,7 @@
 - **Python 3.11+** — single package `the_architect/`, CLI entry point `the_architect/cli.py`
 - **Click** (CLI), **Rich** (terminal output), **Loguru** (logging), **Pydantic v2** (models), **httpx** (HTTP), **questionary** (interactive prompts)
 - **Hatchling** build backend; `pyproject.toml` is the source of truth for SemVer
-- No database, no web server — pure CLI tool that shells out to OpenCode or Claude Code
+- No database, no web server — pure CLI tool that shells out to OpenCode, Codex CLI, Claude Code, or Gemini CLI
 
 ---
 
@@ -120,8 +120,9 @@ dev/opencode/         # OpenCode config for developing The Architect itself
   prompts/            # Agent prompt files (base.md, master.md, backend.md, …)
 
 documentation/
-  Best Practices.md   # CANONICAL RULES — read before every task
-  The Architect Project.md  # Full architecture reference
+  PRACTICES.md        # CANONICAL RULES — read before every task
+  ARCHITECTURE.md     # Full technical reference — every system, every config option
+  CONCEPTS.md         # Narrative explanations of core concepts — the "why"
 tests/                # One test file per module, e.g. test_circuit.py
 version.py            # BUILD COUNTER lives here — edit this for every task
 ```
@@ -158,11 +159,11 @@ Internal refactors, test-only changes, and doc-only changes do **not** need a CH
 
 ## What The Architect Does (context for working on it)
 
-The Architect wraps OpenCode or Claude Code to add autonomous task planning, execution, retry/circuit-breaker, retrospective review, and persistent memory (`ARCHITECT.md`) to any project. It never writes application code itself — it orchestrates the AI CLI that does.
+The Architect wraps OpenCode, Codex CLI, Claude Code, or Gemini CLI to add autonomous task planning, execution, retry/circuit-breaker, retrospective review, and persistent memory (`ARCHITECT.md`) to any project. It never writes application code itself — it orchestrates the AI CLI that does.
 
 Key runtime files it creates in user projects (not this repo):
 - `tasks/` — numbered task files (T01, T02, …) and `INSTRUCTIONS.md`
-- `PROGRESS.md` — parsed by regex; format is strict (see `documentation/Best Practices.md`)
+- `PROGRESS.md` — parsed by regex; format is strict (see `documentation/PRACTICES.md`)
 - `ARCHITECT.md` — persistent project intelligence, grows across sessions
 - `.architect/` — logs, circuit breaker state, lock file, monitor state
 

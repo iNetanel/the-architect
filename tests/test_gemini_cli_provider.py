@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from the_architect.core.gemini_cli_provider import GeminiCliProvider
+from the_architect.core.gemini_cli_provider import _FALLBACK_GEMINI_MODELS, GeminiCliProvider
 from the_architect.core.runner import TokenUsage
 
 # ---------------------------------------------------------------------------
@@ -295,20 +295,45 @@ class TestGeminiCliProviderModelResolution:
         models = GeminiCliProvider().list_models()
         assert models == ["gemini-2.5-pro"]
 
-    def test_list_models_from_settings_json(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_list_models_from_bundle(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """list_models uses the local Gemini CLI bundle as the authoritative source."""
         monkeypatch.delenv("GEMINI_MODEL", raising=False)
         with patch(
-            "the_architect.core.gemini_cli_provider._read_gemini_settings_model",
-            return_value="gemini-2.5-flash",
+            "the_architect.core.gemini_cli_provider._extract_models_from_gemini_bundle",
+            return_value=["gemini-2.5-flash", "gemini-2.5-pro"],
+        ):
+            models = GeminiCliProvider().list_models()
+        assert models == ["gemini-2.5-flash", "gemini-2.5-pro"]
+
+    def test_list_models_from_settings_json_when_bundle_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Falls back to settings.json model when bundle extraction returns nothing."""
+        monkeypatch.delenv("GEMINI_MODEL", raising=False)
+        with (
+            patch(
+                "the_architect.core.gemini_cli_provider._extract_models_from_gemini_bundle",
+                return_value=[],
+            ),
+            patch(
+                "the_architect.core.gemini_cli_provider._read_gemini_settings_model",
+                return_value="gemini-2.5-flash",
+            ),
         ):
             models = GeminiCliProvider().list_models()
         assert models == ["gemini-2.5-flash"]
 
     def test_list_models_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("GEMINI_MODEL", raising=False)
-        with patch(
-            "the_architect.core.gemini_cli_provider._read_gemini_settings_model",
-            return_value="",
+        with (
+            patch(
+                "the_architect.core.gemini_cli_provider._extract_models_from_gemini_bundle",
+                return_value=[],
+            ),
+            patch(
+                "the_architect.core.gemini_cli_provider._read_gemini_settings_model",
+                return_value="",
+            ),
         ):
             models = GeminiCliProvider().list_models()
         assert len(models) > 0
@@ -328,13 +353,20 @@ class TestGeminiCliProviderModelResolution:
         assert result == "gemini-2.5-flash"
 
     def test_get_resolved_model_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """get_resolved_model falls back to static list when all local sources fail."""
         monkeypatch.delenv("GEMINI_MODEL", raising=False)
-        with patch(
-            "the_architect.core.gemini_cli_provider._read_gemini_settings_model",
-            return_value="",
+        with (
+            patch(
+                "the_architect.core.gemini_cli_provider._extract_models_from_gemini_bundle",
+                return_value=[],
+            ),
+            patch(
+                "the_architect.core.gemini_cli_provider._read_gemini_settings_model",
+                return_value="",
+            ),
         ):
             result = GeminiCliProvider().get_resolved_model(Path("/tmp"))
-        assert result == "gemini-2.5-pro"
+        assert result in _FALLBACK_GEMINI_MODELS
 
 
 # ---------------------------------------------------------------------------

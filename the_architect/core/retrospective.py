@@ -525,7 +525,7 @@ async def run_task_reassessment(
 ) -> ReassessmentResult:
     """Run a targeted architect reassessment after a task with downstream impact."""
     eval_files = _find_eval_snapshot_files(project_dir) if config.integrity else []
-    needs_reassessment = bool(outcome_summary) and "Downstream impact: none" not in outcome_summary
+    needs_reassessment = bool(outcome_summary) and "Downstream impact: possible" in outcome_summary
     if not needs_reassessment and not eval_files:
         return ReassessmentResult(summary="No reassessment needed.")
 
@@ -549,6 +549,16 @@ async def run_task_reassessment(
         progress_content = (project_dir / "PROGRESS.md").read_text(encoding="utf-8")
     except OSError:
         progress_content = ""
+
+    # Load ARCHITECT.md so the reassessment agent has full project memory:
+    # permanent decisions, constraints, and lessons learned.
+    architect_md_content = ""
+    try:
+        from the_architect.core.architect_md import read_architect_md
+
+        architect_md_content = read_architect_md(project_dir) or ""
+    except Exception:
+        pass  # Non-fatal — reassessment proceeds without it
 
     eval_warning = ""
     if eval_files:
@@ -589,6 +599,16 @@ async def run_task_reassessment(
             f"PROJECT ROOT: {project_dir}",
             "You are doing a targeted post-task reassessment, not a full re-plan.",
             *([eval_warning, "---", ""] if eval_warning else []),
+            *(
+                [
+                    "=== ARCHITECT.md — Persistent Project Intelligence ===",
+                    architect_md_content,
+                    "---",
+                    "",
+                ]
+                if architect_md_content
+                else []
+            ),
             "Read PROGRESS.md and pending task files only.",
             "Only update pending task files in tasks/ when the completed task materially "
             "changes future work.",

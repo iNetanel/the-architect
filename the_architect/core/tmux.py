@@ -367,6 +367,13 @@ def launch_in_tmux(
         #     to the session (inherited by all panes).
         _forward_env_vars(session_name)
 
+        # 1c. Configure true-color terminal support for the session.
+        #     tmux overrides TERM to its own default-terminal value
+        #     (screen-256color) regardless of what the parent shell had.
+        #     Without this, Textual detects a non-true-color terminal and
+        #     renders the animated WaitScreen with near-invisible colours.
+        _configure_terminal_colors(session_name)
+
         if not single_pane:
             # 2. Split the window vertically — right pane gets 30% width.
             #    Skipped in single_pane mode where the TUI owns the
@@ -521,6 +528,16 @@ _FORWARD_ENV_VARS: list[str] = [
     "PATH",
     "HOME",
     "SHELL",
+    # Terminal capability vars — tmux creates panes with TERM=screen-256color
+    # by default, which strips COLORTERM and TERM_PROGRAM entirely.  Without
+    # these, Textual cannot detect true-color support and falls back to a
+    # limited palette — causing the animated WaitScreen to render blank or
+    # with near-invisible colours.  Forwarding the parent values preserves
+    # whatever colour depth the user's outer terminal actually supports.
+    "TERM",
+    "COLORTERM",
+    "TERM_PROGRAM",
+    "TERM_PROGRAM_VERSION",
     # XDG base dirs — opencode and other tools use these for config discovery
     "XDG_CONFIG_HOME",
     # Node.js / npm — required when opencode was installed globally via npm/nvm
@@ -570,6 +587,48 @@ def _forward_env_vars(session_name: str) -> None:
             logger.debug(f"Forwarded env var to tmux session: {var_name}")
         except (subprocess.SubprocessError, FileNotFoundError, OSError) as exc:
             logger.debug(f"Failed to forward env var {var_name} to tmux: {exc!r}")
+
+
+def _configure_terminal_colors(session_name: str) -> None:
+    """Set true-color terminal options on a newly-created tmux session.
+
+    tmux always overrides the ``TERM`` env var for its panes to its own
+    ``default-terminal`` value (``screen-256color`` unless the user has
+    customised ``~/.tmux.conf``).  This strips ``COLORTERM=truecolor``
+    and drops ``TERM`` back to 256-colour mode, which makes Textual
+    fall back to a limited palette — causing the animated loading screen
+    and other Rich/Textual colours to render incorrectly or invisibly.
+
+    This function applies two session-level tmux options:
+
+    1. ``default-terminal xterm-256color`` — makes every new pane start
+       with a proper xterm-compatible TERM value.
+    2. ``terminal-overrides *:Tc`` — enables the ``Tc`` capability flag
+       (true-color / 24-bit RGB) for all terminals matching ``*``,
+       so Textual's colour rendering is correct even inside tmux.
+
+    Both options are applied with ``-s`` (session scope) and ``-t SESSION``
+    so they only affect the session we just created, not the user's global
+    tmux config.  Errors are logged at debug level and silently swallowed —
+    color configuration is best-effort and must never abort the run.
+
+    Args:
+        session_name: The tmux session name to configure.
+    """
+    options: list[tuple[str, str]] = [
+        ("default-terminal", "xterm-256color"),
+        ("terminal-overrides", "*:Tc"),
+    ]
+    for option, value in options:
+        try:
+            subprocess.run(
+                ["tmux", "set-option", "-s", "-t", session_name, option, value],
+                capture_output=True,
+                timeout=5,
+            )
+            logger.debug(f"Set tmux session option: {option}={value}")
+        except (subprocess.SubprocessError, FileNotFoundError, OSError) as exc:
+            logger.debug(f"Failed to set tmux option {option}: {exc!r}")
 
 
 def prompt_existing_session(session_name: str) -> str:

@@ -60,6 +60,9 @@ class StatusApp(App[None]):
         yield Footer()
 
     def on_mount(self) -> None:
+        from the_architect.tui.app import apply_architect_theme
+
+        apply_architect_theme(self)
         self._refresh_all()
 
     def action_refresh(self) -> None:

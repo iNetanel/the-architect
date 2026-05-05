@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
-import threading
 import time
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
@@ -63,6 +62,7 @@ from the_architect.core.runner import (
 from the_architect.core.success import RetrospectiveRound, print_success_summary, write_success_md
 from the_architect.core.tasks import Task, TaskPlan, TaskScope, TaskStatus, discover_tasks
 from the_architect.core.tmux import PaddedConsole
+from the_architect.tui.screens.pre_run import BACK_SENTINEL
 
 console = PaddedConsole()
 
@@ -392,7 +392,12 @@ def _prompt_provider_selection(available: list[ArchitectProvider]) -> ArchitectP
                 for p in available
             ]
             idx = run_provider_selection(opts)
-            return available[idx]
+            if idx is BACK_SENTINEL:
+                # Back pressed on provider screen — for now, select first
+                # provider and continue.  Phase B will integrate into
+                # the tabbed screen.
+                return available[0]
+            return available[int(idx)]  # type: ignore[call-overload]
         except SystemExit:
             raise
         except Exception as exc:
@@ -496,8 +501,7 @@ def _prompt_update_action(update_msg: str, install_hint: str) -> str:
 
     Replaces ``questionary.confirm`` with a :mod:`prompt_toolkit` screen that
     reacts to a single keystroke — no Enter required.  The user can press
-    ``C`` to continue with the outdated provider or ``Q`` / ``Esc`` / Ctrl+C
-    to abort.
+    ``Enter`` to continue with the outdated provider or ``Esc`` / Ctrl+C to abort.
 
     Args:
         update_msg: The warning message from ``provider.check_update_available()``.
@@ -529,6 +533,7 @@ def _prompt_update_action(update_msg: str, install_hint: str) -> str:
 
     @kb.add("c")
     @kb.add("C")
+    @kb.add("enter")
     def _(event: KeyPressEvent) -> None:
         nonlocal result
         result = "continue"
@@ -547,9 +552,9 @@ def _prompt_update_action(update_msg: str, install_hint: str) -> str:
         return [
             ("class:warning", f"\n  ⚠  {update_msg}\n\n"),
             ("class:dim", f"  Update:  {install_hint}\n\n"),
-            ("class:key", "  C"),
+            ("class:key", "  Enter"),
             ("class:dim", "  continue anyway    "),
-            ("class:key", "Q"),
+            ("class:key", "Esc"),
             ("class:dim", "  exit\n"),
         ]
 
@@ -559,6 +564,86 @@ def _prompt_update_action(update_msg: str, install_hint: str) -> str:
     pt_style = PtStyle(
         [
             ("warning", "bold yellow"),
+            ("dim", "#888888"),
+            ("key", f"bold {ARCHITECT_GREEN}"),
+        ]
+    )
+
+    app: Application[object] = Application(
+        layout=layout,
+        key_bindings=kb,
+        style=pt_style,
+        full_screen=False,
+    )
+    app.run()
+    return result
+
+
+def _prompt_self_update_action(current_version: str, latest_version: str) -> str:
+    """Single-keypress prompt when a newer version of The Architect is available.
+
+    Shown during startup, after the splash animation.  The user can press
+    ``Enter`` / ``Esc`` to continue with the installed version or ``U`` to
+    install the update and restart.
+
+    Args:
+        current_version: The currently installed version string.
+        latest_version: The newer version available on PyPI.
+
+    Returns:
+        ``"continue"`` — user chose to proceed with the current version.
+        ``"update"``   — user chose to install the update and restart.
+    """
+    if _tui_mode_enabled():
+        try:
+            from the_architect.tui.screens.pre_run import run_self_update_screen
+
+            return run_self_update_screen(current_version, latest_version)
+        except Exception as exc:
+            logger.debug(f"TUI self-update screen failed, falling back: {exc!r}")
+
+    from prompt_toolkit import Application
+    from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
+    from prompt_toolkit.layout.controls import FormattedTextControl
+    from prompt_toolkit.styles import Style as PtStyle
+
+    result = "continue"
+    kb = KeyBindings()
+
+    @kb.add("enter")
+    @kb.add("escape")
+    @kb.add("c-c")
+    def _(event: KeyPressEvent) -> None:
+        nonlocal result
+        result = "continue"
+        event.app.exit()
+
+    @kb.add("u")
+    @kb.add("U")
+    def _(event: KeyPressEvent) -> None:
+        nonlocal result
+        result = "update"
+        event.app.exit()
+
+    def _render() -> list[tuple[str, str]]:
+        return [
+            ("class:title", "\n  The Architect — update available\n\n"),
+            ("class:dim", "  Version "),
+            ("class:title", latest_version),
+            ("class:dim", f" is available  (you have {current_version})\n\n"),
+            ("class:dim", "  pip install --upgrade the-architect\n\n"),
+            ("class:key", "  Enter"),
+            ("class:dim", "  continue anyway    "),
+            ("class:key", "U"),
+            ("class:dim", "  update & restart\n"),
+        ]
+
+    content = FormattedTextControl(_render)
+    layout = _padded_window(content)
+
+    pt_style = PtStyle(
+        [
+            ("title", f"bold {ARCHITECT_GREEN}"),
             ("dim", "#888888"),
             ("key", f"bold {ARCHITECT_GREEN}"),
         ]
@@ -620,7 +705,7 @@ def _resolve_tui_default(
 
 def _prompt_mode_selection(
     provider: ArchitectProvider | None = None,
-) -> dict[str, bool | int]:
+) -> dict[str, bool | int] | None:
     """Show a single-screen interactive configuration for The Architect run.
 
     Presented when the user runs ``architect`` without any mode flags
@@ -639,7 +724,8 @@ def _prompt_mode_selection(
             not specified (backward-compatible behaviour).
 
     Returns:
-        Dictionary with mode names mapped to their values.
+        Dictionary with mode names mapped to their values, or None when
+        the user pressed Back.
         Example:
         ``{"free": True, "persistent": False, "integrity": True,``
         ``"token_budget_per_hour": 0}``
@@ -654,7 +740,10 @@ def _prompt_mode_selection(
         try:
             from the_architect.tui.screens import run_mode_selection
 
-            return run_mode_selection(show_free=show_free_tui)
+            result = run_mode_selection(show_free=show_free_tui)
+            if result is BACK_SENTINEL:
+                return None  # Signal: user pressed Back
+            return result  # type: ignore[return-value]
         except SystemExit:
             raise
         except Exception as exc:
@@ -1168,7 +1257,10 @@ def _prompt_goal() -> str:
         try:
             from the_architect.tui.screens.pre_run import run_goal_screen
 
-            return run_goal_screen()
+            result = run_goal_screen()
+            if result is BACK_SENTINEL:
+                return ""  # Signal: user pressed Back
+            return str(result)
         except SystemExit:
             raise
         except Exception as exc:
@@ -1196,11 +1288,15 @@ def _prompt_goal() -> str:
     return str(goal.strip())
 
 
-def _prompt_scope() -> TaskScope:
+def _prompt_scope(initial_scope: str = "standard") -> str | None:
     """Prompt the user to select task scope.
 
+    Args:
+        initial_scope: Pre-fill scope from previous run
+            ('standard', 'simple', 'complex').
+
     Returns:
-        The selected TaskScope.
+        The selected scope string, or None if the user pressed Back.
     """
     # TUI fast-path — Phase 12. Render scope selection as a Textual
     # screen when the TUI is active.
@@ -1208,7 +1304,10 @@ def _prompt_scope() -> TaskScope:
         try:
             from the_architect.tui.screens.pre_run import run_scope_screen
 
-            return TaskScope(run_scope_screen())
+            result = run_scope_screen(initial_scope=initial_scope)
+            if result is BACK_SENTINEL:
+                return None  # Signal: user pressed Back
+            return str(result)
         except SystemExit:
             raise
         except Exception as exc:
@@ -1267,9 +1366,10 @@ def _prompt_architect_model(
         provider = detect_provider("auto")
 
     provider_name = provider.display_name
-    _loading_spinner = _start_wait_spinner(f"loading models from {provider_name}…")
 
-    # Fetch models and current config concurrently
+    # Fetch models and current config concurrently. The Textual splash /
+    # tabbed pre-run screen is the loading indicator here — no stdout
+    # spinner is started because that would fight the TUI for the screen.
     async def _fetch() -> tuple[list[str], str]:
         loop = asyncio.get_event_loop()
         models, current = await asyncio.gather(
@@ -1278,10 +1378,7 @@ def _prompt_architect_model(
         )
         return models, current
 
-    try:
-        models, current = asyncio.run(_fetch())
-    finally:
-        _loading_spinner.stop()
+    models, current = asyncio.run(_fetch())
 
     if not models and not current:
         # Can't list models — fall back to free text
@@ -1298,11 +1395,17 @@ def _prompt_architect_model(
         try:
             from the_architect.tui.screens.pre_run import run_model_picker
 
-            return run_model_picker(
+            result = run_model_picker(
                 provider_name=provider_name,
                 models=list(models or []),
                 current=current or "",
             )
+            if result is BACK_SENTINEL:
+                return None  # Signal: user pressed Back
+            # run_model_picker returns str or None after BACK_SENTINEL check
+            if isinstance(result, str):
+                return result
+            return current if current else None
         except SystemExit:
             raise
         except Exception as exc:
@@ -1359,7 +1462,7 @@ def _prompt_architect_model(
 def _prompt_exec_agent(
     project_dir: Path,
     provider: ArchitectProvider | None = None,
-) -> str:
+) -> str | None:
     """Prompt the user to select the execution agent.
 
     For providers that don't support named agents (Claude Code), this
@@ -1381,11 +1484,8 @@ def _prompt_exec_agent(
     if not provider.supports_agents():
         return ""
 
-    _loading_spinner = _start_wait_spinner(f"loading agents from {provider.display_name}…")
-    try:
-        agents = provider.list_agents(project_dir)
-    finally:
-        _loading_spinner.stop()
+    # Textual splash / tabbed pre-run screen is the loading indicator.
+    agents = provider.list_agents(project_dir)
 
     if not agents:
         return ""
@@ -1396,10 +1496,13 @@ def _prompt_exec_agent(
         try:
             from the_architect.tui.screens.pre_run import run_agent_picker
 
-            return run_agent_picker(
+            result = run_agent_picker(
                 provider_name=provider.display_name,
                 agents=list(agents),
             )
+            if result is BACK_SENTINEL:
+                return None  # Signal: user pressed Back
+            return str(result)
         except SystemExit:
             raise
         except Exception as exc:
@@ -1571,12 +1674,26 @@ def run_planning_mode(
     elif headless:
         scope = TaskScope.STANDARD  # Default in headless mode
     else:
-        scope = _prompt_scope()
+        scope_result = _prompt_scope(initial_scope=config.last_scope or "standard")
+        if scope_result is None:
+            # Back pressed — in this non-state-machine path, just retry
+            scope_result = "standard"
+        scope = TaskScope(scope_result)
 
     # ── Model / agent resolution ────────────────────────────────────────
+    # If the tabbed pre-run screen already asked for the architect model
+    # (even if the user picked the provider default — empty string), we
+    # must not prompt again here.  The ``_tabbed_model_collected`` flag
+    # is set by ``_collect_planning_prompts`` when the tabbed path runs.
+    _tabbed_model_collected = getattr(config, "_tabbed_model_collected", False)
     architect_model: str | None
     if architect_model_override:
         architect_model = architect_model_override
+    elif _tabbed_model_collected:
+        # User picked provider default in the tabbed screen — resolve it
+        # explicitly here so downstream status lines still show the model.
+        resolved = provider.get_resolved_model(project, "architect") if provider else ""
+        architect_model = resolved if resolved else None
     elif headless:
         # In headless mode, resolve the provider's default model explicitly.
         resolved = provider.get_resolved_model(project, "architect")
@@ -1591,7 +1708,7 @@ def run_planning_mode(
         config.execution_agent = execution_model_override
     elif not headless:
         exec_agent = _prompt_exec_agent(project, provider=provider)
-        config.execution_agent = exec_agent
+        config.execution_agent = exec_agent or ""
 
     # Clear the terminal and show a clean header — same style as execution
     if not headless:
@@ -1631,20 +1748,17 @@ def run_planning_mode(
     )
     from the_architect.core.structure import detect_structure, format_structure_for_prompt
 
-    _setup_spinner = _start_wait_spinner("preparing project context…")
-    try:
-        structure_report = detect_structure(project)
-        structure_prompt = format_structure_for_prompt(structure_report)
+    # The Textual splash / planning wait screen is the loading indicator.
+    structure_report = detect_structure(project)
+    structure_prompt = format_structure_for_prompt(structure_report)
 
-        # Write/update the structure section in ARCHITECT.md
-        write_or_update_architect_md(project, structure_report)
+    # Write/update the structure section in ARCHITECT.md
+    write_or_update_architect_md(project, structure_report)
 
-        # Read full ARCHITECT.md content for prompt injection
-        architect_md_content = read_architect_md(project) or ""
+    # Read full ARCHITECT.md content for prompt injection
+    architect_md_content = read_architect_md(project) or ""
 
-        provider.ensure_setup(project, config)
-    finally:
-        _setup_spinner.stop()
+    provider.ensure_setup(project, config)
 
     # Proactive update check before planning starts
     update_msg = provider.check_update_available()
@@ -1696,13 +1810,12 @@ def run_planning_mode(
                     )
                 )
         else:
-            _planning_spinner = _start_live_spinner("planning…")
-            try:
-                result = asyncio.run(
-                    run_planner(request, config, log_path=planning_log, provider=provider)
-                )
-            finally:
-                _planning_spinner.stop()
+            # Non-TUI path: no loading indicator at all. The provider
+            # streams its own output, and once it completes the success
+            # line below confirms planning finished.
+            result = asyncio.run(
+                run_planner(request, config, log_path=planning_log, provider=provider)
+            )
         console.print()
         console.print(f"[#7cc800]✓ Created {len(result.tasks_created)} tasks[/#7cc800]")
         console.print()
@@ -1744,7 +1857,7 @@ def _collect_planning_prompts(
     execution_model_override: str = "",
     provider: ArchitectProvider | None = None,
 ) -> tuple[str, str, str, str | None]:
-    """Collect all planning prompts in the normal scroll buffer.
+    """Collect all planning prompts with back-navigation support.
 
     This runs the interactive portion of planning (pending-task guard, goal,
     scope, model, agent selection) **before** the alternate screen is entered,
@@ -1756,6 +1869,11 @@ def _collect_planning_prompts(
 
     In headless mode all prompts are skipped and the original values are
     returned unchanged.
+
+    Phase A: The linear flow is now a state machine.  When the user presses
+    Backspace on any TUI screen, the flow returns to the previous step and
+    re-prompts.  Only the TUI path supports back navigation — the plain
+    terminal path remains linear (questionary does not have a "back" concept).
 
     Args:
         project: The project root directory.
@@ -1770,6 +1888,7 @@ def _collect_planning_prompts(
             string means the user has not yet been asked; ``None`` is never
             passed in but may appear in the return value when headless mode
             skips the prompt entirely.
+        provider: The AI CLI provider.  Defaults to auto-detection.
 
     Returns:
         Tuple of ``(goal_text, scope_text, architect_model, execution_model)``
@@ -1832,29 +1951,153 @@ def _collect_planning_prompts(
                 )
                 raise SystemExit(0)
 
-    # ── Goal ────────────────────────────────────────────────────────────
-    if not goal_text:
-        goal_text = _prompt_goal()
+    # ── TUI tabbed screen fast-path (Phase B) ────────────────────────
+    # When the TUI is active, show the unified tabbed PreRunScreen
+    # instead of the linear chain of individual screens.
+    if _tui_mode_enabled() and provider is not None:
+        try:
+            from the_architect.tui.screens.pre_run_tabbed import run_pre_run_tabbed
 
-    # ── Scope ───────────────────────────────────────────────────────────
-    if not scope_text:
-        scope = _prompt_scope()
-        scope_text = scope.value
+            # Collect all installed providers for the Provider tab
+            _all_providers = detect_available_providers()
+            if not _all_providers:
+                _all_providers = [provider]
 
-    # ── Architect model ─────────────────────────────────────────────────
-    if not architect_model_override:
-        resolved_model = _prompt_architect_model(project, provider=provider)
-        architect_model_override = resolved_model or ""
+            result = run_pre_run_tabbed(
+                providers=_all_providers,
+                config=config,
+                project_dir=project,
+                goal_text=goal_text,
+                scope_text=scope_text,
+                architect_model=architect_model_override,
+                execution_model=execution_model_override,
+                free_mode=False,
+                persistent=False,
+            )
+            if result is not None:
+                goal_text = result.goal
+                scope_text = result.scope
+                architect_model_override = result.architect_model or ""
+                execution_model_override = result.execution_agent or ""
+                config.execution_agent = result.execution_agent or ""
+                config.free_mode = result.free
+                config.persistent = result.persistent
+                config.integrity = result.integrity
+                config.token_budget_per_hour = result.token_budget_per_hour
+                if result.provider_name:
+                    config.provider = result.provider_name
 
-    # ── Execution agent ─────────────────────────────────────────────────
-    # Always prompt here (once) if no override was supplied via CLI flag.
-    # The result — even an empty string meaning "use provider default" — is
-    # returned so run_planning_mode can skip the prompt entirely via the
-    # `is not None` sentinel check.
-    if not execution_model_override:
-        exec_agent = _prompt_exec_agent(project, provider=provider)
-        execution_model_override = exec_agent
-        config.execution_agent = exec_agent
+                # Signal to the caller that mode settings were already
+                # collected by the tabbed screen — skip the separate
+                # _prompt_mode_selection call below.
+                config._tabbed_mode_collected = True  # type: ignore[attr-defined]
+
+                # Signal that the architect model was already resolved by
+                # the tabbed screen (even if the user picked provider
+                # default — empty string).  Prevents run_planning_mode
+                # from prompting again.
+                config._tabbed_model_collected = True  # type: ignore[attr-defined]
+
+                # Persist values for next run
+                try:
+                    write_config(
+                        project,
+                        {
+                            "last_scope": scope_text,
+                            "architect_model": architect_model_override,
+                            "execution_agent": config.execution_agent,
+                            "provider": config.provider,
+                        },
+                    )
+                except Exception as exc:
+                    logger.debug(f"Failed to persist pre-run values: {exc!r}")
+
+                return goal_text, scope_text, architect_model_override, execution_model_override
+        except SystemExit:
+            raise
+        except Exception as exc:
+            logger.debug(f"Tabbed pre-run screen failed, falling back to linear: {exc!r}")
+
+    # ── State machine for back-navigable prompts ───────────────────────
+    # Steps: goal → scope → model → agent
+    # Each step can return a sentinel (empty str / None) on "back" to
+    # return to the previous step.  CLI-supplied values (from flags) skip
+    # their step entirely and cannot be navigated back to — the user
+    # provided them explicitly.
+    step = "goal"
+    goal_from_flag = bool(goal_text)
+    scope_from_flag = bool(scope_text)
+    model_from_flag = bool(architect_model_override)
+    agent_from_flag = bool(execution_model_override)
+
+    while True:
+        if step == "goal":
+            if goal_from_flag:
+                step = "scope"
+                continue
+            goal_text = _prompt_goal()
+            if not goal_text:
+                # Back pressed on first screen — stay at goal
+                continue
+            step = "scope"
+
+        elif step == "scope":
+            if scope_from_flag:
+                step = "model"
+                continue
+            initial_scope = config.last_scope or "standard"
+            scope_result = _prompt_scope(initial_scope=initial_scope)
+            if scope_result is None:
+                # Back pressed — go back to goal
+                step = "goal"
+                goal_text = ""
+                goal_from_flag = False
+                continue
+            scope_text = scope_result
+            step = "model"
+
+        elif step == "model":
+            if model_from_flag:
+                step = "agent"
+                continue
+            resolved_model = _prompt_architect_model(project, provider=provider)
+            if resolved_model is None:
+                # Back pressed — go back to scope
+                step = "scope"
+                scope_text = ""
+                scope_from_flag = False
+                continue
+            architect_model_override = resolved_model or ""
+            step = "agent"
+
+        elif step == "agent":
+            if agent_from_flag:
+                break
+            exec_agent = _prompt_exec_agent(project, provider=provider)
+            if exec_agent is None:
+                # Back pressed — go back to model
+                step = "model"
+                architect_model_override = ""
+                model_from_flag = False
+                continue
+            execution_model_override = exec_agent
+            config.execution_agent = exec_agent
+            break
+
+    # ── Persist values for next run ────────────────────────────────────
+    # Goal and context_paths are NOT persisted (spec requirement).
+    # Scope and architect_model are persisted so the next run pre-fills.
+    try:
+        write_config(
+            project,
+            {
+                "last_scope": scope_text,
+                "architect_model": architect_model_override,
+                "execution_agent": config.execution_agent,
+            },
+        )
+    except Exception as exc:
+        logger.debug(f"Failed to persist pre-run values: {exc!r}")
 
     return goal_text, scope_text, architect_model_override, execution_model_override
 
@@ -1885,299 +2128,12 @@ def _ansi_supported() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Bouncing scanner — continuous background animation
+# Legacy stdout-ANSI spinners / countdowns were removed (build 10135+).
+# Every loading / waiting / between-task state is now a Textual screen in
+# the single ArchitectApp — no background threads painting to stdout, no
+# leftover frames surviving app teardown. See the_architect/tui/screens/
+# for the splash, wait, and execution surfaces that replaced them.
 # ---------------------------------------------------------------------------
-
-
-class _SpinnerHandle:
-    """Stop handle returned by :func:`_start_live_spinner`.
-
-    Call :meth:`stop` to terminate the background animation and clear the
-    spinner line.  Safe to call multiple times — only the first call does
-    any work.
-    """
-
-    def __init__(
-        self,
-        stop_event: threading.Event,
-        thread: threading.Thread | None,
-        is_tty: bool,
-    ) -> None:
-        self._stop_event = stop_event
-        self._thread = thread
-        self._is_tty = is_tty
-        self._stopped = False
-
-    def stop(self) -> None:
-        """Signal the animation thread to exit and erase the spinner line.
-
-        Idempotent — calling ``stop()`` after the animation has already
-        been stopped is a no-op.
-        """
-        if self._stopped:
-            return
-        self._stopped = True
-        self._stop_event.set()
-        if self._thread is not None and self._thread.is_alive():
-            # The animation loop sleeps in ~60 ms ticks, so join(1.0) is plenty.
-            self._thread.join(timeout=1.0)
-        if self._is_tty:
-            try:
-                sys.stdout.write("\r\033[2K")
-                sys.stdout.flush()
-            except OSError:
-                pass
-
-
-def _scanner_animate(label: str, stop_event: threading.Event) -> None:
-    """Drive the bouncing-scanner animation until ``stop_event`` is set.
-
-    Runs in a background thread.  Each frame overwrites the current line
-    with ``\\r`` — no newline is ever emitted — so the spinner stays on a
-    single line and can be erased cleanly by the caller.
-
-    Args:
-        label: Short text shown after the scanner track (dim).
-        stop_event: Event that signals the animation to exit.
-    """
-    track_width = 20
-    segment_width = 4
-    interval = 0.06
-
-    pos = 0
-    direction = 1  # +1 = right, -1 = left
-    max_pos = track_width - segment_width  # last valid left-edge position
-
-    green = "\033[38;2;124;200;0m"
-    dim = "\033[2m"
-    reset = "\033[0m"
-
-    try:
-        while not stop_event.is_set():
-            before = "░" * pos
-            segment = "█" * segment_width
-            after = "░" * (track_width - pos - segment_width)
-            line = f"  {green}{before}{segment}{after}{reset}  {dim}{label}{reset}"
-            try:
-                sys.stdout.write("\r" + line)
-                sys.stdout.flush()
-            except OSError:
-                return
-
-            # Sleep in a single slice that already reacts to stop_event.
-            if stop_event.wait(interval):
-                return
-
-            # Advance with bounce at the ends.
-            pos += direction
-            if pos >= max_pos:
-                pos = max_pos
-                direction = -1
-            elif pos <= 0:
-                pos = 0
-                direction = 1
-    except Exception:
-        # Animation must never crash the main thread — swallow anything.
-        return
-
-
-def _start_live_spinner(label: str) -> _SpinnerHandle:
-    """Start the bouncing scanner in a background thread.
-
-    Returns a :class:`_SpinnerHandle` whose ``stop()`` method ends the
-    animation and erases the line.  On non-TTY or no-ANSI terminals the
-    handle is a no-op — no thread is launched and ``stop()`` does nothing.
-
-    Phase 14: when the Textual TUI is active, this is also a silent
-    no-op — the TUI owns the screen and its own wait overlays render
-    the spinner, so writing scanner frames to stdout would smear the
-    alt-screen or leak through seams between TUI screens.
-
-    Args:
-        label: Short text shown after the scanner track.
-
-    Returns:
-        A :class:`_SpinnerHandle` — always usable, even when animation is
-        disabled.
-    """
-    stop_event = threading.Event()
-
-    if _tui_mode_enabled() or not _ansi_supported():
-        stop_event.set()
-        return _SpinnerHandle(stop_event=stop_event, thread=None, is_tty=False)
-
-    thread = threading.Thread(
-        target=_scanner_animate,
-        args=(label, stop_event),
-        name="architect-spinner",
-        daemon=True,
-    )
-    thread.start()
-    return _SpinnerHandle(stop_event=stop_event, thread=thread, is_tty=True)
-
-
-def _wait_animate(label: str, stop_event: threading.Event) -> None:
-    """Drive the lightweight braille wait spinner until ``stop_event`` is set.
-
-    Runs in a background thread and overwrites a single line with ``\\r``
-    on each tick — no newline is ever emitted.  Used for fast I/O waits
-    (loading model lists, fetching data) where the bouncing scanner would
-    be visually too heavy.
-
-    Args:
-        label: Short text shown after the braille character (dim).
-        stop_event: Event that signals the animation to exit.
-    """
-    frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-    interval = 0.08
-
-    green = "\033[38;2;124;200;0m"
-    dim = "\033[2m"
-    reset = "\033[0m"
-
-    idx = 0
-    try:
-        while not stop_event.is_set():
-            frame = frames[idx % len(frames)]
-            try:
-                sys.stdout.write(f"\r  {green}{frame}{reset} {dim}{label}{reset}")
-                sys.stdout.flush()
-            except OSError:
-                return
-            if stop_event.wait(interval):
-                return
-            idx += 1
-    except Exception:
-        # Never crash the main thread because of a spinner.
-        return
-
-
-def _start_wait_spinner(label: str) -> _SpinnerHandle:
-    """Start the lightweight braille wait spinner in a background thread.
-
-    Designed for fast I/O waits (loading model lists, fetching free-tier
-    models, detecting project structure) — lower visual weight than the
-    bouncing agent scanner.  Shares the :class:`_SpinnerHandle` return
-    type with :func:`_start_live_spinner` so the two are drop-in
-    interchangeable at call sites.
-
-    Visual::
-
-        ⠋ loading models from OpenCode…
-        ⠙ loading models from OpenCode…
-        ⠹ loading models from OpenCode…
-
-    On non-TTY / NO_COLOR / ``TERM=dumb`` environments, returns an inert
-    pre-stopped handle so callers never need to special-case animation
-    support.
-
-    Args:
-        label: Short text shown after the braille character.
-
-    Returns:
-        A :class:`_SpinnerHandle` — always usable; call ``.stop()`` to end
-        the animation and erase the line.
-    """
-    stop_event = threading.Event()
-
-    if _tui_mode_enabled() or not _ansi_supported():
-        stop_event.set()
-        return _SpinnerHandle(stop_event=stop_event, thread=None, is_tty=False)
-
-    thread = threading.Thread(
-        target=_wait_animate,
-        args=(label, stop_event),
-        name="architect-wait-spinner",
-        daemon=True,
-    )
-    thread.start()
-    return _SpinnerHandle(stop_event=stop_event, thread=thread, is_tty=True)
-
-
-@contextmanager
-def _live_spinner(label: str) -> Generator[None, None, None]:
-    """Run the bouncing scanner in a background thread for the duration of the block.
-
-    On entry, starts the animation thread.  On exit (normal or exception),
-    stops the thread and erases the spinner line with ``\\r\\033[2K``.  When
-    stdout is not a real TTY or ANSI is disabled, this is a no-op.
-
-    Args:
-        label: Short text shown after the scanner track.
-
-    Usage:
-        with _live_spinner(f"starting {task.prefix}…"):
-            provider.start(...)
-    """
-    handle = _start_live_spinner(label)
-    try:
-        yield
-    finally:
-        handle.stop()
-
-
-def _spin(label: str, duration: float = 1.2) -> None:
-    """Show a brief spinner for ``duration`` seconds then erase the line.
-
-    Runs in the calling thread (blocks for ``duration`` seconds).
-    Only used in the ~1s gap between architect printing the task header
-    and opencode producing its first line of output.
-
-    Args:
-        label: Short text shown next to the spinner.
-        duration: How long to spin in seconds.
-    """
-    import itertools
-    import sys
-
-    frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-    spinner = itertools.cycle(frames)
-    interval = 0.08
-    elapsed = 0.0
-    # Only animate if we have a real TTY with ANSI support
-    if not _ansi_supported():
-        return
-    try:
-        while elapsed < duration:
-            frame = next(spinner)
-            sys.stdout.write(f"\r\033[38;2;124;200;0m{frame}\033[0m\033[2m {label}\033[0m")
-            sys.stdout.flush()
-            time.sleep(interval)
-            elapsed += interval
-    finally:
-        # Erase the spinner line completely
-        sys.stdout.write("\r\033[2K")
-        sys.stdout.flush()
-
-
-def _countdown(seconds: int, next_task: str = "") -> None:
-    """Print a live countdown during the pause between tasks.
-
-    Overwrites itself on each tick so it leaves no trace once done.
-
-    Args:
-        seconds: Number of seconds to count down.
-        next_task: Optional label for the next task.  When provided, it is
-            shown dim alongside the timer so the user knows what is coming
-            up without having to remember the task list.
-    """
-    import sys
-
-    if seconds <= 0:
-        return
-    if not _ansi_supported():
-        time.sleep(seconds)
-        return
-
-    next_label = f"  → {next_task}" if next_task else ""
-    for remaining in range(seconds, 0, -1):
-        sys.stdout.write(
-            f"\r\033[38;2;124;200;0m  ⏸ next task in {remaining}s…\033[0m\033[2m{next_label}\033[0m"
-        )
-        sys.stdout.flush()
-        time.sleep(1)
-    sys.stdout.write("\r\033[2K")
-    sys.stdout.flush()
 
 
 async def _run_tasks_raw(
@@ -2214,11 +2170,6 @@ async def _run_tasks_raw(
 
     pending_count = sum(1 for t in tasks if _task_needs_work(t))
 
-    # Holds the handle of the currently running startup spinner so it can be
-    # stopped from any of: on_first_output (provider began streaming),
-    # on_task_done / on_task_failed (no output ever arrived).  Using a dict
-    # avoids Python's nonlocal-in-nested-closure gymnastics.
-    spinner_state: dict[str, _SpinnerHandle | None] = {"handle": None}
     reassessment_log_dir = config.log_dir
     reassessment_log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -2228,17 +2179,6 @@ async def _run_tasks_raw(
     # instead of spinning up a fresh WaitApp in a second thread.
     tui_overlay_app: dict[str, object | None] = {"app": None}
 
-    def _stop_spinner() -> None:
-        """Stop the active startup spinner if any — safe to call repeatedly."""
-        handle = spinner_state["handle"]
-        if handle is None:
-            return
-        handle.stop()
-        spinner_state["handle"] = None
-        # Leave a clean newline after the erased spinner line so subsequent
-        # output doesn't butt up against the task header.
-        console.print()
-
     def on_task_start(task: Task) -> None:
         remaining = sum(1 for t in plan.tasks if _task_needs_work(t))
         title = task.title or task.name
@@ -2247,7 +2187,6 @@ async def _run_tasks_raw(
         )
         console.print()
         console.print(f"[bold #7cc800]══ {task.prefix}[/bold #7cc800]  [dim]{title}[/dim]{suffix}")
-        spinner_state["handle"] = _start_live_spinner(f"starting {task.prefix}…")
         if monitor_writer is not None:
             try:
                 monitor_writer.on_task_start(task)
@@ -2255,7 +2194,6 @@ async def _run_tasks_raw(
                 pass
 
     def on_task_done(result: TaskResult) -> None:
-        _stop_spinner()  # Safety stop — on_first_output usually did this already.
         results.append(result)
         _record_task_outcome(config.progress_file, result)
         if provider is not None and _result_needs_reassessment(result):
@@ -2274,7 +2212,7 @@ async def _run_tasks_raw(
                     )
                     _reassess_renderer = WaitLogRenderer(session=_wait)
                     try:
-                        reassessment = asyncio.run(
+                        reassessment = _run_reassessment_in_thread(
                             run_task_reassessment(
                                 project_dir=project,
                                 provider=provider,
@@ -2292,9 +2230,10 @@ async def _run_tasks_raw(
                         logger.warning(f"Inline reassessment failed for {result.prefix}: {exc!r}")
                         reassessment = None
             else:
-                _reassess_spinner = _start_live_spinner(f"reassessing after {result.prefix}…")
+                # Non-TUI path: run reassessment in a fresh thread so we never
+                # nest asyncio.run() calls inside the outer event loop context.
                 try:
-                    reassessment = asyncio.run(
+                    reassessment = _run_reassessment_in_thread(
                         run_task_reassessment(
                             project_dir=project,
                             provider=provider,
@@ -2309,8 +2248,6 @@ async def _run_tasks_raw(
                 except Exception as exc:
                     logger.warning(f"Inline reassessment failed for {result.prefix}: {exc!r}")
                     reassessment = None
-                finally:
-                    _reassess_spinner.stop()
 
             if reassessment is not None and reassessment.tasks_updated:
                 console.print()
@@ -2331,7 +2268,6 @@ async def _run_tasks_raw(
                 pass
 
     def on_task_failed(result: TaskResult) -> None:
-        _stop_spinner()
         results.append(result)
         console.print()
         console.print(f"[red]✗ {result.prefix} failed after {config.max_retries} attempts[/red]")
@@ -2436,19 +2372,17 @@ async def _run_tasks_raw(
         elif t.status == TaskStatus.FAILED:
             results.append(TaskResult(prefix=t.prefix, title=t.title or t.name, status="failed"))
 
-    # Build a pause callback that shows the next task alongside the timer.
-    # The runner fires on_task_pause once between every pair of consecutive
-    # attempted (non-skipped) tasks, so we count pauses and look up the next
-    # pending task each time — no coupling to internal runner state.
-    pending_task_list: list[Task] = [t for t in plan.tasks if _task_needs_work(t)]
+    # Build a pause callback for the runner's between-task delay. The
+    # callback just blocks for ``seconds`` — no stdout painting, since
+    # the Textual execution screen is the canonical UI surface. Legacy
+    # stdout countdowns were removed along with the rest of the spinner
+    # machinery.
     pause_index = {"n": 0}
 
     def _on_pause(seconds: int) -> None:
         pause_index["n"] += 1
-        idx = pause_index["n"]  # after the 1st pause we're heading into pending[1]
-        nxt = pending_task_list[idx] if idx < len(pending_task_list) else None
-        label = f"{nxt.prefix}  {nxt.title or nxt.name}" if nxt is not None else ""
-        _countdown(seconds, next_task=label)
+        if seconds > 0:
+            time.sleep(seconds)
 
     from the_architect.tui import tui_execution_session
 
@@ -2609,7 +2543,7 @@ async def _run_tasks_raw(
             on_model_switched=_ms,
             on_circuit_event=_ce,
             provider=provider,
-            on_first_output=_stop_spinner,
+            on_first_output=None,
             renderer=_tui_session.renderer,
         )
 
@@ -2706,6 +2640,32 @@ def _task_results_needing_reassessment(results: list[TaskResult]) -> list[TaskRe
 def _result_needs_reassessment(result: TaskResult) -> bool:
     """Return True when a task result should trigger downstream task reassessment."""
     return result.status == "done" and "Downstream impact: possible" in result.outcome_summary
+
+
+def _run_reassessment_in_thread(coro: Any) -> Any:
+    """Run an async reassessment coroutine in a dedicated thread.
+
+    Using a dedicated thread guarantees the coroutine runs in a fresh
+    event loop — safe regardless of whether the caller is itself inside
+    an async context.  This avoids the ``asyncio.run()`` re-entrancy
+    issue that arises when ``on_task_done`` (a sync callback) is invoked
+    from within an outer ``asyncio.run()`` call chain.
+
+    Args:
+        coro: The coroutine to run (e.g. ``run_task_reassessment(...)``).
+
+    Returns:
+        The coroutine's return value.
+
+    Raises:
+        Any exception raised by the coroutine is re-raised in the
+        calling thread.
+    """
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(asyncio.run, coro)
+        return future.result()
 
 
 # ---------------------------------------------------------------------------
@@ -3248,6 +3208,12 @@ def main(
     # terminal when tmux is unavailable).  Wrap in try/finally so that
     # _maybe_kill_own_tmux_session fires on ANY exit path.
 
+    # Note: an earlier revision rendered a plain-ANSI Matrix-rain loader
+    # here (before Textual mounts) to cover the ~0.2s provider-detection
+    # gap. In practice it produced a visible left-aligned green flash
+    # that users found distracting, and the real splash `SplashScreen`
+    # already covers the gap once Textual takes over. Removed.
+
     # ── Phase 2 — Provider selection (scroll buffer, after tmux) ─────────
     # Provider selection that doesn't need an interactive prompt
     # (single provider, explicit env/config, headless) runs here. When
@@ -3313,6 +3279,29 @@ def main(
             nonlocal execution_model_resolved, persistent, free_mode
             nonlocal _active_provider
 
+            # ── Self-update check ─────────────────────────────────
+            # Runs while the splash animation is still showing.  The
+            # PyPI request is short (5 s timeout); if an update exists
+            # the user sees the notification immediately after the
+            # minimum splash hold.  Skipped in headless mode.
+            if not headless:
+                try:
+                    from the_architect.core.self_update import (
+                        check_self_update,
+                        run_self_update,
+                    )
+
+                    _current_v, _latest_v = check_self_update()
+                    if _current_v and _latest_v:
+                        action = _prompt_self_update_action(_current_v, _latest_v)
+                        if action == "update":
+                            run_self_update()
+                            raise SystemExit(0)
+                except SystemExit:
+                    raise
+                except Exception as _su_exc:
+                    logger.debug(f"Self-update check failed (non-fatal): {_su_exc!r}")
+
             # ── Interactive provider selection (if deferred) ──────
             if _needs_interactive_provider_selection:
                 _active_provider = _prompt_provider_selection(_provider_candidates)
@@ -3351,6 +3340,30 @@ def main(
                 architect_model = new_architect_model
                 execution_model_resolved = new_execution_model
 
+                # Re-resolve the active provider if the user selected a
+                # different one in the tabbed pre-run screen.  The tabbed
+                # screen stores the selection in config.provider (a name
+                # string like "codex").  If that name differs from the
+                # provider we started with, resolve a fresh provider object
+                # so that all downstream calls (update check, planning,
+                # execution) use the correct binary.
+                _selected_provider_name = getattr(config, "provider", "auto")
+                if (
+                    _selected_provider_name
+                    and _selected_provider_name != "auto"
+                    and (
+                        _active_provider is None or _active_provider.name != _selected_provider_name
+                    )
+                ):
+                    try:
+                        _active_provider = detect_provider(_selected_provider_name)
+                        os.environ["ARCHITECT_PROVIDER"] = _active_provider.name
+                    except Exception as _rp_exc:
+                        logger.debug(
+                            f"Could not re-resolve provider {_selected_provider_name!r}: "
+                            f"{_rp_exc!r} — keeping current provider"
+                        )
+
                 # Update the planning state with the resolved goal.
                 try:
                     from the_architect.core.monitor_state import write_planning_state
@@ -3363,18 +3376,27 @@ def main(
             _pending_pre_local = (
                 [t for t in _tasks_pre if _task_needs_work(t)] if _tasks_pre else []
             )
+            _mode_already_collected = getattr(config, "_tabbed_mode_collected", False)
             _needs_mode_prompt_local = (
-                not (persistent or free_mode) and not headless and not _pending_pre_local
+                not _mode_already_collected
+                and not (persistent or free_mode)
+                and not headless
+                and not _pending_pre_local
             )
             if _needs_mode_prompt_local:
                 modes = _prompt_mode_selection(provider=_active_provider)
-                if modes.get("persistent"):
-                    persistent = True
-                if modes.get("free"):
-                    free_mode = True
-                config.integrity = bool(modes.get("integrity", config.integrity))
-                if modes.get("token_budget_per_hour"):
-                    config.token_budget_per_hour = modes["token_budget_per_hour"]
+                if modes is None:
+                    # Back pressed — re-show mode selection.
+                    # Phase B will integrate this into the tabbed screen.
+                    modes = _prompt_mode_selection(provider=_active_provider)
+                if modes is not None:
+                    if modes.get("persistent"):
+                        persistent = True
+                    if modes.get("free"):
+                        free_mode = True
+                    config.integrity = bool(modes.get("integrity", config.integrity))
+                    if modes.get("token_budget_per_hour"):
+                        config.token_budget_per_hour = modes["token_budget_per_hour"]
 
             if persistent:
                 config.persistent = True
@@ -3395,6 +3417,8 @@ def main(
                         "persistent": config.persistent,
                         "integrity": config.integrity,
                         "token_budget_per_hour": config.token_budget_per_hour,
+                        "last_scope": scope_text,
+                        "architect_model": architect_model,
                     },
                 )
 
@@ -3594,7 +3618,10 @@ def _run_main(
         )
 
         any_mode_flag = persistent or free_mode
-        _needs_mode_prompt = not any_mode_flag and not headless and not _pending_pre_run
+        _tabbed_mode = getattr(config, "_tabbed_mode_collected", False)
+        _needs_mode_prompt = (
+            not any_mode_flag and not _tabbed_mode and not headless and not _pending_pre_run
+        )
         if _needs_mode_prompt:
             modes = _prompt_mode_selection(provider=provider)
             # Clear the mode-selection UI before the execution header renders.
@@ -3602,13 +3629,14 @@ def _run_main(
             # text stays in the buffer.  Without this clear the execution
             # header starts below the leftover mode-selection text.
             console.clear()
-            if modes.get("persistent"):
-                persistent = True
-            if modes.get("free"):
-                free_mode = True
-            config.integrity = bool(modes.get("integrity", config.integrity))
-            if modes.get("token_budget_per_hour"):
-                config.token_budget_per_hour = modes["token_budget_per_hour"]
+            if modes is not None:
+                if modes.get("persistent"):
+                    persistent = True
+                if modes.get("free"):
+                    free_mode = True
+                config.integrity = bool(modes.get("integrity", config.integrity))
+                if modes.get("token_budget_per_hour"):
+                    config.token_budget_per_hour = modes["token_budget_per_hour"]
 
         if persistent:
             config.persistent = True
@@ -3629,6 +3657,8 @@ def _run_main(
                     "persistent": config.persistent,
                     "integrity": config.integrity,
                     "token_budget_per_hour": config.token_budget_per_hour,
+                    "last_scope": scope_text,
+                    "architect_model": architect_model,
                 },
             )
 
@@ -3772,6 +3802,8 @@ def _run_main(
                         "persistent": config.persistent,
                         "integrity": config.integrity,
                         "token_budget_per_hour": config.token_budget_per_hour,
+                        "last_scope": scope_text,
+                        "architect_model": architect_model,
                     },
                 )
 
@@ -3805,12 +3837,9 @@ def _run_main(
         else:
             from the_architect.core.free_models import FreeModelRotator
 
-            _free_spinner = _start_wait_spinner("fetching free-tier models from OpenRouter…")
-            try:
-                free_rotator = FreeModelRotator()
-                asyncio.run(free_rotator.fetch_free_models())
-            finally:
-                _free_spinner.stop()
+            # Textual splash covers the network fetch; no stdout spinner.
+            free_rotator = FreeModelRotator()
+            asyncio.run(free_rotator.fetch_free_models())
 
             if free_rotator.total_count == 0:
                 console.print(
@@ -3963,18 +3992,15 @@ def _run_main(
                     except Exception as e:
                         retro_exc = e
             else:
-                _retro_spinner = _start_live_spinner(f"retrospective {round_num} reviewing…")
+                # Non-TUI path: no stdout spinner. Provider streams directly.
                 try:
-                    try:
-                        retro_result = asyncio.run(
-                            run_retrospective(
-                                retro_request, config, log_path=retro_log, provider=provider
-                            )
+                    retro_result = asyncio.run(
+                        run_retrospective(
+                            retro_request, config, log_path=retro_log, provider=provider
                         )
-                    except Exception as e:
-                        retro_exc = e
-                finally:
-                    _retro_spinner.stop()
+                    )
+                except Exception as e:
+                    retro_exc = e
             if retro_exc is not None:
                 console.print(f"[red]Retrospective round {round_num} failed: {retro_exc}[/red]")
                 break
@@ -4079,38 +4105,65 @@ def _run_main(
             project, all_results, total_duration, total_tokens, retrospective_rounds=retro_rounds
         )
 
-        # Print terminal summary
-        print_success_summary(
-            all_results,
-            total_duration,
-            total_tokens,
-            success_path,
-            retrospective_rounds=retro_rounds,
-        )
+        # TUI path: show the animated success screen instead of the plain
+        # terminal summary.  The screen blocks until the user presses Enter,
+        # Q, or Escape, then the ArchitectAppRunner exits cleanly.
+        if use_tui:
+            try:
+                from the_architect.tui.runner import active_runner
+
+                _runner = active_runner()
+                if _runner is not None:
+                    _runner.app.show_success(
+                        results=all_results,
+                        total_duration=total_duration,
+                        total_tokens=total_tokens,
+                        success_md_path=str(success_path),
+                        retrospective_rounds=retro_rounds,
+                    )
+            except Exception as _tui_exc:
+                logger.debug(f"TUI success screen failed (non-fatal): {_tui_exc!r}")
+                # Fall through to the plain terminal summary below.
+                print_success_summary(
+                    all_results,
+                    total_duration,
+                    total_tokens,
+                    success_path,
+                    retrospective_rounds=retro_rounds,
+                )
+        else:
+            # Plain terminal summary (non-TUI / headless path).
+            print_success_summary(
+                all_results,
+                total_duration,
+                total_tokens,
+                success_path,
+                retrospective_rounds=retro_rounds,
+            )
+
+            # Pause so the user can read the summary before the screen closes.
+            # Skipped in headless mode (no interactive terminal).
+            if not headless:
+                try:
+                    console.print("[dim]Press any key to exit…[/dim]")
+                    import sys as _sys
+                    import termios as _termios
+                    import tty as _tty
+
+                    fd = _sys.stdin.fileno()
+                    old = _termios.tcgetattr(fd)
+                    try:
+                        _tty.setraw(fd)
+                        _sys.stdin.read(1)
+                    finally:
+                        _termios.tcsetattr(fd, _termios.TCSADRAIN, old)
+                except Exception:
+                    # Non-interactive terminal (pipe, CI, etc.) — skip silently.
+                    pass
     except Exception as exc:
         # Summary generation must not crash the process — log and continue.
         logger.error(f"Error generating final summary: {exc!r}")
         console.print(f"\n[red]Error generating final summary: {exc}[/red]")
-
-    # Pause so the user can read the summary before the screen closes.
-    # Skipped in headless mode (no interactive terminal).
-    if not headless:
-        try:
-            console.print("[dim]Press any key to exit…[/dim]")
-            import sys as _sys
-            import termios as _termios
-            import tty as _tty
-
-            fd = _sys.stdin.fileno()
-            old = _termios.tcgetattr(fd)
-            try:
-                _tty.setraw(fd)
-                _sys.stdin.read(1)
-            finally:
-                _termios.tcsetattr(fd, _termios.TCSADRAIN, old)
-        except Exception:
-            # Non-interactive terminal (pipe, CI, etc.) — skip the pause silently.
-            pass
 
     raise SystemExit(0 if success else 1)
 

@@ -134,6 +134,13 @@ What you did, what changed, what decisions you made.
 
 ---
 
+## Task Outcomes
+
+| Task | Outcome | Files | Verification | Impact on Next Tasks |
+|------|---------|-------|--------------|----------------------|
+
+---
+
 ## Permanent Decisions
 
 | Decision | Value | Reason | Task |
@@ -148,6 +155,7 @@ What you did, what changed, what decisions you made.
 - Change your task's row from `Pending` to `Done` and add today's date
 - Leave other tasks' rows unchanged
 - Update `Current State` and `Last Task Summary`
+- Preserve the `## Task Outcomes` table — copy all existing rows when rewriting; do NOT drop them
 
 ---
 

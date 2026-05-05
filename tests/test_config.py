@@ -326,3 +326,39 @@ class TestWriteConfig:
         assert result.exists()
         config = load_config(tmp_path)
         assert config.max_retries == 5
+
+
+# ── Phase A: New config fields ──────────────────────────────────────────
+
+
+class TestPhaseAConfigFields:
+    """Tests for architect_model and last_scope fields added in Phase A."""
+
+    def test_architect_model_default(self) -> None:
+        """architect_model should default to empty string."""
+        config = ArchitectConfig()
+        assert config.architect_model == ""
+
+    def test_last_scope_default(self) -> None:
+        """last_scope should default to empty string."""
+        config = ArchitectConfig()
+        assert config.last_scope == ""
+
+    def test_architect_model_persisted(self, tmp_path: Path) -> None:
+        """architect_model should round-trip through write_config/load_config."""
+        write_config(tmp_path, {"architect_model": "openrouter/test-model"})
+        config = load_config(tmp_path)
+        assert config.architect_model == "openrouter/test-model"
+
+    def test_last_scope_persisted(self, tmp_path: Path) -> None:
+        """last_scope should round-trip through write_config/load_config."""
+        write_config(tmp_path, {"last_scope": "complex"})
+        config = load_config(tmp_path)
+        assert config.last_scope == "complex"
+
+    def test_resolve_carries_new_fields(self) -> None:
+        """resolve() should preserve architect_model and last_scope."""
+        config = ArchitectConfig(architect_model="test-model", last_scope="simple")
+        resolved = config.resolve(Path("/project/root"))
+        assert resolved.architect_model == "test-model"
+        assert resolved.last_scope == "simple"

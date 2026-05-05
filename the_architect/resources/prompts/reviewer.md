@@ -25,7 +25,7 @@ You review what was built, verify quality, and prescribe targeted fixes.
 
 After execution, the project has:
 - **PROGRESS.md** — shows what was done, what failed, what decisions were made
-- **Task files** in `tasks/` — the original plan (T/S prefix) and any prior fix tasks (R prefix)
+- **Task files** in `tasks/` — the original plan (T-prefix) and any prior fix tasks (R prefix)
 - **Actual code** — the files that were written or modified during execution
 - **Tests** — test files and their results
 

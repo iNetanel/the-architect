@@ -1,6 +1,6 @@
 """Planning integration for The Architect.
 
-Uses an AI CLI provider (OpenCode or Claude Code) with the architect agent
+Uses an AI CLI provider (OpenCode, Codex CLI, Claude Code, or Gemini CLI) with the architect agent
 to decompose goals into task files.
 No direct AI API calls — everything goes through the user's provider setup.
 """
@@ -591,7 +591,7 @@ def _rescue_stray_tasks(project_dir: Path, tasks_dir: Path) -> int:
     import re
 
     skip_dirs = {".git", "node_modules", ".venv", "__pycache__", ".architect", ".pytest_cache"}
-    task_pattern = re.compile(r"^[TRS]\d+_.+\.md$")
+    task_pattern = re.compile(r"^[TR]\d+_.+\.md$")
     rescued = 0
 
     tasks_dir.mkdir(parents=True, exist_ok=True)
@@ -774,7 +774,7 @@ def check_pending_tasks(tasks_dir: Path, progress_file: Path) -> list[str]:
     """Return the names of any task files that are not yet in a terminal state.
 
     Used before planning to warn the user that unfinished work exists.
-    Only considers T- and R-prefixed tasks (not S-prefixed).
+    Considers all T- and R-prefixed tasks.
 
     A task is considered *unfinished* when its PROGRESS.md row is absent
     or in any non-terminal state (typically ``Pending``).  Tasks that
@@ -800,9 +800,6 @@ def check_pending_tasks(tasks_dir: Path, progress_file: Path) -> list[str]:
 
     pending: list[str] = []
     for task in discover_tasks(tasks_dir):
-        # Skip S-prefixed tasks (standalone / special)
-        if task.prefix.startswith("S"):
-            continue
         if not task_is_resolved(progress_file, task.prefix):
             pending.append(task.name)
 
@@ -816,7 +813,7 @@ def archive_previous_run(
 ) -> Path | None:
     """Archive task files from the previous run and clear the log directory.
 
-    Moves all T-, R-, and S-prefixed task files **and INSTRUCTIONS.md**
+    Moves all T- and R-prefixed task files **and INSTRUCTIONS.md**
     into ``tasks/archive/YYYY-MM-DD_HHMMSS/`` so history is preserved but
     the new planning session starts clean.
 
@@ -839,7 +836,7 @@ def archive_previous_run(
     """
     import re as _re
 
-    task_pattern = _re.compile(r"^[TRSt][0-9]", _re.IGNORECASE)
+    task_pattern = _re.compile(r"^[TRt][0-9]", _re.IGNORECASE)
 
     if not tasks_dir.exists():
         return None

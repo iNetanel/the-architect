@@ -54,14 +54,14 @@ class TestReadProgress:
         with tempfile.TemporaryDirectory() as tmpdir:
             progress_file = Path(tmpdir) / "PROGRESS.md"
             progress_file.write_text(
-                "**Tasks completed:** 5\n**Next task to run:** S06\n",
+                "**Tasks completed:** 5\n**Next task to run:** T06\n",
                 encoding="utf-8",
             )
 
             state = read_progress(progress_file)
 
             assert state.tasks_completed == 5
-            assert state.next_task == "S06"
+            assert state.next_task == "T06"
 
     def test_read_progress_safe_defaults_missing_file(self) -> None:
         """Should return safe defaults when file doesn't exist."""
@@ -88,16 +88,16 @@ class TestReadProgress:
             progress_file = Path(tmpdir) / "PROGRESS.md"
             content = (
                 "**Tasks completed:** 2\n"
-                "**Next task to run:** S03\n"
-                "| S01 | First | Done | 2026-04-12 |\n"
-                "| S02 | Second | Done | 2026-04-12 |\n"
+                "**Next task to run:** T03\n"
+                "| T01 | First | Done | 2026-04-12 |\n"
+                "| T02 | Second | Done | 2026-04-12 |\n"
             )
             progress_file.write_text(content, encoding="utf-8")
 
             state = read_progress(progress_file)
 
-            assert "S01" in state.done_tasks
-            assert "S02" in state.done_tasks
+            assert "T01" in state.done_tasks
+            assert "T02" in state.done_tasks
             assert len(state.done_tasks) == 2
 
     def test_read_progress_pending_tasks_not_in_done(self) -> None:
@@ -128,32 +128,32 @@ class TestTaskIsDone:
         """Should return True when task is marked Done."""
         with tempfile.TemporaryDirectory() as tmpdir:
             progress_file = Path(tmpdir) / "PROGRESS.md"
-            content = "| S01 | First | Done | 2026-04-12 |\n"
+            content = "| T01 | First | Done | 2026-04-12 |\n"
             progress_file.write_text(content, encoding="utf-8")
 
-            assert task_is_done(progress_file, "S01") is True
+            assert task_is_done(progress_file, "T01") is True
 
     def test_task_is_done_false(self) -> None:
         """Should return False when task is not marked Done."""
         with tempfile.TemporaryDirectory() as tmpdir:
             progress_file = Path(tmpdir) / "PROGRESS.md"
-            content = "| S01 | First | Pending | — |\n"
+            content = "| T01 | First | Pending | — |\n"
             progress_file.write_text(content, encoding="utf-8")
 
-            assert task_is_done(progress_file, "S01") is False
+            assert task_is_done(progress_file, "T01") is False
 
     def test_task_is_done_missing_file(self) -> None:
         """Should return False when file doesn't exist."""
-        assert task_is_done(Path("/nonexistent/PROGRESS.md"), "S01") is False
+        assert task_is_done(Path("/nonexistent/PROGRESS.md"), "T01") is False
 
     def test_task_is_done_no_match(self) -> None:
         """Should return False when task not in table."""
         with tempfile.TemporaryDirectory() as tmpdir:
             progress_file = Path(tmpdir) / "PROGRESS.md"
-            content = "| S02 | Second | Done | 2026-04-12 |\n"
+            content = "| T02 | Second | Done | 2026-04-12 |\n"
             progress_file.write_text(content, encoding="utf-8")
 
-            assert task_is_done(progress_file, "S01") is False
+            assert task_is_done(progress_file, "T01") is False
 
 
 class TestGetNextTask:
@@ -163,16 +163,16 @@ class TestGetNextTask:
         """Should parse next task correctly."""
         with tempfile.TemporaryDirectory() as tmpdir:
             progress_file = Path(tmpdir) / "PROGRESS.md"
-            progress_file.write_text("**Next task to run:** S05\n", encoding="utf-8")
+            progress_file.write_text("**Next task to run:** T05\n", encoding="utf-8")
 
-            assert get_next_task(progress_file) == "S05"
+            assert get_next_task(progress_file) == "T05"
 
     def test_get_next_task_default_missing_file(self) -> None:
-        """Should return S00 when file doesn't exist."""
+        """Should return T00 when file doesn't exist."""
         assert get_next_task(Path("/nonexistent/PROGRESS.md")) == "T00"
 
     def test_get_next_task_default_malformed(self) -> None:
-        """Should return S00 when content is malformed."""
+        """Should return T00 when content is malformed."""
         with tempfile.TemporaryDirectory() as tmpdir:
             progress_file = Path(tmpdir) / "PROGRESS.md"
             progress_file.write_text("no next task here", encoding="utf-8")

@@ -11,7 +11,7 @@ Describe a goal. Walk away. Come back to results.
 [![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/inetanel/the-architect?style=social)](https://github.com/inetanel/the-architect)
 
-[Website](https://inetanel.com/projects/the-architect) · [Quickstart](#quickstart) · [CLI Reference](#cli-reference) · [Configuration](#configuration) · [Contributing](CONTRIBUTING.md)
+[Website](https://inetanel.com/projects/the-architect) · [Quickstart](#quickstart) · [Features](#features) · [CLI Reference](#cli-reference) · [Configuration](#configuration) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
@@ -114,45 +114,6 @@ That is it. The Architect plans, executes, retries, reviews, and reports — una
 
 ---
 
-## Supported Providers
-
-The Architect works with agentic AI coding CLIs. Currently supported:
-
-| Provider | Install |
-|---|---|
-| [OpenCode](https://opencode.ai) | `brew install opencode` or `npm i -g opencode-ai` |
-| [Codex CLI](https://developers.openai.com/codex/cli/) | `npm install -g @openai/codex` |
-| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | `npm install -g @anthropic-ai/claude-code` |
-| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `npm install -g @google/gemini-cli` |
-
-The Architect is provider-agnostic today. When multiple supported CLIs are installed, it auto-detects them and lets you choose.
-
-When multiple providers are installed, The Architect asks which to use. Set a preference in `architect.toml`:
-
-```toml
-[architect]
-provider = "auto"         # detect and prompt if multiple providers are present
-# provider = "opencode"
-# provider = "codex"
-# provider = "claude-code"
-# provider = "gemini-cli"
-```
-
-Or via environment variable: `ARCHITECT_PROVIDER=codex`
-
-### Provider Feature Comparison
-
-| Feature | OpenCode | Codex CLI | Claude Code | Gemini CLI |
-|---|---|---|---|---|
-| Planning and execution | ✅ | ✅ | ✅ | ✅ |
-| Retry and circuit breaker | ✅ | ✅ | ✅ | ✅ |
-| Retrospective review | ✅ | ✅ | ✅ | ✅ |
-| Token usage tracking | ✅ | ✅ JSONL output | ❌ plain text output | ✅ JSONL output |
-| Named execution agents | ✅ | ❌ | ❌ | ❌ |
-| Free tier model rotation | ✅ via OpenRouter | ❌ | ❌ | ❌ |
-
----
-
 ## How It Works
 
 ```text
@@ -193,83 +154,115 @@ Or via environment variable: `ARCHITECT_PROVIDER=codex`
 
 ---
 
-## Key Features
+## Features
 
-### Autonomous Planning
-The Architect decomposes your goal into numbered task files using an AI planner. You are no longer the one breaking down the work — describe the outcome, and the planner figures out the steps.
+### Supported Providers
 
-### Persistent Project Intelligence
-`ARCHITECT.md` accumulates architectural decisions, known constraints, lessons learned, and best practices across every session. By your third run, The Architect knows your project as well as you do.
+The Architect works with the major AI coding CLIs. Install any one of them and The Architect wraps it:
 
-### Smart Retry and Circuit Breaker
-Failed tasks are retried with model fallbacks. The circuit breaker detects when an agent is truly stuck — via no-progress detection, same-error fingerprinting, and token-decline signals — and either rotates models or rewrites the failing task entirely.
+| Provider | Install |
+|---|---|
+| [OpenCode](https://opencode.ai) | `brew install opencode` or `npm i -g opencode-ai` |
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | `npm install -g @anthropic-ai/claude-code` |
+| [Codex CLI](https://developers.openai.com/codex/cli/) | `npm install -g @openai/codex` |
+| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `npm install -g @google/gemini-cli` |
 
-### Multi-Signal Completion Detection
-No single signal is trusted. The Architect requires corroboration between promise tags, `PROGRESS.md` updates, exit codes, and output analysis before declaring a task done. Stuck agents that claim completion are caught automatically.
+When multiple providers are installed, The Architect detects them all and lets you choose. Set a preference in `architect.toml` or via `ARCHITECT_PROVIDER` env var to skip the prompt.
 
-### Retrospective Review
-After execution, a reviewer agent reads the actual code, runs your tests, and creates targeted fix-up tasks if quality issues are found. Clean builds skip the fix-up round automatically.
-
-### Free Tier Rotation *(OpenCode + OpenRouter only)*
-Automatically rotates through free OpenRouter models when rate limits hit — mid-stream, without restarting. Zero cost, zero interruption.
-
-### Build Tracking
-Every agent operation — reads, writes, renames, test runs — increments the build counter. Full traceability of effort across every session, not just version releases.
-
-### Textual TUI (default on TTY)
-Rich Textual-based UI with tabbed execution viewport (Output / Events / Details), animated wait screens for planning and retrospective review, and dedicated screens for `list`, `status`, `logs`, `circuit`, `monitor`, and `config`. The TUI is the default whenever stdout is a terminal. Opt out with `--no-tui`, `NO_COLOR=1`, `TERM=dumb`, `--headless`, or by piping stdout to a file.
-
-### Live tmux Dashboard (non-TUI fallback)
-When the TUI is disabled, a split-pane tmux dashboard shows live agent output, task progress, circuit breaker state, token usage, and build number — all updating in real time.
+| Capability | OpenCode | Claude Code | Codex CLI | Gemini CLI |
+|---|:---:|:---:|:---:|:---:|
+| Planning and execution | ✅ | ✅ | ✅ | ✅ |
+| Retry and circuit breaker | ✅ | ✅ | ✅ | ✅ |
+| Retrospective review | ✅ | ✅ | ✅ | ✅ |
+| Token usage tracking | ✅ | ❌ | ✅ | ✅ |
+| Named execution agents | ✅ | ❌ | ❌ | ❌ |
+| Free tier model rotation | ✅ | ❌ | ❌ | ❌ |
 
 ---
 
-## How The Architect Compares
+### What The Architect Adds
 
-The Architect and Ralph both help coding agents work more autonomously.
+Everything below is what you get on top of your AI coding CLI — none of it exists if you run the CLI directly.
 
-Ralph is closer to a persistent autonomous loop around a single coding CLI. The Architect goes further into planning, task orchestration, persistent project memory, retrospective review, and provider-agnostic execution.
+#### Planning
 
-| Feature | The Architect | Ralph |
-|----|---:|---:|
-| Goal-to-task planning | ✅ | ❌ |
-| Managed task files | ✅ | ✅ |
-| Progress tracking | ✅ | ✅ |
-| Persistent project memory | ✅ | ❌ |
-| Retrospective review | ✅ | ❌ |
-| Automatic fix-up tasks | ✅ | ❌ |
-| Run summary report | ✅ | ❌ |
-| Autonomous execution | ✅ | ✅ |
-| Resume from saved progress | ✅ | ✅ |
-| Live session continuity | ➖ | ✅ |
-| Automatic retries | ✅ | ✅ |
-| Retry model fallback | ✅ | ❌ |
-| Stuck-loop detection | ✅ | ✅ |
-| Circuit breaker / safe recovery | ✅ | ✅ |
-| Rate-limit / cooldown handling | ✅ | ✅ |
-| Repo structure detection | ✅ | ❌ |
-| Framework / component detection | ✅ | ❌ |
-| Dependency graph detection | ✅ | ❌ |
-| Test / lint command detection | ✅ | ❌ |
-| Live monitoring | ✅ | ✅ |
-| tmux support | ✅ | ✅ |
-| Headless / CI mode | ✅ | ✅ |
-| Token budget guard | ✅ | ❌ |
-| Concurrent-run protection | ✅ | ❌ |
-| Premature re-plan guard | ✅ | ❌ |
-| Task/archive history | ✅ | ❌ |
-| Multi-provider support | ✅ | ❌ |
-| Multi-provider support | ✅ | ❌ |
-| Claude Code support | ✅ | ✅ |
-| OpenCode support | ✅ | ❌ |
-| Codex CLI support | ✅ | ❌ |
-| Gemini CLI support | ✅ | ❌ |
-| PRD / spec / docs input | ✅ | ✅ |
-| JSON-oriented loop control | ❌ | ✅ |
-| Extra CLI loop / permission controls | ❌ | ✅ |
-| Project bootstrap / setup templates | ✅ | ✅ |
+| | Raw CLI | With The Architect |
+|---|---|---|
+| Task creation | You write task files manually | Goal → numbered task files, automatically |
+| Scope control | Fixed | `simple` / `standard` / `complex` — controls task granularity |
+| Project awareness | None | Repo type, languages, frameworks, components, dependency graph auto-detected |
+| Context injection | Paste manually | `--context PRD.md` or `--context design/` — any file or directory injected into planning |
+| Memory across sessions | None | `ARCHITECT.md` accumulates decisions, constraints, and lessons learned |
 
-**Legend:** ✅ yes · ➖ partial · ❌ no
+#### Execution
+
+| | Raw CLI | With The Architect |
+|---|---|---|
+| Retries | None — one shot | Up to 30 retries with configurable pause between attempts |
+| Model fallbacks | None | Different model on attempt 2, different model on attempt 3 |
+| Retry context | Agent starts blind | Previous attempt summary injected — files written, errors found |
+| Unattended | You watch the terminal | Fully autonomous — fire and forget |
+| Resume | Manual | `--from T03` or automatic resume on next run |
+| Targeted runs | All or nothing | `--only T05` runs a single task |
+| Inter-task pause | None | Configurable pause between tasks |
+
+#### Failure Recovery
+
+| | Raw CLI | With The Architect |
+|---|---|---|
+| Stuck agent | You notice eventually | Circuit breaker detects no-progress, same-error pattern, token decline |
+| Failing task | You debug and rerun | Auto-replan: architect agent rewrites the failing task and retries |
+| Rate limit | Run dies | Cooldown detection: pauses the run, waits, resumes automatically |
+| Free model rotation | Manual | Free mode: rotates through zero-cost OpenRouter models mid-stream |
+| Provider cooldown | Run dies | Detects HTTP 429/529, waits the suggested reset time, retries |
+
+#### Completion Trust
+
+| | Raw CLI | With The Architect |
+|---|---|---|
+| Completion signal | Exit code 0 | 4-signal corroboration: promise tag + PROGRESS.md + exit code + output analysis |
+| False completion | Trusted | Stuck detection — "I'm stuck" in output overrides any completion claim |
+| Hallucinated success | No defense | Multi-signal requirement — no single signal is ever trusted alone |
+
+#### Quality
+
+| | Raw CLI | With The Architect |
+|---|---|---|
+| Code review | Manual | Retrospective reviewer runs after execution, reads actual code and tests |
+| Fix-up tasks | Manual | Reviewer creates R-prefixed fix-up tasks; they execute through the same pipeline |
+| Cross-task drift | Silent | Inter-task reassessment updates pending tasks when completed work changes interfaces |
+| File corruption | Silent | Integrity defense: snapshot before edit, validate after write, restore on truncation |
+
+#### Observability
+
+| | Raw CLI | With The Architect |
+|---|---|---|
+| UI | Raw terminal scroll | Full-screen Textual TUI with Output / Events / Details tabs |
+| Live monitoring | None | tmux split-pane dashboard (non-TUI fallback) |
+| Run summary | None | `SUCCESS.md` — tasks, attempts, models, tokens, duration, retrospective rounds |
+| Task history | None | Every run archived to `tasks/archive/YYYY-MM-DD_HHMMSS/` |
+| Logs | Wherever the CLI writes | Per-task logs in `.architect/logs/`, per-attempt, per-reassessment |
+| Circuit state | None | `architect circuit` — view and reset per-task circuit breaker state |
+| Build tracking | None | `__build__` counter increments on every agent operation — full effort traceability |
+
+#### Safety
+
+| | Raw CLI | With The Architect |
+|---|---|---|
+| Concurrent runs | Two runs corrupt each other | Lock file — only one run at a time, stale locks auto-cleaned |
+| Re-planning guard | Easy to re-plan a finished project | Premature exit guard — requires explicit `--plan` when all tasks are done |
+| Pending task guard | New plan silently discards old work | Warns before overwriting unfinished tasks |
+| API cost | Can spiral | Token budget — configurable hourly spend cap |
+
+#### Developer Experience
+
+| | Raw CLI | With The Architect |
+|---|---|---|
+| Setup | Configure CLI manually | `architect init` — creates `AGENTS.md` and `architect.toml` |
+| Config | Edit files manually | `architect config --set key=value` |
+| CI/headless | Manual scripting | `--headless` + env vars, no interactive prompts |
+| Self-update | Manual `pip install` | Checks PyPI on startup, one keypress to update and re-exec |
+| Provider lock-in | One CLI | Switch provider per run, or lock one in config |
 
 ---
 
@@ -422,6 +415,8 @@ retrospective_rounds = 1             # 0 = disabled
 # Modes
 free_mode = false
 persistent = false
+integrity = true                     # snapshot existing files before edits (default: true)
+standalone_mode = ""                 # bypass provider config, use this model directly
 
 # Circuit breaker
 circuit_no_progress_threshold = 3
@@ -450,6 +445,8 @@ token_budget_per_hour = 0            # 0 = unlimited
 | `retrospective_rounds` | `1` | Review rounds after execution (0 = off) |
 | `free_mode` | `false` | Rotate free OpenRouter models |
 | `persistent` | `false` | 30 retries, 2 retrospective rounds |
+| `integrity` | `true` | Snapshot existing files before edits (`architect_eval_*`) |
+| `standalone_mode` | `""` | Bypass provider config, use this model for all operations |
 | `circuit_no_progress_threshold` | `3` | No-progress trips before circuit opens |
 | `circuit_same_error_threshold` | `3` | Same-error trips before circuit opens |
 | `circuit_token_decline_pct` | `60` | Token decline % to trip circuit |

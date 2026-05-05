@@ -215,32 +215,13 @@ No goal section here.
         assert result == ""
 
     def test_countdown_zero_seconds(self) -> None:
-        """Should return immediately when seconds <= 0."""
-        from the_architect.cli import _countdown
-
-        with patch("time.sleep") as mock_sleep:
-            _countdown(0)
-            mock_sleep.assert_not_called()
+        """_countdown was removed (build 10136) — placeholder kept as doc."""
 
     def test_countdown_non_tty(self) -> None:
-        """Should sleep without ANSI display when not a TTY."""
-        from the_architect.cli import _countdown
-
-        with patch("the_architect.cli._ansi_supported", return_value=False):
-            with patch("time.sleep") as mock_sleep:
-                _countdown(3)
-                mock_sleep.assert_called_once_with(3)
+        """_countdown was removed (build 10136) — placeholder kept as doc."""
 
     def test_spin_non_tty(self) -> None:
-        """Should return immediately without writing when not a TTY."""
-        from the_architect.cli import _spin
-
-        with (
-            patch("the_architect.cli._ansi_supported", return_value=False),
-            patch("sys.stdout.write") as mock_write,
-        ):
-            _spin("test")
-            mock_write.assert_not_called()
+        """_spin was removed (build 10136) — placeholder kept as doc."""
 
     def test_alternate_screen_non_tty(self) -> None:
         """Should be a no-op when stdout is not a TTY."""

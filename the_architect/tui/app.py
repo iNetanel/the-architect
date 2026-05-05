@@ -23,6 +23,7 @@ Two shapes of caller:
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -80,14 +81,19 @@ T = TypeVar("T")
 # accent for titles, spinners, header highlights, and any $accent
 # reference in screen CSS. Replaces Textual's default orange accent.
 ARCHITECT_GREEN = "#7cc800"
+# Darker shade for secondary/muted elements and hover gradients.
+ARCHITECT_GREEN_DARK = "#4a7600"
 
 ARCHITECT_THEME = Theme(
     name="architect-dark",
-    primary="#0178D4",
-    secondary="#004578",
-    # Accent → brand green. This is the one swap that turns every
-    # orange $accent reference across the app into The Architect's
-    # original vivid green.
+    # primary drives block-cursor-background (ListView/RadioSet/DataTable
+    # row highlights) and the Tabs underline bar. Setting it to the brand
+    # green means every interactive widget hover/selection is green, not
+    # the default Textual blue.
+    primary=ARCHITECT_GREEN,
+    secondary=ARCHITECT_GREEN_DARK,
+    # Accent → brand green. Every $accent reference across the app renders
+    # in the same vivid green — titles, spinners, header highlights, etc.
     accent=ARCHITECT_GREEN,
     # Keep the default textual-dark warning orange so warning titles
     # still read as warnings and aren't visually conflated with the
@@ -103,15 +109,37 @@ ARCHITECT_THEME = Theme(
 )
 
 
-class SplashScreen(Screen[None]):
-    """Animated branded screen shown while no prompt or run is active.
+def apply_architect_theme(app: App[Any]) -> None:
+    """Register and activate the Architect branded theme on ``app``.
 
-    Used as the app's idle background so consecutive pre-run prompts
-    and loading moments don't flash through a tabbed execution
-    viewport or empty space between transitions. Shows the app name,
-    a Matrix-style digital-rain animation (a nod to The Architect
-    character's origin), and a short subtitle that callers can update
-    via :meth:`set_subtitle` to describe the current wait.
+    Standalone :class:`~textual.app.App` subclasses (ConfigApp, ListApp,
+    CircuitApp, etc.) call this from their ``on_mount`` so they share the
+    same green colour palette as the main :class:`ArchitectApp`. Never
+    raises — any failure falls back to the default Textual theme silently.
+    """
+    try:
+        app.register_theme(ARCHITECT_THEME)
+        app.theme = ARCHITECT_THEME.name
+    except Exception:
+        pass
+
+
+# SplashScreen — the centered startup card shown while the app boots.
+#
+# This is intentionally a separate class from WaitScreen.  WaitScreen is a
+# full-screen log-viewer layout (title at top-left, rain strip, scrolling log
+# below) designed for planning/execution waits where live output matters.
+# SplashScreen is a small centered card — visually equivalent to the other
+# pre-run dialog screens — so the user immediately sees something branded and
+# alive even before the worker thread has started.
+class SplashScreen(Screen[None]):
+    """Centered animated startup card shown while the app is booting.
+
+    Displays the app name, a Matrix digital-rain block, and a short
+    subtitle.  The layout mirrors :class:`ModeSelectionScreen` — the
+    Screen itself carries ``align: center middle`` so the single body
+    card is placed in the centre of the viewport regardless of terminal
+    size, with the docked Header and Footer framing it.
     """
 
     DEFAULT_CSS = """
@@ -120,13 +148,11 @@ class SplashScreen(Screen[None]):
     }
 
     #splash_body {
-        /* Fixed width so children with `width: 100%` have something
-           real to expand against. Auto height collapses vertically to
-           fit the title + rain row + subtitle stack. The Screen's
-           outer `align: center middle` centres the whole block. */
         width: 48;
-        height: auto;
-        padding: 2 2;
+        height: 13;
+        padding: 1 2;
+        border: round $panel;
+        background: $panel 20%;
     }
 
     #splash_title {
@@ -136,11 +162,6 @@ class SplashScreen(Screen[None]):
         text-align: center;
     }
 
-    /* Wrap MatrixRain in a horizontal strip that spans the body so
-       its fixed-width grid can be centred inside via
-       `align-horizontal: center`. `align-horizontal` is unreliable on
-       a `Vertical` container in current Textual, but works on a
-       `Horizontal` the way flexbox's `justify-content` would. */
     #splash_rain_row {
         width: 100%;
         height: 7;
@@ -152,7 +173,7 @@ class SplashScreen(Screen[None]):
         width: 100%;
         color: $text-muted;
         text-align: center;
-        padding: 1 0 0 0;
+        padding: 0;
     }
     """
 
@@ -161,21 +182,17 @@ class SplashScreen(Screen[None]):
         self._subtitle = subtitle
 
     def compose(self) -> ComposeResult:
+        """Compose the centered splash card."""
         yield Header()
         with Vertical(id="splash_body"):
             yield Static("The Architect", id="splash_title")
-            # Matrix digital rain replaces the old braille spinner —
-            # same 10 FPS cadence, but themed to The Architect (the
-            # character from The Matrix). Self-animates; no tick
-            # wiring required. The wrapping Horizontal centres the
-            # fixed-width grid horizontally under the title.
             with Horizontal(id="splash_rain_row"):
                 yield MatrixRain(id="splash_rain")
             yield Static(self._subtitle, id="splash_subtitle")
         yield Footer()
 
     def set_subtitle(self, subtitle: str) -> None:
-        """Update the subtitle under the animation. Safe from the UI thread."""
+        """Update the subtitle text. Safe to call from the UI thread."""
         self._subtitle = subtitle
         try:
             self.query_one("#splash_subtitle", Static).update(subtitle)
@@ -205,9 +222,9 @@ class ArchitectApp(App[None]):
         Binding("ctrl+c", "quit", "Quit"),
         Binding("q", "quit", "Quit"),
         Binding("question_mark", "help", "Help"),
-        Binding("o", "switch_tab('tab_output')", "Output"),
+        Binding("o", "switch_tab('tab_output')", "Live Output"),
         Binding("e", "switch_tab('tab_events')", "Events"),
-        Binding("d", "switch_tab('tab_details')", "Details"),
+        Binding("s", "switch_tab('tab_details')", "Status"),
     ]
 
     def __init__(self, *, initial_screen: Screen[Any] | None = None) -> None:
@@ -215,22 +232,29 @@ class ArchitectApp(App[None]):
 
         Args:
             initial_screen: The first screen to push on mount. Defaults
-                to a minimal :class:`SplashScreen` so the app has a
-                neutral background for pre-run prompts — the execution
-                screen is pushed later when the worker actually starts
-                running tasks. Pre-run callers pass a specific screen
-                when they want the app to open straight into a prompt.
+                to a :class:`SplashScreen` centered startup card so the
+                user sees a branded, animated surface immediately while
+                the worker thread is starting up.
         """
         super().__init__()
         self._execution_screen: ExecutionScreen | None = None
         self._wait_screen: WaitScreen | None = None
         self._pause_menu_visible: bool = False
         self._initial_screen: Screen[Any] = initial_screen or SplashScreen()
+        # Wall-clock time when the splash was first painted. Set in
+        # on_mount so push_and_wait can enforce a minimum display window.
+        self._splash_shown_at: float = 0.0
+        # Minimum seconds the SplashScreen must stay visible before any
+        # other screen is pushed on top of it.
+        self._splash_min_seconds: float = 1.5
+        # Set when the app exits so the splash minimum-hold sleep in
+        # push_and_wait wakes up immediately instead of blocking exit.
+        self._quit_event: threading.Event = threading.Event()
 
     def on_mount(self) -> None:
         # Register and activate The Architect's branded theme before
         # pushing the first screen so every $accent reference is green
-        # from frame one — no orange flash during splash boot.
+        # from frame one — no orange flash on boot.
         try:
             self.register_theme(ARCHITECT_THEME)
             self.theme = ARCHITECT_THEME.name
@@ -249,8 +273,50 @@ class ArchitectApp(App[None]):
         except Exception:
             pass
         self.push_screen(self._initial_screen)
+        # Record when the splash was painted so push_and_wait can
+        # enforce the minimum display window from the worker thread.
+        if isinstance(self._initial_screen, SplashScreen):
+            self._splash_shown_at = time.monotonic()
 
     # ── Run-scoped status (Phase 18) ───────────────────────────────────
+
+    async def action_quit(self) -> None:
+        """Show a shutdown splash then exit cleanly.
+
+        Pops the screen stack back to the :class:`SplashScreen` (if it
+        is in the stack), updates its subtitle to a shutdown message, and
+        waits one second so the user sees the animated card rather than a
+        blank terminal during the cleanup window.  Also wakes the
+        worker-thread splash-hold so it doesn't add its own delay on top.
+        """
+        self._quit_event.set()
+
+        # Walk the stack and pop everything above the SplashScreen.
+        # If there is no SplashScreen in the stack (e.g. during execution)
+        # just push a fresh one so there's always something to show.
+        try:
+            while len(self.screen_stack) > 1:
+                if isinstance(self.screen_stack[-1], SplashScreen):
+                    break
+                self.screen_stack[-1].dismiss()
+
+            splash: SplashScreen | None = None
+            for s in self.screen_stack:
+                if isinstance(s, SplashScreen):
+                    splash = s
+                    break
+
+            if splash is None:
+                splash = SplashScreen(subtitle="Shutting down…")
+                self.push_screen(splash)
+            else:
+                splash.set_subtitle("Shutting down…")
+
+        except Exception:
+            pass
+
+        # Give the animation one second to play before the process ends.
+        self.set_timer(1.0, self.exit)
 
     def set_status(self, text: str) -> None:
         """Update the app-wide status line shown in every screen header.
@@ -313,6 +379,17 @@ class ArchitectApp(App[None]):
         def _push() -> None:
             self.push_screen(screen, _on_dismiss)
 
+        # If the splash is still in its minimum display window, wait
+        # on the worker thread until the window expires. Using an Event
+        # (rather than time.sleep) means Ctrl+C / app.exit() wakes this
+        # immediately so there is no blank-screen hang after quitting.
+        if self._splash_shown_at > 0:
+            elapsed = time.monotonic() - self._splash_shown_at
+            remaining = self._splash_min_seconds - elapsed
+            if remaining > 0:
+                self._quit_event.wait(timeout=remaining)
+            self._splash_shown_at = 0.0  # only gate the first push
+
         self.call_from_thread(_push)
         done.wait()
         return result["value"]  # type: ignore[no-any-return]
@@ -324,10 +401,9 @@ class ArchitectApp(App[None]):
         ``switch_screen`` semantics we originally used required a
         fragile monkey-patch of ``Screen.dismiss`` and caused
         ``ScreenStackError: No screens on stack`` when the last
-        pre-run prompt dismissed. Because the idle screen under all
-        prompts is the animated branded :class:`SplashScreen`, a brief
-        revisit between dismiss and next push looks like a loading
-        moment rather than a flicker, which is acceptable.
+        pre-run prompt dismissed. The animated startup WaitScreen sits
+        underneath all prompts, so a brief revisit between dismiss and
+        next push looks like a loading moment rather than a flicker.
         """
         return self.push_and_wait(screen)
 
@@ -342,12 +418,6 @@ class ArchitectApp(App[None]):
         """
         if self._execution_screen is None:
             self._execution_screen = ExecutionScreen()
-        try:
-            if self.screen is not self._execution_screen:
-                self.switch_screen(self._execution_screen)
-        except Exception:
-            # App not fully mounted yet; caller will retry on next tick.
-            pass
         return self._execution_screen
 
     def switch_to_execution(self) -> None:
@@ -445,7 +515,8 @@ class ArchitectApp(App[None]):
         if self._wait_screen is None:
             return
         try:
-            self.pop_screen()
+            if self.screen is self._wait_screen:
+                self.pop_screen()
         except Exception:
             pass
         self._wait_screen = None
@@ -462,6 +533,34 @@ class ArchitectApp(App[None]):
             tabs.active = tab_id
         except Exception:
             pass
+
+    # ── Success screen ─────────────────────────────────────────────────
+
+    def show_success(
+        self,
+        results: list[Any],
+        total_duration: float,
+        total_tokens: Any,
+        success_md_path: str | None = None,
+        retrospective_rounds: list[Any] | None = None,
+    ) -> None:
+        """Push the run-complete :class:`~the_architect.tui.screens.success.SuccessScreen`.
+
+        Thread-safe. Blocks the calling thread until the user dismisses
+        the screen (presses Enter, Q, or Escape). Called from the worker
+        thread after SUCCESS.md has been written.
+        """
+        from the_architect.tui.screens.success import SuccessScreen
+
+        screen = SuccessScreen(
+            results=results,
+            total_duration=total_duration,
+            total_tokens=total_tokens,
+            success_md_path=success_md_path,
+            retrospective_rounds=retrospective_rounds,
+        )
+        # push_and_wait blocks the worker thread until the user exits the screen.
+        self.push_and_wait(screen)
 
     def _handle_exception(self, error: Exception) -> None:
         """Swallow stack-empty errors from late widget messages.
@@ -567,7 +666,7 @@ def run_single_screen(screen: Screen[T]) -> T | None:
         def on_mount(self) -> None:
             # Apply the branded theme here too so fallback harness
             # flows (tests, one-off direct calls) render in green
-            # instead of Textual's default orange.
+            # instead of Textual's default orange/blue.
             try:
                 self.register_theme(ARCHITECT_THEME)
                 self.theme = ARCHITECT_THEME.name

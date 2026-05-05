@@ -263,110 +263,23 @@ class TestAlternateScreenTTY:
 
 
 class TestCountdownANSI:
-    """Tests for _countdown with ANSI support."""
-
-    def test_countdown_ansi_path(self) -> None:
-        """Should display countdown with ANSI codes when supported."""
-        from the_architect.cli import _countdown
-
-        with (
-            patch("the_architect.cli._ansi_supported", return_value=True),
-            patch("sys.stdout.write") as mock_write,
-            patch("sys.stdout.flush"),
-            patch("time.sleep"),
-        ):
-            _countdown(2)
-
-            # Should write 3 times: tick 2, tick 1, and clear line
-            assert mock_write.call_count == 3
-            # Check that ticks contain the countdown text
-            assert "2s" in mock_write.call_args_list[0][0][0]
-            assert "1s" in mock_write.call_args_list[1][0][0]
+    """Legacy ``_countdown`` helper was removed along with all stdout-ANSI
+    spinners (build 10136) — between-task waits are now just ``time.sleep``
+    while the Textual execution screen owns the UI. Kept as an empty class
+    so nobody re-adds it later without noticing the architectural change.
+    """
 
 
 class TestSpinANSI:
-    """Tests for _spin with ANSI support."""
-
-    def test_spin_ansi_path(self) -> None:
-        """Should display spinner with ANSI codes when supported."""
-        from the_architect.cli import _spin
-
-        # Use time.sleep as the "tick"; duration=0.24 at interval=0.08 yields
-        # roughly 3 iterations through the real infinite ``itertools.cycle``
-        # of spinner frames plus the final erase write.
-        with (
-            patch("the_architect.cli._ansi_supported", return_value=True),
-            patch("sys.stdout.write") as mock_write,
-            patch("sys.stdout.flush"),
-            patch("time.sleep"),
-        ):
-            _spin("test", duration=0.24)
-
-            # Must have written at least one spinner frame plus the erase.
-            assert mock_write.call_count >= 2
-            outputs = [call.args[0] for call in mock_write.call_args_list]
-            spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-            has_spinner = any(frame in output for frame in spinner_frames for output in outputs)
-            has_label = any("test" in output for output in outputs)
-            assert has_spinner and has_label
+    """Legacy ``_spin`` helper was removed — see ``TestCountdownANSI``."""
 
 
 class TestExecutionStartupStatus:
-    """Tests for the restored main-pane startup spinner behavior."""
-
-    def test_task_start_uses_live_spinner_and_clears_on_first_output(self, tmp_path: Path) -> None:
-        from the_architect.cli import _run_tasks_raw
-        from the_architect.config import ArchitectConfig
-
-        task = Task(
-            name="T01_test",
-            prefix="T01",
-            number=1,
-            path=tmp_path / "tasks" / "T01_test.md",
-            title="Test task",
-            status=TaskStatus.PENDING,
-        )
-        task.path.parent.mkdir(parents=True, exist_ok=True)
-        task.path.write_text("# T01\n", encoding="utf-8")
-
-        config = ArchitectConfig().resolve(tmp_path)
-
-        async def fake_run_all(*args, **kwargs):
-            on_task_start = kwargs["on_task_start"]
-            on_first_output = kwargs["on_first_output"]
-            on_task_done = kwargs["on_task_done"]
-            on_task_start(task)
-            on_first_output()
-            on_task_done(
-                type(
-                    "Result",
-                    (),
-                    {
-                        "prefix": "T01",
-                        "status": "done",
-                        "outcome_summary": "Downstream impact: none",
-                        "duration_seconds": 1.0,
-                        "tokens": type("Tokens", (), {"total": 0})(),
-                    },
-                )()
-            )
-            return True
-
-        with (
-            patch("the_architect.cli._ansi_supported", return_value=True),
-            patch("the_architect.cli.run_all", side_effect=fake_run_all),
-            patch("the_architect.cli.console.print"),
-            patch("sys.stdout.write") as mock_write,
-            patch("sys.stdout.flush"),
-        ):
-            import asyncio
-
-            asyncio.run(_run_tasks_raw(tmp_path, config, [task]))
-
-        writes = [call.args[0] for call in mock_write.call_args_list]
-        assert any("starting T01" in text for text in writes)
-        assert any("████" in text or "░░" in text for text in writes)
-        assert any("\r\033[2K" in text for text in writes)
+    """Legacy startup / task-start spinner was removed (build 10136).
+    The previous test asserted spinner frames and an erase-line ANSI sequence
+    were written to stdout during task start. Those no longer happen at all
+    because the Textual execution screen is the only UI surface.
+    """
 
 
 class TestMaybeKillOwnTmuxSession:

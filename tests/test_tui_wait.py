@@ -7,6 +7,7 @@ from textual.widgets import RichLog, Static
 
 from the_architect.tui import TuiWaitSession, tui_wait_session
 from the_architect.tui.screens.wait import WaitApp
+from the_architect.tui.widgets import MatrixRain
 
 
 class TestWaitApp:
@@ -17,6 +18,8 @@ class TestWaitApp:
             await pilot.pause()
             title = app._screen.query_one("#wait_title", Static)
             assert "planning" in str(title.render())
+            rain = app._screen.query_one("#wait_rain", MatrixRain)
+            assert any(ch not in {" ", "\n"} for ch in rain.render().plain)
 
     @pytest.mark.asyncio
     async def test_set_title_updates_static(self) -> None:
@@ -48,6 +51,25 @@ class TestWaitApp:
             app.append_log("first line")
             app.append_log("second line")
             await pilot.pause()
+            log = app._screen.query_one("#wait_log", RichLog)
+            assert len(log.lines) >= 2
+
+    @pytest.mark.asyncio
+    async def test_early_detail_and_log_are_flushed_after_mount(self) -> None:
+        app = WaitApp(title="wait")
+
+        # Simulate planning output arriving before the wait screen is mounted.
+        app.set_detail("Goal: demo\nScope: standard")
+        app.append_log("first provider line")
+        app.append_log("second provider line")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            detail = app._screen.query_one("#wait_detail", Static)
+            rendered = str(detail.render())
+            assert "Goal: demo" in rendered
+
             log = app._screen.query_one("#wait_log", RichLog)
             assert len(log.lines) >= 2
 
@@ -105,7 +127,7 @@ class TestArchitectAppWaitOverlay:
             await pilot.pause()
             assert app._wait_screen is None
             # After dismissing the wait overlay we return to whatever
-            # screen was active before — the splash, in this test.
+            # screen was active before — the SplashScreen, in this test.
             assert isinstance(app.screen, SplashScreen)
 
     @pytest.mark.asyncio
@@ -124,3 +146,73 @@ class TestArchitectAppWaitOverlay:
             detail = app._wait_screen.query_one("#wait_detail", Static)
             assert "phase B" in str(title.render())
             assert "new detail" in str(detail.render())
+
+    @pytest.mark.asyncio
+    async def test_execution_output_does_not_replace_visible_wait_overlay(self) -> None:
+        from the_architect.tui.app import ArchitectApp
+        from the_architect.tui.screens.wait import WaitScreen
+
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._show_wait_sync("planning", "goal: demo")
+            await pilot.pause()
+            assert isinstance(app.screen, WaitScreen)
+
+            # Provider output may arrive while the wait overlay is visible.
+            # That must not switch the visible screen away from the overlay.
+            app.push_output_line("provider line")
+            await pilot.pause()
+
+            assert isinstance(app.screen, WaitScreen)
+            assert app._wait_screen is not None
+
+    @pytest.mark.asyncio
+    async def test_overlay_wait_flushes_early_log_after_show(self) -> None:
+        from the_architect.tui.app import ArchitectApp
+
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._show_wait_sync("planning", "")
+            assert app._wait_screen is not None
+
+            # Simulate stream lines landing before the wait screen has mounted.
+            app._wait_screen.append_log("provider line before mount")
+            app._wait_screen.set_detail("Goal: demo")
+
+            await pilot.pause()
+            await pilot.pause()
+
+            detail = app._wait_screen.query_one("#wait_detail", Static)
+            assert "Goal: demo" in str(detail.render())
+
+            log = app._wait_screen.query_one("#wait_log", RichLog)
+            assert len(log.lines) >= 1
+
+    @pytest.mark.asyncio
+    async def test_hide_wait_does_not_pop_unrelated_top_overlay(self) -> None:
+        from textual.screen import Screen
+
+        from the_architect.tui.app import ArchitectApp
+
+        class DummyOverlay(Screen[None]):
+            pass
+
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._show_wait_sync("planning", "")
+            await pilot.pause()
+            dummy = DummyOverlay()
+            app.push_screen(dummy)
+            await pilot.pause()
+
+            assert app.screen is dummy
+            app.hide_wait()
+            await pilot.pause()
+
+            # hide_wait should only dismiss the wait overlay when it is
+            # actually on top, not pop whatever screen currently happens
+            # to be active.
+            assert app.screen is dummy

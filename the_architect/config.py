@@ -62,6 +62,24 @@ class ArchitectConfig(BaseModel):
         "Empty string means use opencode's default_agent.",
     )
 
+    architect_model: str = Field(
+        default="",
+        description=(
+            "Last-used architect model override.  Empty string means use the "
+            "provider default.  Pre-fills the architect-model picker on the "
+            "next run so the user doesn't have to re-select."
+        ),
+    )
+
+    last_scope: str = Field(
+        default="",
+        description=(
+            "Last-used task scope ('simple', 'standard', or 'complex').  "
+            "Empty string means no preference — defaults to 'standard'.  "
+            "Pre-fills the scope picker on the next run."
+        ),
+    )
+
     retrospective_rounds: int = Field(
         default=1,
         ge=0,
@@ -245,6 +263,8 @@ class ArchitectConfig(BaseModel):
             provider=self.provider,
             standalone_mode=self.standalone_mode,
             execution_agent=self.execution_agent,
+            architect_model=self.architect_model,
+            last_scope=self.last_scope,
             retrospective_rounds=self.retrospective_rounds,
             carry_context=self.carry_context,
             retry_prompt_mode=self.retry_prompt_mode,

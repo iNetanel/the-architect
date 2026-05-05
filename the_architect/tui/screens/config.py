@@ -75,6 +75,9 @@ class ConfigApp(App[None]):
         yield Footer()
 
     def on_mount(self) -> None:
+        from the_architect.tui.app import apply_architect_theme
+
+        apply_architect_theme(self)
         # Focus the DataTable so its built-in arrow-key row navigation
         # works immediately without needing Tab first.
         try:
