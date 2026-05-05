@@ -12,7 +12,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from textual.widgets import TextArea
+from textual.widgets import ListView, RadioSet, TextArea
 
 from the_architect.core.provider import ArchitectProvider
 from the_architect.tui.screens.pre_run_tabbed import (
@@ -820,10 +820,106 @@ class TestPreRunScreen:
             await pilot.pause()
             assert getattr(screen.focused, "id", None) == "scope_set"
 
-            # down from scope_set → goal_text
+            # down from scope_set first moves through the scope choices.
+            rs = screen.query_one("#scope_set", RadioSet)
+            screen.action_focus_next()
+            await pilot.pause()
+            assert rs.pressed_button is not None
+            assert rs.pressed_button.id == "rb_complex"
+
+            # Another down from the last scope choice moves to goal_text.
             screen.action_focus_next()
             await pilot.pause()
             assert getattr(screen.focused, "id", None) == "goal_text"
+
+            screen.action_cancel()
+            await pilot.pause()
+
+    @pytest.mark.asyncio
+    async def test_up_down_move_model_list_selection_before_next_section(self) -> None:
+        """Up/down should select ListView rows before leaving the list section."""
+        from textual.app import App
+
+        providers = [_mock_provider("opencode")]
+        screen = PreRunScreen(
+            providers=providers,
+            config=_mock_config(),
+            project_dir=Path("/tmp/test"),
+        )
+
+        class ModelApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(screen, lambda value: None)
+
+        async with ModelApp().run_test() as pilot:
+            await pilot.pause()
+            screen.action_jump_tab_2()
+            await pilot.pause()
+            model_list = screen.query_one("#model_list", ListView)
+            model_list.focus()
+            assert model_list.index == 0
+
+            screen.action_focus_next()
+            await pilot.pause()
+            assert model_list.index == 1
+
+            screen.action_focus_next()
+            await pilot.pause()
+            assert model_list.index == 2
+
+            # At the last model row, down leaves the model list for the agent list.
+            screen.action_focus_next()
+            await pilot.pause()
+            assert getattr(screen.focused, "id", None) == "agent_list"
+
+            screen.action_cancel()
+            await pilot.pause()
+
+    @pytest.mark.asyncio
+    async def test_existing_run_action_arrows_select_replan_before_goal_fields(self) -> None:
+        """Existing-task action arrows switch Execute/Replan before moving sections."""
+        from textual.app import App
+        from textual.widgets import RadioSet
+
+        from the_architect.core.tasks import Task, TaskStatus
+
+        task = Task(
+            name="T01_existing",
+            prefix="T01",
+            number=1,
+            path=Path("/tmp/T01_existing.md"),
+            status=TaskStatus.PENDING,
+            title="Existing task",
+        )
+        screen = PreRunScreen(
+            providers=[_mock_provider("opencode")],
+            config=_mock_config(),
+            project_dir=Path("/tmp/test_project"),
+            pending_tasks=[task],
+            action="execute",
+        )
+
+        class RunApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(screen, lambda value: None)
+
+        async with RunApp().run_test() as pilot:
+            await pilot.pause()
+            action_set = screen.query_one("#action_set", RadioSet)
+            action_set.focus()
+            assert action_set.pressed_button is not None
+            assert action_set.pressed_button.id == "rb_action_execute"
+
+            screen.action_focus_next()
+            await pilot.pause()
+            assert action_set.pressed_button is not None
+            assert action_set.pressed_button.id == "rb_action_replan"
+            assert screen.query_one("#goal_text", TextArea).display is True
+
+            # At the last action row, another down moves to the now-visible scope section.
+            screen.action_focus_next()
+            await pilot.pause()
+            assert getattr(screen.focused, "id", None) == "scope_set"
 
             screen.action_cancel()
             await pilot.pause()

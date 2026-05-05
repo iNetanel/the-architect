@@ -189,12 +189,6 @@ class PreRunScreen(Screen[PreRunValues]):
         padding: 0 2;
     }
 
-    PreRunScreen #prerun_title {
-        color: $accent;
-        text-style: bold;
-        padding: 0 0 1 0;
-    }
-
     PreRunScreen #prerun_subtitle {
         color: $text-muted;
         padding: 0 0 1 0;
@@ -321,7 +315,6 @@ class PreRunScreen(Screen[PreRunValues]):
     def compose(self) -> ComposeResult:
         yield Header()
         with Vertical(id="prerun_body"):
-            yield Static("Configure run", id="prerun_title")
             yield Static(f"Project: {self._project_dir}", id="prerun_subtitle")
             with TabbedContent(id="prerun_tabs"):
                 # Tab 1: Goal for fresh runs, Run decision for existing-task runs.
@@ -787,6 +780,11 @@ class PreRunScreen(Screen[PreRunValues]):
                     current_index = i
                     break
 
+        if 0 <= current_index < len(stops):
+            current_stop = stops[current_index]
+            if self._move_composite_selection(current_stop, forward=forward):
+                return True
+
         target_index = current_index + (1 if forward else -1)
         if target_index < 0 or target_index >= len(stops):
             return False
@@ -801,6 +799,48 @@ class PreRunScreen(Screen[PreRunValues]):
             return True
         except Exception:
             return False
+
+    def _move_composite_selection(self, widget: Widget, *, forward: bool) -> bool:
+        """Move selection inside a RadioSet/ListView before leaving the section."""
+        if isinstance(widget, RadioSet):
+            buttons: list[Any] = [
+                button for button in widget.query("RadioButton") if button.display
+            ]
+            if not buttons:
+                return False
+            pressed = widget.pressed_button
+            try:
+                current = buttons.index(pressed) if pressed in buttons else 0
+            except ValueError:
+                current = 0
+            target = current + (1 if forward else -1)
+            if target < 0 or target >= len(buttons):
+                return False
+            try:
+                buttons[target].value = True
+                widget.focus()
+                if widget.id == "action_set":
+                    self._update_replan_controls_visibility()
+                return True
+            except Exception:
+                return False
+
+        if isinstance(widget, ListView):
+            item_count = len(widget.children)
+            if item_count <= 0:
+                return False
+            current = widget.index if widget.index is not None else 0
+            target = current + (1 if forward else -1)
+            if target < 0 or target >= item_count:
+                return False
+            try:
+                widget.index = target
+                widget.focus()
+                return True
+            except Exception:
+                return False
+
+        return False
 
     # ── Completion state ─────────────────────────────────────────────
 

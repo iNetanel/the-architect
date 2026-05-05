@@ -13,6 +13,9 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ### Changed
 
+- **Tabbed pre-run screen no longer shows redundant `Configure run` heading (build 10212):**
+  - Removed the extra title line because the visible tabs already define the setup context.
+
 - **Existing-task TUI now hides new-goal fields until Replan is selected (build 10210):**
   - Pending-task runs now start on a dedicated `Run` tab instead of mixing the action choice with
     always-visible goal/scope inputs.
@@ -61,6 +64,11 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
   - **OpenCode**: already called `opencode models` live — no change needed.
 
 ### Fixed
+
+- **Pre-run up/down arrows skipped options inside radio and model lists (build 10211):**
+  - The tabbed setup screen now moves selection inside focused `RadioSet` and `ListView` controls
+    before moving focus to the next section. This makes arrow navigation work consistently for
+    execute/replan, scope, provider, model, and execution-agent choices.
 
 - **Execution Live Output tab only showed task banners, not provider text/tool output (build 10206):**
   - The TUI created a `TextualStreamRenderer` for execution, but `run_task` did not pass that
