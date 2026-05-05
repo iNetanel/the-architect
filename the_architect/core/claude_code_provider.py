@@ -548,21 +548,59 @@ class ClaudeCodeProvider:
 
         elif etype == "assistant":
             # Agent message — may contain text, thinking, or tool_use content parts.
-            # Only "text" parts are displayed; "thinking" and "tool_use" are silent.
+            # text   → display as-is
+            # tool_use → display as "→ ToolName path/or/args" so the user can see
+            #            what the agent is doing (these are the majority of events
+            #            during execution — silently dropping them caused the Live
+            #            Output tab to appear empty while tasks ran)
+            # thinking → skip silently (internal chain-of-thought)
             message = event.get("message", {})
             if isinstance(message, dict):
                 for part in message.get("content", []):
-                    if isinstance(part, dict) and part.get("type") == "text":
+                    if not isinstance(part, dict):
+                        continue
+                    part_type = part.get("type")
+                    if part_type == "text":
                         text = (part.get("text") or "").strip()
                         if text:
                             display_lines.extend(text.split("\n"))
-                    # "thinking" and "tool_use" content parts: skip silently
+                    elif part_type == "tool_use":
+                        tool_name = part.get("name", "")
+                        if tool_name:
+                            inp = part.get("input", {}) or {}
+                            # Pick the most informative input field as a short summary
+                            detail = ""
+                            if isinstance(inp, dict):
+                                for key in (
+                                    "file_path",
+                                    "filePath",
+                                    "path",
+                                    "command",
+                                    "pattern",
+                                    "query",
+                                    "url",
+                                    "description",
+                                ):
+                                    val = inp.get(key, "")
+                                    if val:
+                                        detail = str(val)[:80]
+                                        break
+                                if not detail and inp:
+                                    for v in inp.values():
+                                        if v:
+                                            detail = str(v)[:80]
+                                            break
+                            if detail:
+                                display_lines.append(f"→ {tool_name} {detail}")
+                            else:
+                                display_lines.append(f"→ {tool_name}")
+                    # thinking parts: skip silently (internal chain-of-thought)
             # Claude Code sets error="rate_limit" on the assistant event when
             # the request is rejected before the model runs.
             err_field = str(event.get("error") or "")
             if err_field and _is_rate_limit_text(err_field):
                 rate_limit = True
-            # Return here so assistant events with no text (thinking/tool_use only)
+            # Return here so assistant events with no displayable content
             # are silently consumed — never fall through to the raw-print path.
             if not display_lines:
                 return ParsedEvent(

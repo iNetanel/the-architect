@@ -38,6 +38,57 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ### Fixed
 
+- **Execution Live Output tab only showed task banners, not provider text/tool output (build 10206):**
+  - The TUI created a `TextualStreamRenderer` for execution, but `run_task` did not pass that
+    renderer into `run_task_once`. Provider output therefore fell back to stdout while the
+    Textual alternate screen was active, leaving the visible Live Output tab with only the
+    task/attempt/done lines written directly by the TUI callbacks. `run_task` now forwards the
+    renderer through to `run_task_once`, so parsed provider text and tool-call lines are appended
+    to the execution screen.
+
+- **Blinking cursor visible in the middle of the Live Output / wait log area (build 10205):**
+  - Textual's `RichLog` widget is focusable by default (`can_focus=True`).  When it received
+    focus during execution or planning, it rendered a blinking text cursor in the middle of the
+    output area — making the display look broken even when content was present.  Fixed by setting
+    `can_focus = False` on both `RichLog` instances in `ExecutionScreen` (`on_mount`) and the
+    `RichLog` in `WaitScreen` (`on_mount`).  The logs are display-only; keyboard interaction is
+    never needed.
+
+- **Claude Code execution output missing from Live Output tab — tool calls never displayed (build 10202):**
+  - During execution with Claude Code, the agent's tool calls (Read, Write, Bash, etc.) are
+    emitted as `tool_use` content parts nested inside `assistant` JSON events.  The parser was
+    explicitly silencing these parts with a `# skip silently` comment, so every file read, write,
+    edit, and bash command the agent made produced zero output lines.  The `text` content parts
+    (the agent's prose commentary) were displayed, but agents that work mostly through tools
+    show very little text during task execution — resulting in a completely blank Live Output tab.
+  - Fixed by handling `tool_use` content parts in `assistant` events: each part now produces a
+    `→ ToolName path/detail` line, matching the display style already used for OpenCode and
+    Gemini CLI tool calls.  `thinking` parts continue to be silently dropped.
+  - Verified against Claude Code's actual `stream-json` output: tool calls only ever appear as
+    content parts inside `assistant` events — there are no top-level `tool_use` events.
+  - Updated tests to assert that `tool_use` content parts produce `→ ToolName` display lines.
+
+- **Execution stage showed almost no provider output in the TUI Live Output tab (build 10168):**
+  - All four providers (OpenCode, Claude Code, Codex CLI, Gemini CLI) were affected.
+  - Root cause: `ArchitectApp.push_output_line` and `append_wait_log` used `call_from_thread`
+    (Textual's blocking thread→event-loop bridge) for every provider output line.
+    `call_from_thread` internally calls `asyncio.run_coroutine_threadsafe(...).result()`, which
+    blocks the calling thread until Textual acknowledges each individual line.  Because the
+    stdout reader (`_read_stdout`) runs as a coroutine on the worker thread's asyncio event loop,
+    blocking that thread with a synchronous wait froze the entire worker event loop on every line.
+    With 100+ output lines at ~50 ms round-trip each, this easily exceeded the 5-second
+    `asyncio.wait_for(reader_task, timeout=5.0)` limit in `stream_provider`, causing
+    `reader_task` to be cancelled and all remaining provider output to be silently discarded.
+  - Fix 1 (`tui/app.py`): `push_output_line` and `append_wait_log` now use
+    `loop.call_soon_threadsafe` (non-blocking fire-and-forget) when called from a foreign thread.
+    This eliminates the per-line round-trip wait while keeping strict ordering — Textual's
+    event loop processes lines in submission order.
+  - Fix 2 (`tui/session.py`): `TuiWaitSession.append_log` for the standalone `WaitApp` path
+    (used during early planning before the main `ArchitectApp` is active) also switched to
+    `call_soon_threadsafe` for the same reason.
+  - Fix 3 (`core/runner.py`): the `asyncio.wait_for(reader_task, timeout=5.0)` budget was
+    raised to 30 seconds as a defence-in-depth measure against any future slow path.
+
 - **Provider update check showed wrong provider after user selected one in the tabbed pre-run screen (build 10166):**
   - When the user selected a provider (e.g. Codex) in the tabbed pre-run screen and then submitted
     their goal, the update check still ran against the originally auto-detected provider (e.g. OpenCode)

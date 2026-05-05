@@ -1409,6 +1409,35 @@ class TestRunTaskArchitectMdAndCallbacks:
             assert any("Project Intelligence" in c for c in captured_content)
 
     @pytest.mark.asyncio
+    async def test_forwards_renderer_to_run_task_once(self, task, config):
+        """Provider output must use the TUI renderer supplied to run_task."""
+        config.progress_file.write_text(
+            "**Tasks completed:** 1\n**Next task to run:** T02\n"
+            "| T01 | Test | Done | 2026-04-12 |\n",
+            encoding="utf-8",
+        )
+        renderer = MagicMock()
+        received_renderers = []
+
+        async def mock_run_once(**kwargs):
+            received_renderers.append(kwargs.get("renderer"))
+            return TaskResult(
+                prefix=task.prefix,
+                title=task.title or task.name,
+                status="done",
+                duration_seconds=1.0,
+                attempts=1,
+                tokens=TokenUsage(),
+                model="",
+            )
+
+        with patch("the_architect.core.runner.run_task_once", side_effect=mock_run_once):
+            result = await run_task(task=task, config=config, renderer=renderer)
+
+        assert result.status == "done"
+        assert received_renderers == [renderer]
+
+    @pytest.mark.asyncio
     async def test_on_attempt_start_callback_exception(self, task, config):
         config.progress_file.write_text(
             "**Tasks completed:** 1\n**Next task to run:** T02\n"

@@ -970,9 +970,13 @@ async def stream_provider(
         # Read stdout in the background while the process runs
         reader_task = asyncio.create_task(_read_stdout())
         exit_code = await process.wait()
-        # Give the reader a moment to finish processing remaining lines
+        # Give the reader a moment to finish processing remaining lines.
+        # 30 s is generous — the reader should drain the pipe buffer almost
+        # instantly now that render.write_line is non-blocking.  The larger
+        # budget guards against any future slow path without silently
+        # discarding the tail of a provider's output.
         try:
-            await asyncio.wait_for(reader_task, timeout=5.0)
+            await asyncio.wait_for(reader_task, timeout=30.0)
         except TimeoutError:
             reader_task.cancel()
 
@@ -2470,6 +2474,7 @@ async def run_task(
                 architect_md_content=architect_md_content,
                 provider=provider,
                 on_first_output=on_first_output,
+                renderer=renderer,
             )
         except Exception as exc:
             # run_task_once should never raise (it has its own catch-all),

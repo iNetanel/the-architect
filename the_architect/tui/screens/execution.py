@@ -171,6 +171,13 @@ class ExecutionScreen(Screen[None]):
     def on_mount(self) -> None:
         # Start the spinner at 10 FPS — same cadence as WaitScreen.
         self.set_interval(0.1, self._tick_spinner)
+        # Disable focus on the RichLog widgets so they never show a blinking
+        # cursor in the middle of the output area during execution.
+        for log_id in ("#exec_output", "#exec_events"):
+            try:
+                self.query_one(log_id, RichLog).can_focus = False
+            except Exception:
+                pass
         # Flush any output that arrived before the DOM was ready first,
         # then write placeholders only for tabs that received nothing.
         # Both callbacks are deferred to the post-refresh tick so every

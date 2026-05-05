@@ -645,7 +645,7 @@ class TestParseOutputLine:
         assert result.display_lines == []
 
     def test_parse_output_line_assistant_with_tool_use_content(self, provider):
-        """Test that assistant events with tool_use content are silent."""
+        """Test that assistant events with tool_use content parts display the tool name."""
         line = json.dumps(
             {
                 "type": "assistant",
@@ -653,7 +653,28 @@ class TestParseOutputLine:
             }
         )
         result = provider.parse_output_line(line)
-        assert result.display_lines == []
+        # tool_use content parts now produce "→ ToolName" display lines so the
+        # Live Output tab shows what the agent is doing during execution.
+        assert result.display_lines == ["→ bash"]
+
+    def test_parse_output_line_assistant_tool_use_with_path(self, provider):
+        """Test that tool_use content parts include the most informative input field."""
+        line = json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "Read",
+                            "input": {"file_path": "/some/file.py"},
+                        }
+                    ]
+                },
+            }
+        )
+        result = provider.parse_output_line(line)
+        assert result.display_lines == ["→ Read /some/file.py"]
 
     def test_parse_output_line_system_event_updates_cache(self, provider):
         """Test that system event updates the model cache."""
@@ -761,7 +782,7 @@ class TestClaudeCodeProviderProperties:
         assert result.display_lines == []
 
     def test_parse_output_line_assistant_with_tool_use_content(self, provider):
-        """Test that assistant events with tool_use content are silent."""
+        """Test that assistant events with tool_use content parts display the tool name."""
         line = json.dumps(
             {
                 "type": "assistant",
@@ -769,7 +790,7 @@ class TestClaudeCodeProviderProperties:
             }
         )
         result = provider.parse_output_line(line)
-        assert result.display_lines == []
+        assert result.display_lines == ["→ bash"]
 
     def test_parse_output_line_system_event_updates_cache(self, provider):
         """Test that system event updates the model cache."""

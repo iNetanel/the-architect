@@ -212,6 +212,21 @@ class TuiWaitSession:
             return
         if self.app is None:
             return
+        # Use call_soon_threadsafe (non-blocking) for high-volume output lines
+        # so the caller's asyncio event loop is never stalled waiting for the
+        # WaitApp's event loop to acknowledge each individual line.
+        # The same blocking issue affects append_log as push_output_line —
+        # many lines × ~50 ms round-trip each easily exceeds the 5-second
+        # reader_task timeout in stream_provider.
+        loop = getattr(self.app, "_loop", None)
+        thread_id = getattr(self.app, "_thread_id", None)
+        if loop is not None and thread_id != threading.get_ident():
+            try:
+                loop.call_soon_threadsafe(self.app.append_log, line)
+                return
+            except RuntimeError:
+                pass
+        # Fallback: loop closed, not started, or same-thread call
         try:
             self.app.call_from_thread(self.app.append_log, line)
         except Exception:

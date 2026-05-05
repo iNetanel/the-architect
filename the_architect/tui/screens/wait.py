@@ -115,6 +115,11 @@ class WaitScreen(Screen[None]):
     def on_mount(self) -> None:
         # 10 FPS spinner; matches the feel of the inline scanner.
         self.set_interval(0.1, self._tick_spinner)
+        # Disable focus on the log so it never shows a blinking cursor.
+        try:
+            self.query_one("#wait_log", RichLog).can_focus = False
+        except Exception:
+            pass
         self.call_after_refresh(self._flush_pending)
 
     # ── Actions ────────────────────────────────────────────────────────

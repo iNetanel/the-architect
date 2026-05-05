@@ -434,8 +434,33 @@ class ArchitectApp(App[None]):
         self._thread_safe_call(_switch)
 
     def push_output_line(self, line: str) -> None:
-        """Forward a streamed provider line to the execution screen."""
-        self._thread_safe_call(self._push_output_line_sync, line)
+        """Forward a streamed provider line to the execution screen.
+
+        Uses a **non-blocking** fire-and-forget dispatch so the caller
+        (typically the provider stdout reader coroutine on the worker
+        thread) is never stalled waiting for the Textual event loop to
+        process each individual line.
+
+        Using the blocking :meth:`call_from_thread` path here caused a
+        5-second ``asyncio.wait_for`` timeout in :func:`stream_provider`
+        to fire before the reader task finished: every ``write_line``
+        call blocked the worker-thread event loop for a Textual
+        round-trip, so 100+ output lines × ~50 ms each easily exceeded
+        the timeout and the remaining lines were silently discarded.
+        """
+        if self._loop is None:
+            # App not running yet — buffer through the sync path.
+            self._thread_safe_call(self._push_output_line_sync, line)
+            return
+        if self._thread_id == threading.get_ident():
+            # Same thread as the event loop — call directly (e.g. tests).
+            self._push_output_line_sync(line)
+            return
+        try:
+            self._loop.call_soon_threadsafe(self._push_output_line_sync, line)
+        except RuntimeError:
+            # Loop is closed or not running; fall back to blocking path.
+            self._thread_safe_call(self._push_output_line_sync, line)
 
     def _push_output_line_sync(self, line: str) -> None:
         screen = self._ensure_execution_screen()
@@ -499,8 +524,21 @@ class ArchitectApp(App[None]):
             self._wait_screen.set_detail(detail)
 
     def append_wait_log(self, line: str) -> None:
-        """Append a line to the wait screen's log tail (if visible)."""
-        self._thread_safe_call(self._append_wait_log_sync, line)
+        """Append a line to the wait screen's log tail (if visible).
+
+        Uses ``call_soon_threadsafe`` for non-blocking dispatch from the
+        worker thread — same reasoning as :meth:`push_output_line`.
+        """
+        if self._loop is None:
+            self._thread_safe_call(self._append_wait_log_sync, line)
+            return
+        if self._thread_id == threading.get_ident():
+            self._append_wait_log_sync(line)
+            return
+        try:
+            self._loop.call_soon_threadsafe(self._append_wait_log_sync, line)
+        except RuntimeError:
+            self._thread_safe_call(self._append_wait_log_sync, line)
 
     def _append_wait_log_sync(self, line: str) -> None:
         if self._wait_screen is None:
