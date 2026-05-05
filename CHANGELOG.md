@@ -18,6 +18,11 @@ empty [Unreleased] above it. Use Keep a Changelog section headings:
 Added / Changed / Deprecated / Removed / Fixed / Security.
 -->
 
+### Fixed
+
+- Fixed CI regressions around stale integration task fixtures, Claude Code tool-use
+  visibility expectations, and headless TUI `push_and_wait` timing (build 10219).
+
 ## [1.2.0] (build 10218) — 2026-05-05
 
 ### Added

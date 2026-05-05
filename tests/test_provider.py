@@ -1435,14 +1435,13 @@ class TestClaudeCodeCooldownDetection:
             f"False positive rate_limit in normal run: {rate_limit_flags}"
         )
 
-        # thinking, tool_use, user events must all be silent (empty display_lines)
-        # They return ParsedEvent(display_lines=[]) — NOT None — so the runner
-        # never falls through to the raw-JSON print path.
+        # Thinking and user events must be silent. Tool-use events should render
+        # compact activity lines so Claude users see progress during execution.
         assert parsed[1] is not None and parsed[1].display_lines == [], (
             "assistant(thinking) should be silent ParsedEvent"
         )
-        assert parsed[2] is not None and parsed[2].display_lines == [], (
-            "assistant(tool_use) should be silent ParsedEvent"
+        assert parsed[2] is not None and parsed[2].display_lines == ["→ Write"], (
+            "assistant(tool_use) should show compact activity"
         )
         assert parsed[3] is not None and parsed[3].display_lines == [], (
             "user event should be silent ParsedEvent"

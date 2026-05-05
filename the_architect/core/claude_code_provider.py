@@ -249,10 +249,9 @@ class ClaudeCodeProvider:
         1. ``ANTHROPIC_MODEL`` env var
         2. ``CLAUDE_MODEL`` env var (alternative)
         3. CLAUDE.md model hint
-        4. Binary extraction — pick the newest non-dated model ID from
-           the Claude Code executable (instant, no network call)
-        5. ``claude models`` API call — parses the default model line
-           (slow, ~8s, only used when binary extraction fails)
+        4. ``claude models`` API call — parses the default model line
+        5. Binary extraction — pick the newest non-dated model ID from
+           the Claude Code executable (offline fallback)
 
         Results are cached per project directory so slow lookups
         only happen once per run.
@@ -548,12 +547,7 @@ class ClaudeCodeProvider:
 
         elif etype == "assistant":
             # Agent message — may contain text, thinking, or tool_use content parts.
-            # text   → display as-is
-            # tool_use → display as "→ ToolName path/or/args" so the user can see
-            #            what the agent is doing (these are the majority of events
-            #            during execution — silently dropping them caused the Live
-            #            Output tab to appear empty while tasks ran)
-            # thinking → skip silently (internal chain-of-thought)
+            # text -> display as-is; tool_use -> show compact activity; thinking -> silent.
             message = event.get("message", {})
             if isinstance(message, dict):
                 for part in message.get("content", []):
@@ -568,7 +562,6 @@ class ClaudeCodeProvider:
                         tool_name = part.get("name", "")
                         if tool_name:
                             inp = part.get("input", {}) or {}
-                            # Pick the most informative input field as a short summary
                             detail = ""
                             if isinstance(inp, dict):
                                 for key in (
@@ -586,9 +579,9 @@ class ClaudeCodeProvider:
                                         detail = str(val)[:80]
                                         break
                                 if not detail and inp:
-                                    for v in inp.values():
-                                        if v:
-                                            detail = str(v)[:80]
+                                    for value in inp.values():
+                                        if value:
+                                            detail = str(value)[:80]
                                             break
                             if detail:
                                 display_lines.append(f"→ {tool_name} {detail}")

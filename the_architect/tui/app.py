@@ -415,7 +415,8 @@ class ArchitectApp(App[None]):
         # on the worker thread until the window expires. Using an Event
         # (rather than time.sleep) means Ctrl+C / app.exit() wakes this
         # immediately so there is no blank-screen hang after quitting.
-        if self._splash_shown_at > 0:
+        driver_name = type(getattr(self, "_driver", None)).__name__
+        if self._splash_shown_at > 0 and driver_name != "HeadlessDriver":
             elapsed = time.monotonic() - self._splash_shown_at
             remaining = self._splash_min_seconds - elapsed
             if remaining > 0:

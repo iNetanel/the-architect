@@ -257,11 +257,12 @@ class TestClaudeCodeProviderGetResolvedModel:
     def test_resolved_model_binary_extraction(self, provider, tmp_path):
         """Test binary extraction fallback."""
         with patch.object(cc, "_read_claude_md_model", return_value=""):
-            with patch.object(cc, "_extract_models_from_binary") as mock_extract:
-                mock_extract.return_value = ["claude-sonnet-4", "claude-opus-3"]
-                with patch.object(cc, "_pick_default_model", return_value="claude-sonnet-4"):
-                    result = provider.get_resolved_model(tmp_path)
-                    assert result == "claude-sonnet-4"
+            with patch.object(cc.subprocess, "run", side_effect=cc.subprocess.SubprocessError()):
+                with patch.object(cc, "_extract_models_from_binary") as mock_extract:
+                    mock_extract.return_value = ["claude-sonnet-4", "claude-opus-3"]
+                    with patch.object(cc, "_pick_default_model", return_value="claude-sonnet-4"):
+                        result = provider.get_resolved_model(tmp_path)
+                        assert result == "claude-sonnet-4"
 
     def test_resolved_model_subprocess_fallback(self, provider, tmp_path):
         """Test subprocess fallback when binary extraction fails."""
@@ -655,8 +656,6 @@ class TestParseOutputLine:
             }
         )
         result = provider.parse_output_line(line)
-        # tool_use content parts now produce "→ ToolName" display lines so the
-        # Live Output tab shows what the agent is doing during execution.
         assert result.display_lines == ["→ bash"]
 
     def test_parse_output_line_assistant_tool_use_with_path(self, provider):
