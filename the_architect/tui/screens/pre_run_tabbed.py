@@ -1,8 +1,8 @@
 """Unified tabbed pre-run screen (Phase B).
 
 A single persistent :class:`PreRunScreen` that owns the Header, tab bar,
-and Footer, and hosts one tab per configuration concern. The user arrives
-on the Goal tab, can move freely with ``Ctrl+Tab`` / arrow keys / number
+ and Footer, and hosts one tab per configuration concern. The user arrives
+ on the Goal tab, can move freely with ``Tab`` / arrow keys / number
 hotkeys, and submits once when every required tab is complete.
 
 Replaces the linear chain of screens (Provider → Goal → Scope → Model →
@@ -31,7 +31,6 @@ from textual.screen import Screen
 from textual.widget import Widget
 from textual.widgets import (
     Checkbox,
-    Footer,
     Header,
     Input,
     Label,
@@ -41,7 +40,6 @@ from textual.widgets import (
     Static,
     TabbedContent,
     TabPane,
-    Tabs,
     TextArea,
 )
 
@@ -163,6 +161,8 @@ class PreRunScreen(Screen[PreRunValues]):
         # the keys for in-widget navigation.
         Binding("up", "focus_previous", "Previous field", show=False, priority=True),
         Binding("down", "focus_next", "Next field", show=False, priority=True),
+        Binding("tab", "next_tab", "Next tab", show=False),
+        Binding("shift+tab", "prev_tab", "Previous tab", show=False),
         Binding("ctrl+tab", "next_tab", "Next tab", show=False),
         Binding("ctrl+right", "next_tab", "Next tab", show=False),
         Binding("ctrl+shift+tab", "prev_tab", "Previous tab", show=False),
@@ -354,19 +354,19 @@ class PreRunScreen(Screen[PreRunValues]):
                     )
                     with RadioSet(id="scope_set"):
                         yield BlankOffRadioButton(
-                            "Simple       One atomic thing per task; smaller context per run",
+                            "Simple       One atomic thing per task - smaller context per run",
                             id="rb_simple",
                             value=self._values.scope == "simple",
                         )
                         yield BlankOffRadioButton(
-                            "Standard     One feature area per task; balanced context"
+                            "Standard     One feature area per task - balanced context"
                             "  (recommended)",
                             id="rb_standard",
                             value=self._values.scope == "standard"
                             or self._values.scope not in ("simple", "complex"),
                         )
                         yield BlankOffRadioButton(
-                            "Complex      One subsystem per task; larger context per run",
+                            "Complex      One subsystem per task - larger context per run",
                             id="rb_complex",
                             value=self._values.scope == "complex",
                         )
@@ -458,7 +458,6 @@ class PreRunScreen(Screen[PreRunValues]):
                     yield Input(placeholder="0", id="inp_budget", value=budget_str)
 
         yield Static(self._footer_text(), id="prerun_footer")
-        yield Footer()
 
     # ── Mount — populate model/agent lists ───────────────────────────
 
@@ -636,8 +635,12 @@ class PreRunScreen(Screen[PreRunValues]):
         """Switch to the next tab and auto-focus its first field."""
         try:
             tabs = self.query_one("#prerun_tabs", TabbedContent)
-            tabs.query_one(Tabs).action_next_tab()
-            self.call_after_refresh(self._auto_focus_active_tab)
+            tab_ids = self._visible_tab_ids()
+            if not tab_ids:
+                return
+            current = tabs.active if tabs.active in tab_ids else tab_ids[0]
+            target = tab_ids[(tab_ids.index(current) + 1) % len(tab_ids)]
+            self._try_activate_tab(target)
         except Exception as exc:
             logger.debug(f"PreRunScreen: next_tab failed: {exc!r}")
 
@@ -645,10 +648,22 @@ class PreRunScreen(Screen[PreRunValues]):
         """Switch to the previous tab and auto-focus its first field."""
         try:
             tabs = self.query_one("#prerun_tabs", TabbedContent)
-            tabs.query_one(Tabs).action_previous_tab()
-            self.call_after_refresh(self._auto_focus_active_tab)
+            tab_ids = self._visible_tab_ids()
+            if not tab_ids:
+                return
+            current = tabs.active if tabs.active in tab_ids else tab_ids[0]
+            target = tab_ids[(tab_ids.index(current) - 1) % len(tab_ids)]
+            self._try_activate_tab(target)
         except Exception as exc:
             logger.debug(f"PreRunScreen: prev_tab failed: {exc!r}")
+
+    def _visible_tab_ids(self) -> list[str]:
+        """Return visible pre-run tab IDs in their rendered order."""
+        tab_ids = [_TAB_GOAL]
+        if self._show_provider_tab:
+            tab_ids.append(_TAB_PROVIDER)
+        tab_ids.extend([_TAB_MODELS, _TAB_MODE])
+        return tab_ids
 
     def action_focus_previous(self) -> None:
         """Move focus to the previous focusable control on the active tab."""
@@ -916,7 +931,7 @@ class PreRunScreen(Screen[PreRunValues]):
         done, total = self._completion_count()
         return (
             f"{done}/{total} complete   ·   "
-            "Ctrl+Tab switch tabs   ·   Enter = submit   ·   "
+            "Tab switch tabs   ·   Shift+Tab back   ·   Enter = submit   ·   "
             "Esc = pause menu"
         )
 

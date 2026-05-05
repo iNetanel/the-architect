@@ -12,7 +12,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from textual.widgets import ListView, RadioSet, TextArea
+from textual.widgets import Footer, ListView, RadioSet, TabbedContent, TextArea
 
 from the_architect.core.provider import ArchitectProvider
 from the_architect.tui.screens.pre_run_tabbed import (
@@ -429,8 +429,10 @@ class TestPreRunScreen:
         binding_keys = {b.key for b in screen.BINDINGS}
 
         # Tab navigation
-        assert "ctrl+tab" in binding_keys or "ctrl+right" in binding_keys
-        assert "ctrl+shift+tab" in binding_keys or "ctrl+left" in binding_keys
+        assert "tab" in binding_keys
+        assert "shift+tab" in binding_keys
+        assert "ctrl+tab" in binding_keys
+        assert "ctrl+shift+tab" in binding_keys
 
         # Pause menu via Escape
         assert "escape" in binding_keys
@@ -462,6 +464,7 @@ class TestPreRunScreen:
             # The rendered content should contain the project path
             rendered = subtitle.render()
             assert str(project_dir) in str(rendered)
+            assert list(screen.query(Footer)) == []
             screen.action_cancel()
             await pilot.pause()
 
@@ -857,6 +860,7 @@ class TestPreRunScreen:
             await pilot.pause()
             model_list = screen.query_one("#model_list", ListView)
             model_list.focus()
+            await pilot.pause()
             assert model_list.index == 0
 
             screen.action_focus_next()
@@ -1015,12 +1019,16 @@ class TestPreRunScreen:
             assert bindings.get("right") == "next_tab"
 
             # action_next_tab callable without raising, even with goal focused
+            tabs = screen.query_one("#prerun_tabs", TabbedContent)
+            assert tabs.active == "tab_goal"
             screen.action_next_tab()
             await pilot.pause()
+            assert tabs.active == "tab_models"
 
             # action_prev_tab callable too
             screen.action_prev_tab()
             await pilot.pause()
+            assert tabs.active == "tab_goal"
 
             # Smart methods no longer exist
             assert not hasattr(screen, "action_next_tab_smart")
@@ -1070,7 +1078,6 @@ class TestPreRunScreen:
             # Press right — must switch to the next tab (tab_models, no Provider tab)
             await pilot.press("right")
             await pilot.pause()
-            await pilot.pause()
             assert tabs.active == "tab_models", (
                 f"right arrow from RadioSet did not switch tab: still on {tabs.active!r}"
             )
@@ -1078,14 +1085,44 @@ class TestPreRunScreen:
             # Press right again — should reach Options tab
             await pilot.press("right")
             await pilot.pause()
-            await pilot.pause()
             assert tabs.active == "tab_mode"
 
             # Press left — back to Models
             await pilot.press("left")
             await pilot.pause()
+            assert tabs.active == "tab_models"
+
+            screen.action_cancel()
+            await pilot.pause()
+
+    @pytest.mark.asyncio
+    async def test_tab_and_shift_tab_switch_tabs(self) -> None:
+        """Tab/Shift+Tab match the pre-run footer's tab navigation hint."""
+        from textual.app import App
+        from textual.widgets import TabbedContent
+
+        screen = PreRunScreen(
+            providers=[_mock_provider("opencode")],
+            config=_mock_config(),
+            project_dir=Path("/tmp/test"),
+        )
+
+        class TabApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(screen, lambda value: None)
+
+        async with TabApp().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            tabs = screen.query_one("#prerun_tabs", TabbedContent)
+            assert tabs.active == "tab_goal"
+
+            await pilot.press("tab")
             await pilot.pause()
             assert tabs.active == "tab_models"
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert tabs.active == "tab_goal"
 
             screen.action_cancel()
             await pilot.pause()

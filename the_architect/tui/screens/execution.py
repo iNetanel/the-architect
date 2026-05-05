@@ -50,6 +50,12 @@ class ExecutionScreen(Screen[None]):
     # backend provider mid-run. Ctrl+C remains the direct-hard-stop
     # path and stays wired at the app level.
     BINDINGS = [
+        Binding("l", "switch_tab('tab_live')", "Live", show=False),
+        Binding("p", "switch_tab('tab_progress')", "Progress", show=False),
+        Binding("d", "switch_tab('tab_diagnostics')", "Diagnostics", show=False),
+        Binding("o", "switch_tab('tab_live')", "Live", show=False),
+        Binding("e", "switch_tab('tab_diagnostics')", "Diagnostics", show=False),
+        Binding("s", "switch_tab('tab_progress')", "Progress", show=False),
         Binding("escape", "pause_menu", "Pause menu"),
     ]
 
@@ -248,6 +254,13 @@ class ExecutionScreen(Screen[None]):
         else:
             label = "execution  ·  waiting for task…"
         return f"{self._current_frame}  {label}  [dim]({phase})[/dim]"
+
+    def action_switch_tab(self, tab_id: str) -> None:
+        """Switch execution tabs from execution-scoped key bindings."""
+        try:
+            self.query_one("#exec_tabs", TabbedContent).active = tab_id
+        except Exception:
+            pass
 
     # ── Renderer hooks ─────────────────────────────────────────────────
 

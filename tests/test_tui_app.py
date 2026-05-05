@@ -34,6 +34,15 @@ async def test_splash_is_distinct_from_wait_screen() -> None:
     assert not issubclass(SplashScreen, WaitScreen)
 
 
+def test_execution_tab_bindings_are_not_global_app_bindings() -> None:
+    """Execution-only tab shortcuts must not appear on non-execution footers."""
+    app_bindings = {binding.key for binding in ArchitectApp.BINDINGS}
+    execution_bindings = {binding.key for binding in ExecutionScreen.BINDINGS}
+
+    assert {"l", "p", "d"}.isdisjoint(app_bindings)
+    assert {"l", "p", "d"}.issubset(execution_bindings)
+
+
 @pytest.mark.asyncio
 async def test_splash_shows_title_and_spinner() -> None:
     """The splash renders the app name and a visible Matrix rain animation."""

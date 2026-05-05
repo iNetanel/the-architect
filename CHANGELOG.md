@@ -65,6 +65,22 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ### Fixed
 
+- **Pre-run footer said `Ctrl+Tab` even though tab navigation should use `Tab` (build 10215):**
+  - Added `Tab` / `Shift+Tab` as the primary tab-switch shortcuts on the setup screen.
+  - Kept `Ctrl+Tab` / `Ctrl+Shift+Tab` as hidden aliases for compatibility.
+  - Updated the custom setup footer to match the actual keys.
+
+- **Pre-run screen showed two footers and execution-only shortcuts (build 10214):**
+  - Removed the built-in Textual footer from the tabbed pre-run screen, leaving only the custom
+    setup footer.
+  - Moved `l`/`p`/`d` execution tab shortcuts off the global app bindings and onto
+    `ExecutionScreen`, so non-execution screens no longer advertise Diagnostics/Live/Progress keys.
+
+- **Pre-run left/right arrows sometimes needed two presses to switch tabs (build 10213):**
+  - The tabbed setup screen now changes `TabbedContent.active` directly from the known visible tab
+    order instead of delegating to the inner `Tabs` widget, avoiding focus/tab event races where the
+    first arrow press could update focus without landing the active tab.
+
 - **Pre-run up/down arrows skipped options inside radio and model lists (build 10211):**
   - The tabbed setup screen now moves selection inside focused `RadioSet` and `ListView` controls
     before moving focus to the next section. This makes arrow navigation work consistently for

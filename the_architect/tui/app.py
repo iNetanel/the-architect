@@ -222,12 +222,6 @@ class ArchitectApp(App[None]):
         Binding("ctrl+c", "quit", "Quit"),
         Binding("q", "quit", "Quit"),
         Binding("question_mark", "help", "Help"),
-        Binding("l", "switch_tab('tab_live')", "Live"),
-        Binding("p", "switch_tab('tab_progress')", "Progress"),
-        Binding("d", "switch_tab('tab_diagnostics')", "Diagnostics"),
-        Binding("o", "switch_tab('tab_live')", "Live", show=False),
-        Binding("e", "switch_tab('tab_diagnostics')", "Diagnostics", show=False),
-        Binding("s", "switch_tab('tab_progress')", "Progress", show=False),
     ]
 
     def __init__(self, *, initial_screen: Screen[Any] | None = None) -> None:
@@ -569,19 +563,6 @@ class ArchitectApp(App[None]):
         except Exception:
             pass
         self._wait_screen = None
-
-    # ── Actions ────────────────────────────────────────────────────────
-
-    def action_switch_tab(self, tab_id: str) -> None:
-        try:
-            from textual.widgets import TabbedContent
-
-            if self._execution_screen is None:
-                return
-            tabs = self._execution_screen.query_one("#exec_tabs", TabbedContent)
-            tabs.active = tab_id
-        except Exception:
-            pass
 
     # ── Success screen ─────────────────────────────────────────────────
 
