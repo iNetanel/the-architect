@@ -2393,14 +2393,38 @@ async def _run_tasks_raw(
 
         # When the TUI is active, wrap the existing runner callbacks so
         # every circuit/cooldown/model/attempt event is also forwarded
-        # into the Events and Details tabs.  Business-logic callbacks
+        # into the Diagnostics and Progress tabs.  Business-logic callbacks
         # continue to fire unchanged.
         _orig_on_task_start = on_task_start
         _orig_on_attempt_start = on_attempt_start
         _orig_on_circuit_event = on_circuit_event
         _orig_on_model_switched = on_model_switched
 
+        _tui_task_statuses: dict[str, str] = {
+            t.prefix: "done"
+            if t.status == TaskStatus.DONE
+            else "failed"
+            if t.status == TaskStatus.FAILED
+            else "pending"
+            for t in plan.tasks
+        }
+
+        def _tui_progress_rows() -> list[dict[str, str]]:
+            return [
+                {
+                    "prefix": t.prefix,
+                    "title": t.title or t.name,
+                    "status": _tui_task_statuses.get(t.prefix, "pending"),
+                }
+                for t in plan.tasks
+            ]
+
+        def _tui_publish_progress() -> None:
+            _tui_session.update_progress_tasks(_tui_progress_rows())
+
         def _tui_on_task_start(t: Task) -> None:
+            _tui_task_statuses[t.prefix] = "running"
+            _tui_publish_progress()
             _tui_session.update_details(
                 task=f"{t.prefix} {t.title or t.name}",
                 phase="starting",
@@ -2491,6 +2515,8 @@ async def _run_tasks_raw(
         _tf: Callable[[TaskResult], None]
 
         def _tui_on_task_done(result: TaskResult) -> None:
+            _tui_task_statuses[result.prefix] = "done"
+            _tui_publish_progress()
             _tui_session.push_event(
                 "task_done",
                 {"task": result.prefix, "duration": f"{result.duration_seconds:.1f}s"},
@@ -2505,6 +2531,8 @@ async def _run_tasks_raw(
             on_task_done(result)
 
         def _tui_on_task_failed(result: TaskResult) -> None:
+            _tui_task_statuses[result.prefix] = "failed"
+            _tui_publish_progress()
             _tui_session.push_event("task_failed", {"task": result.prefix})
             if _tui_session.app is not None:
                 try:
@@ -2516,6 +2544,7 @@ async def _run_tasks_raw(
             on_task_failed(result)
 
         if _tui_session.app is not None:
+            _tui_publish_progress()
             _ts = _tui_on_task_start
             _as = _tui_on_attempt_start
             _ce = _tui_on_circuit_event

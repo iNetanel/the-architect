@@ -150,20 +150,18 @@ class TestClaudeCodeProviderListModels:
 
     def test_list_models_binary_cache_hit(self, provider):
         """Test that cached binary models are returned."""
-        with patch.object(cc.subprocess, "run", side_effect=FileNotFoundError):
-            provider._binary_models_cache = ["claude-sonnet-4-6", "claude-opus-4-7"]
-            result = provider.list_models()
-            assert result == ["claude-sonnet-4-6", "claude-opus-4-7"]
+        provider._binary_models_cache = ["claude-sonnet-4-6", "claude-opus-4-7"]
+        result = provider.list_models()
+        assert result == ["claude-sonnet-4-6", "claude-opus-4-7"]
 
     def test_list_models_binary_extraction_success(self, provider):
         """Test binary model extraction when cache is empty."""
-        with patch.object(cc.subprocess, "run", side_effect=FileNotFoundError):
-            with patch.object(cc, "_extract_models_from_binary") as mock_extract:
-                mock_extract.return_value = ["claude-sonnet-4-6", "claude-opus-4-7"]
-                provider._binary_models_cache = None
-                result = provider.list_models()
-                assert result == ["claude-sonnet-4-6", "claude-opus-4-7"]
-                mock_extract.assert_called_once()
+        with patch.object(cc, "_extract_models_from_binary") as mock_extract:
+            mock_extract.return_value = ["claude-sonnet-4-6", "claude-opus-4-7"]
+            provider._binary_models_cache = None
+            result = provider.list_models()
+            assert result == ["claude-sonnet-4-6", "claude-opus-4-7"]
+            mock_extract.assert_called_once()
 
     def test_list_models_subprocess_fallback(self, provider):
         """Test subprocess fallback when binary extraction returns empty."""

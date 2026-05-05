@@ -49,7 +49,7 @@ class TuiSession:
         self._thread = thread
 
     def push_event(self, event: str, data: dict[str, object] | None = None) -> None:
-        """Forward an execution event to the TUI Events tab (no-op when disabled)."""
+        """Forward an execution event to the TUI Diagnostics tab (no-op when disabled)."""
         if self.app is None:
             return
         try:
@@ -58,11 +58,20 @@ class TuiSession:
             pass
 
     def update_details(self, **fields: str) -> None:
-        """Merge fields into the TUI Details tab (no-op when disabled)."""
+        """Merge fields into the TUI Progress tab (no-op when disabled)."""
         if self.app is None:
             return
         try:
             self.app.update_details(**fields)
+        except Exception:
+            pass
+
+    def update_progress_tasks(self, tasks: list[dict[str, str]]) -> None:
+        """Replace the TUI Progress tab task list (no-op when disabled)."""
+        if self.app is None:
+            return
+        try:
+            self.app.update_progress_tasks(tasks)
         except Exception:
             pass
 

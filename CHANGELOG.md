@@ -13,6 +13,14 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ### Changed
 
+- **Execution TUI tabs now separate live output, overall progress, and diagnostics (build 10208):**
+  - Renamed `Live Output` to `Live` for the raw provider stream.
+  - Replaced the vague `Events` / `Status` split with `Progress` and `Diagnostics`.
+  - `Progress` now shows the current phase, current task, attempt/model metadata, and the full
+    task list with running/done/pending/failed statuses so the user can see the overall goal state.
+  - `Diagnostics` now owns retry, cooldown, model-switch, replan, and circuit-breaker events.
+  - Removed the built-in Textual footer from the execution screen to reduce noisy keybinding chrome.
+
 - **All providers detect models from the local CLI installation only — no external URLs (build 10162):**
   - **Gemini CLI**: removed the `googleapis.com` API call from `list_models`.  Models are now
     extracted from the installed Gemini CLI's JS bundle chunks by resolving `shutil.which("gemini")`

@@ -953,7 +953,7 @@ def maybe_launch_tmux(
             when the TUI is active: wrapping in tmux still gives the
             user ``Ctrl+B D`` detach + ``tmux attach`` reattach, but
             without the side panel that would otherwise compete with
-            the TUI's own Details/Events tabs for screen space.
+            the TUI's own Progress/Diagnostics tabs for screen space.
 
     Returns:
         True if tmux was launched and the caller should exit.

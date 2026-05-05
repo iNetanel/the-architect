@@ -155,10 +155,34 @@ async def test_update_details_merges_fields() -> None:
         app.update_details(task="T01 demo", phase="executing", attempt="1/3")
         await pilot.pause()
         assert app._execution_screen is not None
-        details = app._execution_screen.query_one("#exec_details_text", Static)
-        text = str(details.render())
+        progress = app._execution_screen.query_one("#exec_progress_text", Static)
+        text = str(progress.render())
         assert "T01 demo" in text
         assert "executing" in text
+
+
+@pytest.mark.asyncio
+async def test_update_progress_tasks_shows_overall_task_picture() -> None:
+    app = ArchitectApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.switch_to_execution()
+        await pilot.pause()
+        app.update_progress_tasks(
+            [
+                {"prefix": "T01", "title": "First task", "status": "done"},
+                {"prefix": "T02", "title": "Second task", "status": "running"},
+                {"prefix": "T03", "title": "Third task", "status": "pending"},
+            ]
+        )
+        await pilot.pause()
+        assert app._execution_screen is not None
+        progress = app._execution_screen.query_one("#exec_progress_text", Static)
+        text = str(progress.render())
+        assert "Run Progress" in text
+        assert "1/3 done" in text
+        assert "T02" in text
+        assert "RUNNING" in text
 
 
 @pytest.mark.asyncio
@@ -212,12 +236,12 @@ async def test_output_before_mount_does_not_show_placeholder() -> None:
 
 
 @pytest.mark.asyncio
-async def test_push_event_line_does_not_crash_on_events_tab() -> None:
-    """Regression: clicking Events tab must not crash due to invalid Rich markup.
+async def test_push_event_line_does_not_crash_on_diagnostics_tab() -> None:
+    """Regression: clicking Diagnostics tab must not crash due to invalid Rich markup.
 
     ``[$accent]`` is a Textual CSS variable, not a valid Rich color tag.
     ``RichLog`` uses Rich markup, so passing ``[$accent]`` caused a
-    ``MarkupError`` / crash whenever the Events tab was rendered.
+    ``MarkupError`` / crash whenever the Diagnostics tab was rendered.
     The fix replaces the CSS variable with the literal brand-green hex color.
     """
     from textual.widgets import TabbedContent
@@ -233,16 +257,16 @@ async def test_push_event_line_does_not_crash_on_events_tab() -> None:
         # Push an event — this must not raise.
         screen.push_event_line("task_start", {"task": "T01", "attempt": "1"})
         await pilot.pause()
-        # Switch to the Events tab (simulates the user clicking it).
+        # Switch to the Diagnostics tab (simulates the user clicking it).
         tabs = screen.query_one("#exec_tabs", TabbedContent)
-        tabs.active = "tab_events"
+        tabs.active = "tab_diagnostics"
         await pilot.pause()
         await pilot.pause()
-        log = screen.query_one("#exec_events", RichLog)
+        log = screen.query_one("#exec_diagnostics", RichLog)
         # At least one line was written (placeholder + our event).
         assert len(log.lines) >= 1
         # The rendered segments must not contain unresolved Textual CSS tokens.
         all_text = " ".join(str(line) for line in log.lines)
         assert "$accent" not in all_text, (
-            f"Unresolved Textual CSS variable '$accent' found in Events log: {all_text!r}"
+            f"Unresolved Textual CSS variable '$accent' found in Diagnostics log: {all_text!r}"
         )

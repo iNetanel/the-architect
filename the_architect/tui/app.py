@@ -222,9 +222,12 @@ class ArchitectApp(App[None]):
         Binding("ctrl+c", "quit", "Quit"),
         Binding("q", "quit", "Quit"),
         Binding("question_mark", "help", "Help"),
-        Binding("o", "switch_tab('tab_output')", "Live Output"),
-        Binding("e", "switch_tab('tab_events')", "Events"),
-        Binding("s", "switch_tab('tab_details')", "Status"),
+        Binding("l", "switch_tab('tab_live')", "Live"),
+        Binding("p", "switch_tab('tab_progress')", "Progress"),
+        Binding("d", "switch_tab('tab_diagnostics')", "Diagnostics"),
+        Binding("o", "switch_tab('tab_live')", "Live", show=False),
+        Binding("e", "switch_tab('tab_diagnostics')", "Diagnostics", show=False),
+        Binding("s", "switch_tab('tab_progress')", "Progress", show=False),
     ]
 
     def __init__(self, *, initial_screen: Screen[Any] | None = None) -> None:
@@ -483,12 +486,20 @@ class ArchitectApp(App[None]):
         screen.update_footer(text)
 
     def update_details(self, **fields: str) -> None:
-        """Update the Details tab with merged fields."""
+        """Update the Progress tab with merged run metadata."""
         self._thread_safe_call(self._update_details_sync, **fields)
 
     def _update_details_sync(self, **fields: str) -> None:
         screen = self._ensure_execution_screen()
         screen.update_details(**fields)
+
+    def update_progress_tasks(self, tasks: list[dict[str, str]]) -> None:
+        """Update the Progress tab's task overview."""
+        self._thread_safe_call(self._update_progress_tasks_sync, tasks)
+
+    def _update_progress_tasks_sync(self, tasks: list[dict[str, str]]) -> None:
+        screen = self._ensure_execution_screen()
+        screen.update_progress_tasks(tasks)
 
     # ── Wait screen overlay (planning / retrospective / reassessment) ──
 

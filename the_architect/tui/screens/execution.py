@@ -1,17 +1,17 @@
-"""Textual Execution screen with tabbed output / events / status.
+"""Textual Execution screen with live output, progress, and diagnostics tabs.
 
-This screen hosts the live provider stream, circuit/retry/reassessment
-events, and per-task metadata while a run is active. The business logic
-continues to run in :mod:`the_architect.core.runner`; this screen only
-renders what the renderer pushes into it.
+This screen hosts the live provider stream, an overall task progress view,
+and deeper retry/circuit/reassessment diagnostics while a run is active. The
+business logic continues to run in :mod:`the_architect.core.runner`; this
+screen only renders what the renderer pushes into it.
 
 Layout mirrors :class:`~the_architect.tui.screens.wait.WaitScreen`:
 
 - An animated Matrix-rain title at the top (same spinner, same brand green)
 - Three tabs below it:
-  - **Live Output** — raw provider stream, token by token
-  - **Events** — timestamped circuit / retry / model-switch events
-  - **Status** — structured per-task metadata (task, model, attempt, tokens)
+  - **Live** — raw provider stream
+  - **Progress** — overall task list and what is happening now
+  - **Diagnostics** — retries, cooldowns, model switches, and circuit events
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
-from textual.widgets import Footer, Header, RichLog, Static, TabbedContent, TabPane
+from textual.widgets import Header, RichLog, Static, TabbedContent, TabPane
 
 from the_architect.tui.widgets import next_matrix_frame
 
@@ -36,7 +36,7 @@ def _idle_footer_text() -> str:
     tmux detach shortcut so users know the "step away and come back
     later" path is available without even opening the menu.
     """
-    base = "(idle)  [o]utput / [e]vents / [s]tatus  ·  Esc=pause menu  ·  Ctrl+C=stop"
+    base = "(idle)  [l]ive / [p]rogress / [d]iagnostics  ·  Esc=pause  ·  Ctrl+C=stop"
     if os.environ.get("TMUX"):
         base += "  ·  Ctrl+B D detaches"
     return base
@@ -93,13 +93,13 @@ class ExecutionScreen(Screen[None]):
         color: $accent;
     }
 
-    #exec_output, #exec_events {
+    #exec_output, #exec_diagnostics {
         height: 1fr;
         border: round $panel;
         padding: 0 1;
     }
 
-    #exec_status {
+    #exec_progress {
         height: 1fr;
         border: round $panel;
         padding: 1 2;
@@ -125,13 +125,14 @@ class ExecutionScreen(Screen[None]):
             "last_activity": "",
             "current_op": "",
         }
+        self._progress_tasks: list[dict[str, str]] = []
         self._frame_index = 0
         self._current_frame = next_matrix_frame(self._frame_index)
         # Pending updates buffered before first mount so callers who
         # push content while the screen is still being composed don't
         # silently lose their messages. Flushed from on_mount.
         self._pending_output: list[str] = []
-        self._pending_events: list[tuple[str, dict[str, object] | None]] = []
+        self._pending_diagnostics: list[tuple[str, dict[str, object] | None]] = []
         self._pending_footer: str | None = None
         # Track whether any real provider output has been received so the
         # placeholder can be cleared on the first write.
@@ -143,7 +144,7 @@ class ExecutionScreen(Screen[None]):
             yield Static(self._render_anim_title(), id="exec_anim_title")
             yield Static("", id="exec_task_badge")
         with TabbedContent(id="exec_tabs"):
-            with TabPane("Live Output", id="tab_output"):
+            with TabPane("Live", id="tab_live"):
                 yield RichLog(
                     id="exec_output",
                     highlight=False,
@@ -151,29 +152,28 @@ class ExecutionScreen(Screen[None]):
                     wrap=True,
                     auto_scroll=True,
                 )
-            with TabPane("Events", id="tab_events"):
+            with TabPane("Progress", id="tab_progress"):
+                with Vertical(id="exec_progress"):
+                    yield Static(self._render_progress(), id="exec_progress_text")
+            with TabPane("Diagnostics", id="tab_diagnostics"):
                 yield RichLog(
-                    id="exec_events",
+                    id="exec_diagnostics",
                     highlight=False,
                     markup=True,
                     wrap=True,
                     auto_scroll=True,
                 )
-            with TabPane("Status", id="tab_details"):
-                with Vertical(id="exec_status"):
-                    yield Static(self._render_details(), id="exec_details_text")
         yield Static(
             _idle_footer_text(),
             id="exec_footer",
         )
-        yield Footer()
 
     def on_mount(self) -> None:
         # Start the spinner at 10 FPS — same cadence as WaitScreen.
         self.set_interval(0.1, self._tick_spinner)
         # Disable focus on the RichLog widgets so they never show a blinking
         # cursor in the middle of the output area during execution.
-        for log_id in ("#exec_output", "#exec_events"):
+        for log_id in ("#exec_output", "#exec_diagnostics"):
             try:
                 self.query_one(log_id, RichLog).can_focus = False
             except Exception:
@@ -200,9 +200,9 @@ class ExecutionScreen(Screen[None]):
             except Exception:
                 pass
             self._pending_output.clear()
-        for event, data in self._pending_events:
-            self._write_event_line(event, data)
-        self._pending_events.clear()
+        for event, data in self._pending_diagnostics:
+            self._write_diagnostic_line(event, data)
+        self._pending_diagnostics.clear()
         if self._pending_footer is not None:
             try:
                 self.query_one("#exec_footer", Static).update(self._pending_footer)
@@ -222,8 +222,9 @@ class ExecutionScreen(Screen[None]):
             except Exception:
                 pass
         try:
-            self.query_one("#exec_events", RichLog).write(
-                "No events yet. Circuit / retry / model-switch events appear here."
+            self.query_one("#exec_diagnostics", RichLog).write(
+                "No diagnostics yet. Retries, cooldowns, model switches, "
+                "and circuit events appear here."
             )
         except Exception:
             pass
@@ -251,7 +252,7 @@ class ExecutionScreen(Screen[None]):
     # ── Renderer hooks ─────────────────────────────────────────────────
 
     def push_output_line(self, line: str) -> None:
-        """Append a provider output line to the Live Output tab."""
+        """Append a provider output line to the Live tab."""
         # Update last-activity timestamp whenever output arrives.
         self._details["last_activity"] = datetime.now().strftime("%H:%M:%S")
         try:
@@ -270,20 +271,29 @@ class ExecutionScreen(Screen[None]):
         log.write(line)
 
     def push_event_line(self, event: str, data: dict[str, object] | None = None) -> None:
-        """Append an execution event to the Events tab."""
+        """Append an operational event to the Diagnostics tab."""
         try:
-            self.query_one("#exec_events", RichLog)
+            self.query_one("#exec_diagnostics", RichLog)
         except Exception:
-            self._pending_events.append((event, data))
+            self._pending_diagnostics.append((event, data))
             return
-        self._write_event_line(event, data)
+        self._write_diagnostic_line(event, data)
 
-    def _write_event_line(self, event: str, data: dict[str, object] | None) -> None:
+    def _write_diagnostic_line(self, event: str, data: dict[str, object] | None) -> None:
         try:
-            log = self.query_one("#exec_events", RichLog)
+            log = self.query_one("#exec_diagnostics", RichLog)
             now = datetime.now().strftime("%H:%M:%S")
             payload = " ".join(f"{k}=[cyan]{v}[/cyan]" for k, v in (data or {}).items())
             log.write(f"[dim]{now}[/dim]  [#7cc800]{event}[/#7cc800]  {payload}")
+        except Exception:
+            pass
+
+    def update_progress_tasks(self, tasks: list[dict[str, str]]) -> None:
+        """Replace the Progress tab's task overview and refresh it."""
+        self._progress_tasks = tasks
+        try:
+            static = self.query_one("#exec_progress_text", Static)
+            static.update(self._render_progress())
         except Exception:
             pass
 
@@ -297,7 +307,7 @@ class ExecutionScreen(Screen[None]):
         footer.update(text)
 
     def update_details(self, **fields: str) -> None:
-        """Merge fields into the Status tab and refresh the animated title."""
+        """Merge run metadata into the Progress tab and refresh the title."""
         self._details.update({k: v for k, v in fields.items() if v is not None})
         # Also update the task badge in the header row.
         try:
@@ -308,8 +318,8 @@ class ExecutionScreen(Screen[None]):
         except Exception:
             pass
         try:
-            static = self.query_one("#exec_details_text", Static)
-            static.update(self._render_details())
+            static = self.query_one("#exec_progress_text", Static)
+            static.update(self._render_progress())
         except Exception:
             pass
         # Refresh the animated title so it shows the new task label immediately.
@@ -336,7 +346,7 @@ class ExecutionScreen(Screen[None]):
 
     # ── Internal ──────────────────────────────────────────────────────
 
-    def _render_details(self) -> str:
+    def _render_progress(self) -> str:
         d = self._details
         task = d.get("task", "(waiting)")
         phase = d.get("phase", "idle")
@@ -346,24 +356,30 @@ class ExecutionScreen(Screen[None]):
         last_activity = d.get("last_activity", "—")
         current_op = d.get("current_op", "")
 
+        total = len(self._progress_tasks)
+        done = sum(1 for item in self._progress_tasks if item.get("status") == "done")
+        failed = sum(1 for item in self._progress_tasks if item.get("status") == "failed")
+        running = sum(1 for item in self._progress_tasks if item.get("status") == "running")
+        pending = max(total - done - failed - running, 0)
+
         lines = [
-            "[$accent][bold]Agent Status[/bold][/$accent]",
+            "[#7cc800][bold]Run Progress[/bold][/#7cc800]",
             "",
         ]
 
         # Phase badge
         phase_colour = {
-            "executing": "$accent",
+            "executing": "#7cc800",
             "starting": "yellow",
             "cooldown": "yellow",
             "replanning": "yellow",
-            "replan_done": "$accent",
-            "resumed": "$accent",
+            "replan_done": "#7cc800",
+            "resumed": "#7cc800",
             "idle": "dim",
         }.get(phase, "dim")
-        lines.append(f"  Phase        [{phase_colour}]{phase}[/{phase_colour}]")
+        lines.append(f"  Now          [{phase_colour}]{phase}[/{phase_colour}]")
 
-        lines.append(f"  Task         [bold]{task}[/bold]")
+        lines.append(f"  Current      [bold]{task}[/bold]")
         if attempt:
             lines.append(f"  Attempt      {attempt}")
         if model and model not in ("", "—"):
@@ -375,11 +391,42 @@ class ExecutionScreen(Screen[None]):
         if last_activity and last_activity != "—":
             lines.append(f"  Last output  [dim]{last_activity}[/dim]")
 
+        if total:
+            lines += [
+                "",
+                f"  Tasks        {done}/{total} done  ·  {running} running  ·  "
+                f"{pending} pending  ·  {failed} failed",
+                "",
+            ]
+            for item in self._progress_tasks:
+                prefix = item.get("prefix", "")
+                title = item.get("title", "")
+                status = item.get("status", "pending")
+                colour = {
+                    "running": "yellow",
+                    "done": "#7cc800",
+                    "failed": "red",
+                    "skipped": "dim",
+                    "pending": "dim",
+                }.get(status, "dim")
+                marker = ">" if status == "running" else " "
+                status_label = status.upper()
+                task_line = (
+                    f"  {marker} [{colour}]{prefix:<4} {status_label:<8}[/{colour}] "
+                    f"[dim]{title}[/dim]"
+                )
+                lines.append(task_line)
+        else:
+            lines += [
+                "",
+                "  [dim]Task list will appear when execution starts.[/dim]",
+            ]
+
         lines += [
             "",
             "[dim]─────────────────────────────[/dim]",
             "",
-            "[dim]Tabs:  [o] Live Output  [e] Events  [s] Status[/dim]",
+            "[dim]Tabs:  [l] Live  [p] Progress  [d] Diagnostics[/dim]",
             "[dim]Keys:  Esc = pause menu  ·  Ctrl+C = stop[/dim]",
         ]
         return "\n".join(lines)
