@@ -18,6 +18,27 @@ empty [Unreleased] above it. Use Keep a Changelog section headings:
 Added / Changed / Deprecated / Removed / Fixed / Security.
 -->
 
+## [1.2.2] (build 10236) — 2026-05-06
+
+### Fixed
+
+- Persistent mode now consistently applies its intended execution settings when
+  enabled from config or the setup UI, including 30 task retries and 2
+  retrospective rounds.
+
+### Changed
+
+- Execution agents now receive stronger verification requirements, including
+  focused tests, broader validation for shared behavior, UI/TUI checks where
+  practical, and local project setup when needed for existing test tooling.
+- Project memory is clearer and more useful: `ARCHITECT.md` owns durable
+  project-level knowledge such as tech stack, component ownership, code
+  locations, commands, constraints, best practices, and durable lessons.
+- Current-run handoffs are better separated: `tasks/INSTRUCTIONS.md` now focuses
+  on the active goal's cross-task context, while `PROGRESS.md` captures real
+  progress, missing work, verification results, lessons learned, and notes for
+  the next task agent.
+
 ## [1.2.1] (build 10231) — 2026-05-06
 
 ### Added

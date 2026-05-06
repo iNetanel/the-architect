@@ -261,6 +261,18 @@ PROGRESS_TEMPLATE = """\
 
 ---
 
+## Lessons Learned
+
+- _No lessons recorded yet._
+
+---
+
+## Missing / Follow-up Notes
+
+- _No missing work or follow-up notes recorded yet._
+
+---
+
 ## Permanent Decisions
 
 | Decision | Value | Reason | Task |

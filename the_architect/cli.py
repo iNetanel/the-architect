@@ -155,6 +155,20 @@ def _provider_has_any_models() -> bool:
 _opencode_has_any_models = _provider_has_any_models
 
 
+_PERSISTENT_MAX_RETRIES = 30
+_PERSISTENT_RETROSPECTIVE_ROUNDS = 2
+
+
+def _apply_persistent_mode(config: ArchitectConfig, enabled: bool | None = None) -> None:
+    """Apply persistent-mode derived settings to a runtime config."""
+    if enabled is not None:
+        config.persistent = enabled
+
+    if config.persistent:
+        config.max_retries = _PERSISTENT_MAX_RETRIES
+        config.retrospective_rounds = _PERSISTENT_RETROSPECTIVE_ROUNDS
+
+
 def _filter_and_set_status(tasks: list[Task], progress_file: Path) -> list[Task]:
     """Return tasks with their status mirrored from PROGRESS.md (read-only, no mutation).
 
@@ -2898,7 +2912,7 @@ _opencode_install_hint = _provider_install_hint
 @click.option(
     "--persistent",
     is_flag=True,
-    help="Persistent mode: retry up to 50 times with 2 retrospective rounds",
+    help="Persistent mode: retry up to 30 times with 2 retrospective rounds",
 )
 @click.option(
     "--free",
@@ -3504,9 +3518,7 @@ def main(
                         config.token_budget_per_hour = modes["token_budget_per_hour"]
 
             if persistent:
-                config.persistent = True
-                config.max_retries = 30
-                config.retrospective_rounds = 2
+                _apply_persistent_mode(config, True)
 
             if free_mode:
                 config.free_mode = True
@@ -3636,7 +3648,7 @@ def _run_main(
     - The reviewer finds no issues (no new tasks created)
 
     With ``--persistent``:
-    - ``max_retries`` is raised to 50 (persistence wins)
+    - ``max_retries`` is raised to 30 (persistence wins)
     - ``retrospective_rounds`` is set to 2 (deeper review)
 
     With ``--free``:
@@ -3744,9 +3756,7 @@ def _run_main(
                     config.token_budget_per_hour = modes["token_budget_per_hour"]
 
         if persistent:
-            config.persistent = True
-            config.max_retries = 30
-            config.retrospective_rounds = 2
+            _apply_persistent_mode(config, True)
 
         if free_mode:
             config.free_mode = True
@@ -3951,9 +3961,7 @@ def _run_main(
                 config.force_reassessment = bool(
                     resume.get("force_reassessment", config.force_reassessment)
                 )
-                if persistent:
-                    config.max_retries = 30
-                    config.retrospective_rounds = 2
+                _apply_persistent_mode(config)
 
                 config.token_budget_per_hour = int(resume.get("token_budget_per_hour") or 0)
 
@@ -3972,6 +3980,8 @@ def _run_main(
                         "architect_model": architect_model,
                     },
                 )
+
+    _apply_persistent_mode(config)
 
     # Warn if tasks/INSTRUCTIONS.md is missing — not fatal, just informational
     instructions_md = tasks_dir / "INSTRUCTIONS.md"

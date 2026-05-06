@@ -25,6 +25,29 @@ def test_architect_prompt_requires_bounded_exploration_plans() -> None:
     assert "record the final contract in PROGRESS.md" in prompt
 
 
+def test_architect_prompt_requires_memory_enrichment() -> None:
+    """Architect prompt should require durable project intelligence updates."""
+    from the_architect.resources import get_prompt
+
+    prompt = get_prompt("architect.md")
+    assert "Minimum ARCHITECT.md enrichment contract" in prompt
+    assert "Each repo/component's mission, ownership boundary, and authority" in prompt
+    assert "Build, test, lint, typecheck, run, preview" in prompt
+    assert "what not to do" in prompt
+    assert "ARCHITECT.md is project-level memory, not current-goal memory" in prompt
+
+
+def test_architect_prompt_requires_goal_specific_instructions() -> None:
+    """Architect prompt should keep INSTRUCTIONS.md focused on the current goal."""
+    from the_architect.resources import get_prompt
+
+    prompt = get_prompt("architect.md")
+    assert "Goal-Specific INSTRUCTIONS.md" in prompt
+    assert "current task package only" in prompt
+    assert "do not duplicate project-level memory" in prompt
+    assert "Cross-task dependencies" in prompt
+
+
 def test_execution_protocol_loads() -> None:
     """Verify execution protocol prompt loads correctly."""
     from the_architect.resources import get_prompt
@@ -44,6 +67,18 @@ def test_execution_protocol_requires_focused_codebase_discovery() -> None:
     assert "smallest relevant part of the codebase" in prompt
     assert "Do not perform broad, unfocused repo exploration" in prompt
     assert "record the final contract in PROGRESS.md" in prompt
+
+
+def test_execution_protocol_requires_strong_verification() -> None:
+    """Execution protocol should forbid assumed success and require UI checks."""
+    from the_architect.resources import get_prompt
+
+    prompt = get_prompt("execution-protocol.md")
+    assert "Verification Discipline" in prompt
+    assert "Do not assume anything works" in prompt
+    assert "If a required verification tool or dependency is missing" in prompt
+    assert "UI and Frontend Changes" in prompt
+    assert "leave the task Pending if the unverified behaviour is central" in prompt
 
 
 def test_reviewer_prompt_reviews_outcomes_not_suggested_implementation() -> None:

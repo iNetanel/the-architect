@@ -61,6 +61,29 @@ class TestMoreHelperFunctions:
 
         assert _truncate_goal_for_display("one\n\n two\tthree") == "one two three"
 
+    def test_apply_persistent_mode_from_config(self) -> None:
+        """Persistent config should imply persistent runtime settings."""
+        from the_architect.cli import _apply_persistent_mode
+
+        config = ArchitectConfig(persistent=True)
+
+        _apply_persistent_mode(config)
+
+        assert config.max_retries == 30
+        assert config.retrospective_rounds == 2
+
+    def test_apply_persistent_mode_from_flag(self) -> None:
+        """Persistent flag should enable and apply persistent runtime settings."""
+        from the_architect.cli import _apply_persistent_mode
+
+        config = ArchitectConfig()
+
+        _apply_persistent_mode(config, True)
+
+        assert config.persistent is True
+        assert config.max_retries == 30
+        assert config.retrospective_rounds == 2
+
     def test_ansi_supported_no_tty(self) -> None:
         """Should return False when stdout is not a TTY."""
         from the_architect.cli import _ansi_supported
@@ -1658,6 +1681,60 @@ class TestRunMainExecution:
             assert config.persistent is True
             assert config.max_retries == 30
             assert config.retrospective_rounds == 2
+
+    def test_run_main_config_persistent_applies_runtime_settings(self, tmp_path: Path) -> None:
+        """Config-file persistent mode should affect execution settings."""
+        from the_architect.cli import _run_main
+        from the_architect.core.retrospective import RetrospectiveResult
+
+        mock_task = Task(
+            name="T01_test",
+            prefix="T01",
+            number=1,
+            path=tmp_path / "T01_test.md",
+            title="Test task",
+            status=TaskStatus.PENDING,
+        )
+        config = ArchitectConfig(persistent=True)
+        seen_configs: list[ArchitectConfig] = []
+
+        async def _fake_run_tasks(
+            *args: object, **kwargs: object
+        ) -> tuple[bool, list[TaskResult], float]:
+            seen_configs.append(args[1])  # type: ignore[arg-type]
+            return (True, [], 1.0)
+
+        mock_retro_result = RetrospectiveResult(
+            issues_found=0,
+            fixes_planned=0,
+            tasks_created=[],
+            summary="No issues found",
+        )
+
+        async def _fake_retrospective(*args: object, **kwargs: object) -> RetrospectiveResult:
+            return mock_retro_result
+
+        with (
+            patch("the_architect.cli.discover_tasks", return_value=[mock_task]),
+            patch("the_architect.cli._filter_and_set_status", return_value=[mock_task]),
+            patch("the_architect.cli._run_tasks_raw", side_effect=_fake_run_tasks),
+            patch("the_architect.cli.run_retrospective", new=_fake_retrospective),
+            patch("the_architect.cli.write_success_md"),
+            patch("the_architect.cli.print_success_summary"),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                _run_main(
+                    project=tmp_path,
+                    plan=False,
+                    headless=True,
+                    _pre_loaded_config=config,
+                )
+
+        assert exc_info.value.code == 0
+        assert seen_configs
+        assert seen_configs[0].persistent is True
+        assert seen_configs[0].max_retries == 30
+        assert seen_configs[0].retrospective_rounds == 2
 
     def test_run_main_all_selected_done(self, tmp_path: Path) -> None:
         """Should print message when all selected tasks are already done."""

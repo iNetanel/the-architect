@@ -18,7 +18,7 @@ from the_architect.core.architect_md import (
     update_structure_section,
     write_or_update_architect_md,
 )
-from the_architect.core.structure import RepoType, StructureReport
+from the_architect.core.structure import Component, Dependency, RepoType, StructureReport
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -287,6 +287,77 @@ class TestWriteOrUpdateArchitectMd:
         content = read_architect_md(tmp_path)
         assert content is not None
         assert "Keep this" in content
+
+    def test_enriches_durable_sections_from_structure_report(self, tmp_path: Path) -> None:
+        """Detected component facts should populate durable memory sections."""
+        report = StructureReport(
+            repo_type=RepoType.MONOREPO,
+            components=[
+                Component(
+                    path="frontend/",
+                    language="TypeScript",
+                    framework="Next.js",
+                    role="Web UI",
+                    description="Customer web application",
+                    key_deps=["next", "react"],
+                    test_command="npm test",
+                    lint_command="npm run lint",
+                ),
+                Component(
+                    path="backend/",
+                    language="Python",
+                    framework="FastAPI",
+                    role="API server",
+                    description="HTTP API",
+                    key_deps=["fastapi", "pydantic"],
+                    test_command="pytest tests/ -v --tb=short",
+                ),
+            ],
+            dependencies=[
+                Dependency("frontend/", "backend/", "docker-compose depends_on"),
+            ],
+            shared_resources=["docker-compose.yml — wires services"],
+        )
+
+        write_or_update_architect_md(tmp_path, report)
+
+        content = read_architect_md(tmp_path) or ""
+        assert "Auto-Detected Project Intelligence" in content
+        assert "`frontend/` — TypeScript · Next.js · Web UI" in content
+        assert "mission: Customer web application" in content
+        assert "test `npm test`" in content
+        assert "frontend/ → backend/" in content
+        assert "docker-compose.yml" in content
+        assert "_No durable tech stack notes recorded yet._" not in content
+
+    def test_enrichment_refreshes_auto_block_without_dropping_manual_notes(
+        self, tmp_path: Path
+    ) -> None:
+        """Auto-detected memory should refresh without duplicating or removing notes."""
+        first = StructureReport(
+            repo_type=RepoType.SINGLE_REPO,
+            components=[Component(path="api/", language="Python", framework="Flask")],
+        )
+        second = StructureReport(
+            repo_type=RepoType.SINGLE_REPO,
+            components=[Component(path="api/", language="Python", framework="FastAPI")],
+        )
+        write_or_update_architect_md(tmp_path, first)
+        arch_md = tmp_path / "ARCHITECT.md"
+        content = arch_md.read_text(encoding="utf-8")
+        content = content.replace(
+            "## Tech Stack\n\n",
+            "## Tech Stack\n\n- Manual note: Python services use typed models.\n\n",
+            1,
+        )
+        arch_md.write_text(content, encoding="utf-8")
+
+        write_or_update_architect_md(tmp_path, second)
+
+        updated = arch_md.read_text(encoding="utf-8")
+        assert "Manual note: Python services use typed models" in updated
+        assert "FastAPI" in updated
+        assert updated.count("### Auto-Detected Project Intelligence") == 6
 
 
 # ---------------------------------------------------------------------------

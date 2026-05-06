@@ -725,6 +725,46 @@ class TestWriteInstructionsMd:
         assert "Build app" in written
         assert "T01" in written
 
+    def test_write_instructions_are_goal_specific_not_architect_snapshot(
+        self, tmp_path: Path
+    ) -> None:
+        """Generated instructions should avoid duplicating ARCHITECT.md memory."""
+        from the_architect.core.tasks import Task
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        instructions_file = tasks_dir / "INSTRUCTIONS.md"
+        (tmp_path / "ARCHITECT.md").write_text(
+            "# ARCHITECT.md\n\n"
+            "## Project Overview\n\n- Customer platform.\n\n"
+            "## Tech Stack\n\n- `frontend/`: TypeScript · Next.js.\n\n"
+            "## Code Locations\n\n- `frontend/` — mission: Web UI.\n",
+            encoding="utf-8",
+        )
+        tasks = [
+            Task(
+                name="T01_init",
+                prefix="T01",
+                number=1,
+                path=tasks_dir / "T01_init.md",
+                status="pending",
+                title="Initialize project",
+            )
+        ]
+
+        _write_instructions_md(instructions_file, "Build app", tasks, None)
+
+        written = instructions_file.read_text(encoding="utf-8")
+        assert "Goal-Specific Plan" in written
+        assert "Cross-Task Context" in written
+        assert "Goal-Specific Contracts" in written
+        assert "Do not duplicate project-level notes from ARCHITECT.md" in written
+        assert "Progress Memory" in written
+        assert "what is missing" in written
+        assert "Customer platform" not in written
+        assert "TypeScript" not in written
+        assert "mission: Web UI" not in written
+
 
 class TestCheckPendingTasks:
     """Tests for check_pending_tasks() (lines 765-778)."""

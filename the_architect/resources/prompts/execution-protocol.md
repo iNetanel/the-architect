@@ -176,6 +176,21 @@ What you did, what changed, what decisions you made.
 
 ---
 
+## Lessons Learned
+
+- Durable lessons discovered during execution, especially mistakes, missing
+  assumptions, flaky commands, environment constraints, or verification gotchas
+  that the next agent should not rediscover.
+
+---
+
+## Missing / Follow-up Notes
+
+- Anything still incomplete, unverified, risky, blocked, or important for the
+  next task agent to know. If nothing is missing, say so explicitly.
+
+---
+
 ## Permanent Decisions
 
 | Decision | Value | Reason | Task |
@@ -191,6 +206,9 @@ What you did, what changed, what decisions you made.
 - Leave other tasks' rows unchanged
 - Update `Current State` and `Last Task Summary`
 - Preserve the `## Task Outcomes` table — copy all existing rows when rewriting; do NOT drop them
+- Update `## Lessons Learned` with real lessons from this task; preserve existing lessons
+- Update `## Missing / Follow-up Notes` with gaps, unverified areas, risks, blockers,
+  or information the next agent needs; say explicitly when nothing is missing
 
 ---
 
@@ -224,6 +242,56 @@ Ensure every sub-task is completed. Do not skip any. If a sub-task depends on a 
 one that was not completed, note it in your summary but continue with what
 you can do. If the task omits implementation details, that is intentional — use
 focused codebase discovery to choose the correct local implementation.
+
+---
+
+## Verification Discipline — No Assumed Success
+
+Do not assume anything works. You must prove it with the strongest practical
+verification available for the project and the task.
+
+Before marking Done:
+
+1. Identify the relevant verification commands from project docs, package
+   scripts, Makefiles, CI config, or existing tests.
+2. Run focused tests for the code you changed.
+3. Run broader validation when the change affects shared behaviour, public APIs,
+   build configuration, routing, state management, or UI flows.
+4. Run lint/typecheck/build commands when the project provides them and they are
+   relevant to the changed area.
+5. Read the command output and fix failures. A command that starts but reports
+   failures is not a pass.
+
+If a required verification tool or dependency is missing, do not skip testing by
+default. Use the project's package manager and documented setup commands to
+install what is needed when it is safe and local to the project. Examples:
+`npm install`, `pnpm install`, `pip install -e .`, `pip install -r requirements.txt`,
+or browser/test tooling such as Playwright dependencies when the repo already uses
+that stack. Do not add new runtime dependencies just to make testing easier unless
+the task requires them; if you add or install anything, record what you did in
+PROGRESS.md and include it in your final verification summary.
+
+### UI and Frontend Changes
+
+UI work is especially easy to complete only partially. For UI, frontend, TUI, or
+visual interaction tasks, do the best practical verification available instead of
+stopping at typechecks:
+
+- Run component/unit tests, browser/E2E tests, snapshot tests, or TUI tests when
+  the project has them.
+- Run the frontend build or app compile step when available.
+- If the project supports a local dev server or preview command, start it long
+  enough to verify the changed route/screen/component loads without errors.
+- Exercise the relevant interaction path manually or with an automated test when
+  tools are available: navigation, forms, toggles, keyboard focus, responsive
+  layout, loading/error/empty states, and accessibility-relevant behaviour.
+- For terminal UIs, verify screen construction, key bindings, focus movement,
+  and update/render paths through tests or a smoke run.
+
+If full UI verification is impossible in the environment, still run every
+available lower-level check, document exactly what could not be verified and why,
+leave the task Pending if the unverified behaviour is central to the task, and do
+not output the promise tag unless the remaining gap is clearly non-blocking.
 
 ---
 

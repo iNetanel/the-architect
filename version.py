@@ -16,8 +16,8 @@
 #   v2.0.0  build 20000+
 #   v3.0.0  build 30000+
 #
-# PyPI shows : 1.2.1
-# CLI shows  : The Architect v1.2.1 (build 10231)
+# PyPI shows : 1.2.2
+# CLI shows  : The Architect v1.2.2 (build 10236)
 #
 # To release:
 #   1. Bump __version__ here and version in pyproject.toml
@@ -34,8 +34,8 @@
 # If using an AI agent to contribute, instruct it to increment __build__
 # for every file operation it performs. This is the intended workflow.
 
-__version__ = "1.2.1"
-__build__ = 10231
+__version__ = "1.2.2"
+__build__ = 10236
 __author__ = "Netanel Eliav"
 __email__ = "inetanel@me.com"
 __repo__ = "https://github.com/inetanel/the-architect"

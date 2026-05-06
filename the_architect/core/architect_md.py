@@ -43,7 +43,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from the_architect.core.structure import StructureReport, format_structure_report
+from the_architect.core.structure import Component, StructureReport, format_structure_report
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -58,6 +58,7 @@ _DECISIONS_START = "## Permanent Decisions"
 _CONSTRAINTS_START = "## Known Constraints"
 _LESSONS_START = "## Lessons Learned"
 _BEST_PRACTICES_START = "## Best Practices"
+_AUTO_INTELLIGENCE_HEADING = "### Auto-Detected Project Intelligence"
 
 
 # ---------------------------------------------------------------------------
@@ -452,6 +453,174 @@ def update_structure_section(project_dir: Path, structure_section: str) -> None:
     logger.debug("Updated ARCHITECT.md repository map section")
 
 
+def enrich_from_structure_report(project_dir: Path, report: StructureReport) -> None:
+    """Promote detected repository facts into durable ARCHITECT.md sections.
+
+    The Repository Map is comprehensive but easy to miss. This enrichment keeps
+    high-value facts in the semantic sections humans and agents scan first.
+
+    Args:
+        project_dir: The project root directory.
+        report: The current structure detection report.
+    """
+    path = project_dir / ARCHITECT_MD_FILE
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError:
+        return
+
+    sections = parse_sections(content)
+    if not sections:
+        return
+
+    generated = _generated_intelligence_sections(report)
+    for section_name, block in generated.items():
+        existing = sections.get(section_name, _STANDARD_SECTION_DEFAULTS.get(section_name, ""))
+        sections[section_name] = _upsert_auto_intelligence_block(existing, block)
+
+    _atomic_write(path, _rebuild_architect_md(sections, content))
+
+
+def _all_components(report: StructureReport) -> list[Component]:
+    """Return all top-level and nested components in stable order."""
+    result: list[Component] = []
+
+    def visit(component: Component) -> None:
+        result.append(component)
+        for child in component.sub_components:
+            visit(child)
+
+    for component in report.components:
+        visit(component)
+    return result
+
+
+def _component_label(component: Component) -> str:
+    """Return a compact component label for generated memory sections."""
+    details = [item for item in (component.language, component.framework, component.role) if item]
+    suffix = f" — {' · '.join(details)}" if details else ""
+    return f"`{component.path}`{suffix}"
+
+
+def _generated_intelligence_sections(report: StructureReport) -> dict[str, str]:
+    """Build deterministic project-memory blocks from a structure report."""
+    components = _all_components(report)
+    component_count = len(components)
+    component_word = "component" if component_count == 1 else "components"
+
+    overview = [
+        f"- Project shape: {report.repo_type.value} with {component_count} detected "
+        f"{component_word}.",
+        "- Treat the Repository Map as the source of truth for detected paths, "
+        "dependencies, and verification commands; this section is refreshed on each plan.",
+    ]
+
+    tech_stack: list[str] = []
+    code_locations: list[str] = []
+    verification: list[str] = []
+    architecture: list[str] = []
+
+    if components:
+        architecture.append(
+            "- Component authority: each component owns implementation under its path; "
+            "cross-component behavior should be coordinated through explicit contracts or "
+            "integration tasks."
+        )
+        for component in components:
+            tech_bits = [item for item in (component.language, component.framework) if item]
+            if component.key_deps:
+                tech_bits.append("stack: " + ", ".join(component.key_deps[:8]))
+            if tech_bits:
+                tech_stack.append(f"- {_component_label(component)}: {'; '.join(tech_bits)}.")
+
+            mission = component.description or component.role or "detected project component"
+            code_locations.append(
+                f"- `{component.path}` — mission: {mission}; authority: files and behavior "
+                "inside this path unless a task states a cross-component contract."
+            )
+
+            commands = []
+            if component.test_command:
+                commands.append(f"test `{component.test_command}`")
+            if component.lint_command:
+                commands.append(f"lint `{component.lint_command}`")
+            if commands:
+                verification.append(f"- `{component.path}`: {'; '.join(commands)}.")
+
+    if report.dependencies:
+        architecture.append("- Detected component dependencies:")
+        architecture.extend(f"  - {dependency}" for dependency in report.dependencies)
+    elif components:
+        architecture.append(
+            "- No explicit inter-component dependencies were detected automatically."
+        )
+
+    operational: list[str] = []
+    if report.shared_resources:
+        architecture.append("- Shared resources detected at the project boundary:")
+        architecture.extend(f"  - {resource}" for resource in report.shared_resources)
+        operational.extend(
+            f"- Shared resource: {resource}." for resource in report.shared_resources
+        )
+
+    if not tech_stack:
+        tech_stack.append("- No language/framework signal files were detected automatically.")
+    if not code_locations:
+        code_locations.append("- No component directories were detected automatically.")
+    if not verification:
+        verification.append(
+            "- No test or lint commands were detected automatically; inspect project docs, "
+            "package scripts, Makefiles, and CI before marking work complete."
+        )
+    if not operational:
+        operational.append(
+            "- Stay inside the project root and follow component ownership boundaries unless "
+            "the task explicitly requires integration work."
+        )
+
+    return {
+        "Project Overview": "\n".join(overview),
+        "Tech Stack": "\n".join(tech_stack),
+        "Architecture": "\n".join(architecture),
+        "Code Locations": "\n".join(code_locations),
+        "Build, Test, and Verification": "\n".join(verification),
+        "Operational Constraints": "\n".join(operational),
+    }
+
+
+def _remove_auto_intelligence_block(body: str) -> str:
+    """Remove the generated intelligence block from a section body."""
+    lines = body.splitlines()
+    kept: list[str] = []
+    skipping = False
+
+    for line in lines:
+        if line.strip() == _AUTO_INTELLIGENCE_HEADING:
+            skipping = True
+            continue
+        if skipping and line.startswith("### "):
+            skipping = False
+        if not skipping:
+            kept.append(line)
+
+    return "\n".join(kept).strip()
+
+
+def _upsert_auto_intelligence_block(body: str, block: str) -> str:
+    """Replace the generated block while preserving human/agent notes."""
+    cleaned = _remove_auto_intelligence_block(body)
+    cleaned_lines = [
+        line
+        for line in cleaned.splitlines()
+        if not (line.strip().startswith("- _No ") and line.strip().endswith("recorded yet._"))
+    ]
+    cleaned = "\n".join(cleaned_lines).strip()
+
+    parts = [cleaned] if cleaned else []
+    parts.extend([_AUTO_INTELLIGENCE_HEADING, "", block.strip()])
+    return "\n\n".join(part for part in parts if part).strip()
+
+
 def _clean_section_body(body: str) -> str:
     """Strip leading/trailing blank lines and stray ``---`` dividers from a section body.
 
@@ -811,5 +980,7 @@ def write_or_update_architect_md(
         update_structure_section(project_dir, structure_section)
     else:
         create_architect_md(project_dir, structure_section)
+
+    enrich_from_structure_report(project_dir, report)
 
     return path

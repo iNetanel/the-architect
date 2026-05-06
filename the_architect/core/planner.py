@@ -528,12 +528,15 @@ def build_planning_instruction(request: PlanningRequest, context: str) -> str:
             "IMPORTANT: Any 'Previous Plan History' in the context above is from a "
             "PREVIOUS planning session.",
             "You are creating a NEW plan for a NEW goal. Do NOT continue the old plan.",
-            "You MUST write fresh PROGRESS.md and tasks/INSTRUCTIONS.md — "
-            "overwrite any existing files.",
+            "The Architect tool will write fresh PROGRESS.md after you create task files.",
             "",
-            "YOUR ONLY JOB: Write task files. "
-            "The Architect will handle PROGRESS.md and INSTRUCTIONS.md itself.",
-            "Do NOT write PROGRESS.md. Do NOT write INSTRUCTIONS.md. Write task files only.",
+            "YOUR REQUIRED OUTPUTS: write task files, write goal-specific tasks/INSTRUCTIONS.md, "
+            "and curate ARCHITECT.md durable project intelligence.",
+            "Do NOT write PROGRESS.md.",
+            "tasks/INSTRUCTIONS.md is the current goal's cross-task contract: include sequence, "
+            "dependencies, goal-specific assumptions, shared contracts expected during this run, "
+            "verification strategy, boundaries, and what later task agents must read from "
+            "PROGRESS.md. Do NOT duplicate ARCHITECT.md project-level knowledge there.",
             "",
             "ABOUT ARCHITECT.md:",
             "  ARCHITECT.md is durable project intelligence, not run history.",
@@ -683,8 +686,14 @@ def _write_progress_md(progress_file: Path, tasks: list[Task]) -> None:
         tasks_completed=0,
         next_task=first_prefix,
         task_rows=rows + "\n",
-        current_state="Planning complete. Ready to execute.",
-        last_summary="",
+        current_state=(
+            f"Planning complete. {len(tasks)} task(s) created; next agent should start "
+            f"with {first_prefix}, read ARCHITECT.md, then update this file with real progress."
+        ),
+        last_summary=(
+            "No execution work has run yet. Future task agents must record what changed, "
+            "what was verified, what is missing, and any lessons learned."
+        ),
     )
 
     progress_file.parent.mkdir(parents=True, exist_ok=True)
@@ -726,31 +735,59 @@ def _write_instructions_md(
         logger.info("tasks/INSTRUCTIONS.md written by architect — kept as-is")
         return
 
-    # Architect either skipped it or wrote it somewhere else — generate one.
+    # Architect either skipped it or wrote it somewhere else — generate a
+    # goal-specific fallback. Do not duplicate ARCHITECT.md here; executors read
+    # both files, and ARCHITECT.md owns durable project-level intelligence.
     rows = "\n".join(f"| {t.prefix} | {t.title or t.name} | — |" for t in tasks)
+    sequence = "\n".join(
+        f"{idx}. `{t.prefix}` — {t.title or t.name}" for idx, t in enumerate(tasks, start=1)
+    )
     content = (
         "# The Architect — Project Instructions\n\n"
         "## Goal\n"
         f"{goal}\n\n"
-        "## Persistent Intelligence\n"
-        "Read ARCHITECT.md for accumulated project knowledge: permanent decisions, "
-        "known constraints, lessons learned, and best practices.\n\n"
-        "## Stack\n"
-        "<!-- Infer from project files -->\n\n"
-        "## Architecture\n"
-        "<!-- Key decisions and folder structure -->\n\n"
-        "## Conventions\n"
-        "<!-- Naming, style, testing approach -->\n\n"
-        "## Constraints\n"
-        "<!-- Hard limits the build agent must respect -->\n\n"
+        "## Goal-Specific Plan\n"
+        "This file is the run-level contract for the current goal. ARCHITECT.md owns "
+        "durable project knowledge; this file owns cross-task context, sequencing, "
+        "goal-specific assumptions, and handoff expectations for this task package.\n\n"
+        f"{sequence}\n\n"
+        "## Cross-Task Context\n"
+        "- Execute tasks in order unless PROGRESS.md or a reassessment changes the next task.\n"
+        "- Treat each completed task's PROGRESS.md outcome as the source of truth for "
+        "newly finalized contracts, missing work, and downstream impact.\n"
+        "- Do not duplicate project-level notes from ARCHITECT.md here; refer to it for "
+        "stack, component authority, commands, best practices, and constraints.\n\n"
+        "## Goal-Specific Contracts\n"
+        "- Contracts finalized during this run must be recorded in PROGRESS.md by the "
+        "task that finalizes them so later tasks use the real names and shapes.\n"
+        "- If no contract is finalized yet, later tasks must inspect current code and "
+        "previous task outcomes before inventing names or fields.\n\n"
+        "## Boundaries For This Run\n"
+        "- Stay focused on the current goal. Do not opportunistically refactor unrelated "
+        "systems or expand scope beyond the task package.\n"
+        "- Use ARCHITECT.md for project-level rules, but record goal-specific deviations "
+        "or temporary constraints in PROGRESS.md.\n\n"
+        "## Progress Memory\n"
+        "PROGRESS.md is the handoff between task agents. It must record real progress, "
+        "what changed, what is missing, lessons learned, verification output, and any "
+        "facts the next task needs. Do not use it as a vague completion note.\n\n"
+        "## Verification For This Run\n"
+        "- Each task must run the most relevant checks for its changed area.\n"
+        "- Cross-task or integration changes must include broader validation once the "
+        "dependent pieces exist.\n"
+        "- If verification discovers a project-level command or constraint missing from "
+        "ARCHITECT.md, update ARCHITECT.md before marking the task Done.\n\n"
         "## Execution Contract\n"
         "- Read `ARCHITECT.md` for durable project intelligence before making changes.\n"
         "- Read `PROGRESS.md` at the start of every task to understand current state, "
-        "last outcome, and downstream impact notes.\n"
+        "last outcome, missing work, lessons, and downstream impact notes.\n"
+        "- Read this file for the current goal's task sequence and cross-task rules.\n"
         "- Treat completed tasks as historical context; do not redo them unless "
         "the current task explicitly requires a correction.\n"
         "- When a task changes architecture, contracts, or assumptions for later tasks, "
         "record that clearly in `PROGRESS.md` so follow-up planning can adjust.\n"
+        "- If you discover durable repo knowledge, add it to `ARCHITECT.md` before "
+        "marking the task Done.\n"
         "- Verify the task with the smallest correct set of checks before marking it done.\n\n"
         "## Reassessment Rules\n"
         "- Remaining tasks may be refined after each completed task when new facts "
