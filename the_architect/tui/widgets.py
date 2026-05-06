@@ -214,29 +214,26 @@ class MatrixRain(Static):
     paints reliably in every terminal we've tested.
     """
 
+    # 10 FPS is the same cadence the braille spinner used. Fast enough
+    # to feel animated, slow enough not to chew CPU.
+    TICK_INTERVAL: ClassVar[float] = 0.1
+
+    # Grid size. DEFAULT_CSS is generated from these values so the render
+    # grid and layout dimensions stay in sync across every rain surface.
+    COLS: ClassVar[int] = 20
+    ROWS: ClassVar[int] = 6
+
     DEFAULT_CSS = """
     MatrixRain {
         /* Width is fixed to the number of columns so the wrapping
            row container can centre us predictably. `content-align`
            would only matter if width were larger than content, so
            we hard-pin it to the grid size. */
-        width: 24;
-        height: 7;
+        width: __MATRIX_RAIN_COLS__;
+        height: __MATRIX_RAIN_ROWS__;
         color: $accent;
     }
-    """
-
-    # 10 FPS is the same cadence the braille spinner used. Fast enough
-    # to feel animated, slow enough not to chew CPU.
-    TICK_INTERVAL: ClassVar[float] = 0.1
-
-    # Grid size. Kept at 7 rows — the "long" loader silhouette is the
-    # intended brand feel; shorter versions looked like a spinner strip
-    # rather than a Matrix-rain loader. Keep DEFAULT_CSS's `width` /
-    # `height` in sync with these — Textual CSS does not speak Python,
-    # so the numbers are duplicated on purpose.
-    COLS: ClassVar[int] = 24
-    ROWS: ClassVar[int] = 7
+    """.replace("__MATRIX_RAIN_COLS__", str(COLS)).replace("__MATRIX_RAIN_ROWS__", str(ROWS))
 
     # Reactive so changes trigger a re-render without us calling refresh.
     frame: reactive[int] = reactive(0)

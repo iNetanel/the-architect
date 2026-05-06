@@ -175,7 +175,7 @@ When multiple providers are installed, The Architect detects them all and lets y
 | Retry and circuit breaker | ✅ | ✅ | ✅ | ✅ |
 | Retrospective review | ✅ | ✅ | ✅ | ✅ |
 | Token usage tracking | ✅ | ❌ | ✅ | ✅ |
-| Named execution agents | ✅ | ❌ | ❌ | ❌ |
+| Named execution agents | ✅ | ✅ | ✅ | ❌ |
 | Free tier model rotation | ✅ | ❌ | ❌ | ❌ |
 
 ---

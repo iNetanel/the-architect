@@ -164,7 +164,7 @@ class SplashScreen(Screen[None]):
 
     #splash_rain_row {
         width: 100%;
-        height: 7;
+        height: __MATRIX_RAIN_ROWS__;
         align-horizontal: center;
         margin: 1 0 0 0;
     }
@@ -175,7 +175,7 @@ class SplashScreen(Screen[None]):
         text-align: center;
         padding: 0;
     }
-    """
+    """.replace("__MATRIX_RAIN_ROWS__", str(MatrixRain.ROWS))
 
     def __init__(self, subtitle: str = "Starting up…") -> None:
         super().__init__()
@@ -530,6 +530,14 @@ class ArchitectApp(App[None]):
     def _update_progress_tasks_sync(self, tasks: list[dict[str, str]]) -> None:
         screen = self._ensure_execution_screen()
         screen.update_progress_tasks(tasks)
+
+    def update_execution_settings(self, settings: dict[str, str]) -> None:
+        """Update the execution Settings tab."""
+        self._thread_safe_call(self._update_execution_settings_sync, settings)
+
+    def _update_execution_settings_sync(self, settings: dict[str, str]) -> None:
+        screen = self._ensure_execution_screen()
+        screen.update_settings(settings)
 
     # ── Wait screen overlay (planning / retrospective / reassessment) ──
 

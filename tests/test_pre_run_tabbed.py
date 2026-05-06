@@ -12,7 +12,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from textual.widgets import Footer, ListView, RadioSet, TabbedContent, TextArea
+from textual.widgets import Footer, ListView, RadioSet, Static, TabbedContent, TextArea
 
 from the_architect.core.provider import ArchitectProvider
 from the_architect.tui.screens.pre_run_tabbed import (
@@ -72,6 +72,7 @@ class TestPreRunValues:
         assert v.free is False
         assert v.persistent is False
         assert v.integrity is True
+        assert v.force_reassessment is True
         assert v.token_budget_per_hour == 0
         assert v.action == "plan"
 
@@ -87,6 +88,7 @@ class TestPreRunValues:
             free=True,
             persistent=True,
             integrity=False,
+            force_reassessment=False,
             token_budget_per_hour=5000,
             action="replan",
         )
@@ -99,6 +101,7 @@ class TestPreRunValues:
         assert v.free is True
         assert v.persistent is True
         assert v.integrity is False
+        assert v.force_reassessment is False
         assert v.token_budget_per_hour == 5000
         assert v.action == "replan"
 
@@ -114,6 +117,7 @@ class TestPreRunValues:
             free=True,
             persistent=False,
             integrity=True,
+            force_reassessment=False,
             token_budget_per_hour=1234,
         )
         dump = original.model_dump()
@@ -366,6 +370,7 @@ class TestPreRunScreen:
             await pilot.pause()
             assert screen.query_one("#goal_text", TextArea).display is True
             assert screen.query_one("#scope_set").display is True
+            assert screen.focused is screen.query_one("#goal_text", TextArea)
             screen.action_submit()
             await pilot.pause()
             assert result == "<not-dismissed>"
@@ -380,7 +385,7 @@ class TestPreRunScreen:
 
     @pytest.mark.asyncio
     async def test_existing_tasks_replan_selection_reveals_goal_fields(self) -> None:
-        """Goal/scope fields stay hidden until the user explicitly selects Replan."""
+        """Replan hides pending summary, reveals goal fields, and focuses goal input."""
         from textual.app import App
 
         from the_architect.core.tasks import Task, TaskStatus
@@ -408,12 +413,16 @@ class TestPreRunScreen:
         async with CApp().run_test() as pilot:
             await pilot.pause()
             assert screen.query_one("#goal_text", TextArea).display is False
+            assert screen.query_one("#pending_tasks_summary", Static).display is True
             rb_replan = screen.query_one("#rb_action_replan")
             rb_replan.value = True
             screen._update_replan_controls_visibility()
             await pilot.pause()
+            await pilot.pause()
             assert screen.query_one("#goal_text", TextArea).display is True
             assert screen.query_one("#scope_set").display is True
+            assert screen.query_one("#pending_tasks_summary", Static).display is False
+            assert screen.focused is screen.query_one("#goal_text", TextArea)
 
     @pytest.mark.asyncio
     async def test_required_bindings_exist(self) -> None:
@@ -919,11 +928,42 @@ class TestPreRunScreen:
             assert action_set.pressed_button is not None
             assert action_set.pressed_button.id == "rb_action_replan"
             assert screen.query_one("#goal_text", TextArea).display is True
+            await pilot.pause()
+            assert getattr(screen.focused, "id", None) == "goal_text"
 
-            # At the last action row, another down moves to the now-visible scope section.
+            screen.action_cancel()
+            await pilot.pause()
+
+    @pytest.mark.asyncio
+    async def test_provider_tab_focus_next_handles_content_tabs_focus(self) -> None:
+        """Provider tab down/next must not crash when Textual focus is on ContentTabs."""
+        from textual.app import App
+        from textual.widgets import RadioSet, TabbedContent
+        from textual.widgets._tabbed_content import ContentTabs
+
+        screen = PreRunScreen(
+            providers=[_mock_provider("opencode"), _mock_provider("claude-code", "Claude Code")],
+            config=_mock_config(),
+            project_dir=Path("/tmp/test_project"),
+        )
+
+        class RunApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(screen, lambda value: None)
+
+        async with RunApp().run_test() as pilot:
+            await pilot.pause()
+            screen._try_activate_tab("tab_provider")
+            await pilot.pause()
+            tabs = screen.query_one("#prerun_tabs", TabbedContent)
+            assert tabs.active == "tab_provider"
+            screen.query_one(ContentTabs).focus()
+
             screen.action_focus_next()
             await pilot.pause()
-            assert getattr(screen.focused, "id", None) == "scope_set"
+
+            assert getattr(screen.focused, "id", None) == "provider_set"
+            assert screen.query_one("#provider_set", RadioSet).pressed_button is not None
 
             screen.action_cancel()
             await pilot.pause()
@@ -980,6 +1020,10 @@ class TestPreRunScreen:
             screen.action_focus_next()
             await pilot.pause()
             assert getattr(screen.focused, "id", None) == "chk_integrity"
+
+            screen.action_focus_next()
+            await pilot.pause()
+            assert getattr(screen.focused, "id", None) == "chk_force_reassessment"
 
             screen.action_cancel()
             await pilot.pause()

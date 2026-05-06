@@ -93,7 +93,7 @@ class SuccessScreen(Screen[bool]):
 
     #success_rain_row {
         width: 100%;
-        height: 7;
+        height: __MATRIX_RAIN_ROWS__;
         align-horizontal: center;
         margin: 1 0 0 0;
     }
@@ -130,7 +130,7 @@ class SuccessScreen(Screen[bool]):
         color: $text-muted;
         padding: 1 0 0 0;
     }
-    """
+    """.replace("__MATRIX_RAIN_ROWS__", str(MatrixRain.ROWS))
 
     def __init__(
         self,

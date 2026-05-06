@@ -8,10 +8,11 @@ screen only renders what the renderer pushes into it.
 Layout mirrors :class:`~the_architect.tui.screens.wait.WaitScreen`:
 
 - An animated Matrix-rain title at the top (same spinner, same brand green)
-- Three tabs below it:
+- Four tabs below it:
   - **Live** — raw provider stream
   - **Progress** — overall task list and what is happening now
   - **Diagnostics** — retries, cooldowns, model switches, and circuit events
+  - **Settings** — provider, model, agent, and feature flags for this execution
 """
 
 from __future__ import annotations
@@ -19,13 +20,14 @@ from __future__ import annotations
 import os
 from datetime import datetime
 
+from rich.markup import escape
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Header, RichLog, Static, TabbedContent, TabPane
 
-from the_architect.tui.widgets import next_matrix_frame
+from the_architect.tui.widgets import MatrixRain, next_matrix_frame
 
 
 def _idle_footer_text() -> str:
@@ -36,7 +38,7 @@ def _idle_footer_text() -> str:
     tmux detach shortcut so users know the "step away and come back
     later" path is available without even opening the menu.
     """
-    base = "(idle)  [l]ive / [p]rogress / [d]iagnostics  ·  Esc=pause  ·  Ctrl+C=stop"
+    base = "(idle)  [l]ive / [p]rogress / [d]iagnostics / settin[g]s  ·  Esc=pause  ·  Ctrl+C=stop"
     if os.environ.get("TMUX"):
         base += "  ·  Ctrl+B D detaches"
     return base
@@ -53,6 +55,7 @@ class ExecutionScreen(Screen[None]):
         Binding("l", "switch_tab('tab_live')", "Live", show=False),
         Binding("p", "switch_tab('tab_progress')", "Progress", show=False),
         Binding("d", "switch_tab('tab_diagnostics')", "Diagnostics", show=False),
+        Binding("g", "switch_tab('tab_settings')", "Settings", show=False),
         Binding("o", "switch_tab('tab_live')", "Live", show=False),
         Binding("e", "switch_tab('tab_diagnostics')", "Diagnostics", show=False),
         Binding("s", "switch_tab('tab_progress')", "Progress", show=False),
@@ -83,6 +86,13 @@ class ExecutionScreen(Screen[None]):
         padding: 0 1;
     }
 
+    #exec_rain_row {
+        width: 100%;
+        height: __MATRIX_RAIN_ROWS__;
+        align-horizontal: center;
+        margin: 1 0 0 0;
+    }
+
     #exec_tabs {
         height: 1fr;
     }
@@ -105,7 +115,7 @@ class ExecutionScreen(Screen[None]):
         padding: 0 1;
     }
 
-    #exec_progress {
+    #exec_progress, #exec_settings {
         height: 1fr;
         border: round $panel;
         padding: 1 2;
@@ -118,7 +128,7 @@ class ExecutionScreen(Screen[None]):
         color: $text;
         background: $panel;
     }
-    """
+    """.replace("__MATRIX_RAIN_ROWS__", str(MatrixRain.ROWS))
 
     def __init__(self) -> None:
         super().__init__()
@@ -131,6 +141,7 @@ class ExecutionScreen(Screen[None]):
             "last_activity": "",
             "current_op": "",
         }
+        self._settings: dict[str, str] = {}
         self._progress_tasks: list[dict[str, str]] = []
         self._frame_index = 0
         self._current_frame = next_matrix_frame(self._frame_index)
@@ -149,6 +160,8 @@ class ExecutionScreen(Screen[None]):
         with Horizontal(id="exec_header_row"):
             yield Static(self._render_anim_title(), id="exec_anim_title")
             yield Static("", id="exec_task_badge")
+        with Horizontal(id="exec_rain_row"):
+            yield MatrixRain(id="exec_rain")
         with TabbedContent(id="exec_tabs"):
             with TabPane("Live", id="tab_live"):
                 yield RichLog(
@@ -169,6 +182,9 @@ class ExecutionScreen(Screen[None]):
                     wrap=True,
                     auto_scroll=True,
                 )
+            with TabPane("Settings", id="tab_settings"):
+                with Vertical(id="exec_settings"):
+                    yield Static(self._render_settings(), id="exec_settings_text")
         yield Static(
             _idle_footer_text(),
             id="exec_footer",
@@ -215,6 +231,7 @@ class ExecutionScreen(Screen[None]):
             except Exception:
                 pass
             self._pending_footer = None
+        self._refresh_summary_widgets()
 
     def _write_default_placeholders(self) -> None:
         # Only write the output placeholder when no real provider output
@@ -304,11 +321,7 @@ class ExecutionScreen(Screen[None]):
     def update_progress_tasks(self, tasks: list[dict[str, str]]) -> None:
         """Replace the Progress tab's task overview and refresh it."""
         self._progress_tasks = tasks
-        try:
-            static = self.query_one("#exec_progress_text", Static)
-            static.update(self._render_progress())
-        except Exception:
-            pass
+        self._refresh_summary_widgets()
 
     def update_footer(self, text: str) -> None:
         """Set the one-line status footer under the tabs."""
@@ -330,14 +343,26 @@ class ExecutionScreen(Screen[None]):
                 badge.update(f"[dim]{task}[/dim]")
         except Exception:
             pass
-        try:
-            static = self.query_one("#exec_progress_text", Static)
-            static.update(self._render_progress())
-        except Exception:
-            pass
+        self._refresh_summary_widgets()
         # Refresh the animated title so it shows the new task label immediately.
         try:
             self.query_one("#exec_anim_title", Static).update(self._render_anim_title())
+        except Exception:
+            pass
+
+    def update_settings(self, settings: dict[str, str]) -> None:
+        """Replace the Settings tab content with run-scoped execution settings."""
+        self._settings = {k: v for k, v in settings.items() if v is not None}
+        self._refresh_summary_widgets()
+
+    def _refresh_summary_widgets(self) -> None:
+        """Refresh cached progress/settings state after mount or updates."""
+        try:
+            self.query_one("#exec_progress_text", Static).update(self._render_progress())
+        except Exception:
+            pass
+        try:
+            self.query_one("#exec_settings_text", Static).update(self._render_settings())
         except Exception:
             pass
 
@@ -368,7 +393,6 @@ class ExecutionScreen(Screen[None]):
         tokens = d.get("tokens", "—")
         last_activity = d.get("last_activity", "—")
         current_op = d.get("current_op", "")
-
         total = len(self._progress_tasks)
         done = sum(1 for item in self._progress_tasks if item.get("status") == "done")
         failed = sum(1 for item in self._progress_tasks if item.get("status") == "failed")
@@ -439,7 +463,26 @@ class ExecutionScreen(Screen[None]):
             "",
             "[dim]─────────────────────────────[/dim]",
             "",
-            "[dim]Tabs:  [l] Live  [p] Progress  [d] Diagnostics[/dim]",
+            "[dim]Tabs:  [l] Live  [p] Progress  [d] Diagnostics  [g] Settings[/dim]",
+            "[dim]Keys:  Esc = pause menu  ·  Ctrl+C = stop[/dim]",
+        ]
+        return "\n".join(lines)
+
+    def _render_settings(self) -> str:
+        lines = [
+            "[#7cc800][bold]Execution Settings[/bold][/#7cc800]",
+            "",
+        ]
+        if not self._settings:
+            lines.append("  [dim]Settings will appear when execution starts.[/dim]")
+        else:
+            for key, value in self._settings.items():
+                lines.append(f"  {escape(key):<24} [dim]{escape(value or '—')}[/dim]")
+        lines += [
+            "",
+            "[dim]─────────────────────────────[/dim]",
+            "",
+            "[dim]Tabs:  [l] Live  [p] Progress  [d] Diagnostics  [g] Settings[/dim]",
             "[dim]Keys:  Esc = pause menu  ·  Ctrl+C = stop[/dim]",
         ]
         return "\n".join(lines)

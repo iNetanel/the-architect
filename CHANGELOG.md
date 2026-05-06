@@ -20,6 +20,20 @@ Added / Changed / Deprecated / Removed / Fixed / Security.
 
 ### Fixed
 
+- Added Force Reassessment to TUI Options, enabled by default, so executions can
+  reassess after every task while still allowing conditional reassessment (build 10227).
+- Removed the goal line from the execution Progress tab to keep run status compact
+  while leaving goal context in planning/settings surfaces (build 10226).
+- Fixed a provider-tab focus crash in the pre-run screen when navigation focus
+  temporarily lands on Textual's tab strip instead of a form control (build 10225).
+- Fixed pending-task replan flow so choosing planning hides stale pending-task
+  details, focuses the goal input, and skips the duplicate pending guard (build 10224).
+- Resized the Matrix rain animation to a centered 20-column by 6-row grid across
+  TUI screens (build 10223).
+- Centralized Matrix rain layout sizing so splash, wait, success, and execution
+  screens all derive rain dimensions from `MatrixRain` constants (build 10222).
+- Improved execution TUI context by truncating long goals in planning/progress,
+  adding a settings tab, and matching the planning matrix rain animation (build 10221).
 - Cleaned up async test mocks that produced unawaited coroutine warnings during CI
   runs (build 10220).
 - Fixed CI regressions around stale integration task fixtures, Claude Code tool-use

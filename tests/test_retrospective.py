@@ -242,6 +242,32 @@ class TestRetrospectiveEdgeCases:
         provider.ensure_setup.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_run_task_reassessment_force_runs_without_impact(
+        self, tmp_path: Path, config: ArchitectConfig
+    ) -> None:
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tmp_path / "PROGRESS.md").write_text("", encoding="utf-8")
+        provider = MagicMock()
+
+        async def fake_stream(**kwargs: object) -> StreamResult:
+            return StreamResult(exit_code=0, tokens=TokenUsage())
+
+        with patch("the_architect.core.retrospective.stream_provider", side_effect=fake_stream):
+            result = await run_task_reassessment(
+                project_dir=tmp_path,
+                provider=provider,
+                config=config,
+                completed_task="T01",
+                outcome_summary="Downstream impact: none",
+                original_goal="test goal",
+                force=True,
+            )
+
+        assert isinstance(result, ReassessmentResult)
+        provider.ensure_setup.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_run_task_reassessment_updates_pending_tasks(
         self, tmp_path: Path, config: ArchitectConfig
     ) -> None:

@@ -19,6 +19,8 @@ class TestWaitApp:
             title = app._screen.query_one("#wait_title", Static)
             assert "planning" in str(title.render())
             rain = app._screen.query_one("#wait_rain", MatrixRain)
+            assert rain.region.width == MatrixRain.COLS
+            assert rain.region.height == MatrixRain.ROWS
             assert any(ch not in {" ", "\n"} for ch in rain.render().plain)
 
     @pytest.mark.asyncio

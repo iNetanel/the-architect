@@ -24,6 +24,7 @@ class TestArchitectConfig:
         assert config.standalone_mode == ""
         assert config.execution_agent == ""
         assert config.integrity is True
+        assert config.force_reassessment is True
 
     def test_config_resolve(self) -> None:
         """Should make paths absolute when resolve is called."""

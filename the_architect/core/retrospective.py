@@ -522,11 +522,14 @@ async def run_task_reassessment(
     model_override: str | None = None,
     log_path: Path | None = None,
     renderer: StreamRenderer | None = None,
+    task_status: str = "done",
+    force: bool = False,
 ) -> ReassessmentResult:
     """Run a targeted architect reassessment after a task with downstream impact."""
     eval_files = _find_eval_snapshot_files(project_dir) if config.integrity else []
     needs_reassessment = bool(outcome_summary) and "Downstream impact: possible" in outcome_summary
-    if not needs_reassessment and not eval_files:
+    failed_task = task_status == "failed"
+    if not force and not needs_reassessment and not failed_task and not eval_files:
         return ReassessmentResult(summary="No reassessment needed.")
 
     tasks_dir = project_dir / "tasks"
@@ -598,6 +601,8 @@ async def run_task_reassessment(
         [
             f"PROJECT ROOT: {project_dir}",
             "You are doing a targeted post-task reassessment, not a full re-plan.",
+            f"Task status: {task_status}",
+            f"Force reassessment: {'yes' if force else 'no'}",
             *([eval_warning, "---", ""] if eval_warning else []),
             *(
                 [
@@ -615,7 +620,7 @@ async def run_task_reassessment(
             "Do not modify completed tasks. Do not rewrite the whole plan. Preserve "
             "numbering and intent whenever possible.",
             f"Original goal: {original_goal}",
-            f"Completed task: {completed_task}",
+            f"Task: {completed_task}",
             "=== Outcome Summary ===",
             outcome_summary,
             "=== Current PROGRESS.md ===",

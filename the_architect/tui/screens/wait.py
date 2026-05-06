@@ -47,14 +47,14 @@ class WaitScreen(Screen[None]):
     #wait_title { color: $accent; text-style: bold; }
     #wait_rain_row {
         width: 100%;
-        height: 7;
+        height: __MATRIX_RAIN_ROWS__;
         align-horizontal: center;
         margin: 1 0 0 0;
     }
     #wait_detail { color: $text-muted; padding: 1 0; }
 
     RichLog { border: round $panel; height: 1fr; }
-    """
+    """.replace("__MATRIX_RAIN_ROWS__", str(MatrixRain.ROWS))
 
     # Retained for backward compatibility with tests that reference
     # ``WaitScreen.SPINNER_FRAMES``. No longer used by the live

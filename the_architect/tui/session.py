@@ -75,6 +75,15 @@ class TuiSession:
         except Exception:
             pass
 
+    def update_settings(self, settings: dict[str, str]) -> None:
+        """Replace the TUI Settings tab content (no-op when disabled)."""
+        if self.app is None:
+            return
+        try:
+            self.app.update_execution_settings(settings)
+        except Exception:
+            pass
+
     def update_footer(self, text: str) -> None:
         """Update the TUI footer (no-op when disabled)."""
         if self.app is None:

@@ -117,6 +117,7 @@ class PreRunValues(BaseModel):
     free: bool = False
     persistent: bool = False
     integrity: bool = True
+    force_reassessment: bool = True
     token_budget_per_hour: int = 0
     action: str = "plan"
 
@@ -295,6 +296,7 @@ class PreRunScreen(Screen[PreRunValues]):
             free=free_mode or config.free_mode,
             persistent=persistent or config.persistent,
             integrity=config.integrity,
+            force_reassessment=config.force_reassessment,
             token_budget_per_hour=config.token_budget_per_hour,
             action=action,
         )
@@ -321,9 +323,12 @@ class PreRunScreen(Screen[PreRunValues]):
                 first_tab_name = "Run" if self._pending_tasks else "Goal"
                 with TabPane(self._tab_label(first_tab_name, False), id=_TAB_GOAL):
                     if self._pending_tasks:
-                        yield Static("Existing tasks", classes="tab_title")
+                        yield Static(
+                            "Existing tasks", id="pending_tasks_title", classes="tab_title"
+                        )
                         yield Static(
                             self._format_pending_tasks(),
+                            id="pending_tasks_summary",
                             classes="tab_hint",
                             markup=False,
                         )
@@ -449,6 +454,15 @@ class PreRunScreen(Screen[PreRunValues]):
                         "architect_eval snapshots catch truncated/corrupted writes",
                         classes="tab_hint",
                     )
+                    yield BlankOffCheckbox(
+                        "Force Reassessment  (after every task)",
+                        id="chk_force_reassessment",
+                        value=self._values.force_reassessment,
+                    )
+                    yield Static(
+                        "when disabled, reassess only failed/downstream-impact tasks",
+                        classes="tab_hint",
+                    )
                     yield Label("Token budget/hour (0 = unlimited):")
                     budget_str = (
                         str(self._values.token_budget_per_hour)
@@ -485,7 +499,9 @@ class PreRunScreen(Screen[PreRunValues]):
         # Focus the first field
         try:
             area = self.query_one("#goal_text", TextArea)
-            if self._pending_tasks:
+            if self._pending_tasks and self._selected_action() == "replan":
+                area.focus()
+            elif self._pending_tasks:
                 self.query_one("#action_set", RadioSet).focus()
             else:
                 area.focus()
@@ -761,6 +777,7 @@ class PreRunScreen(Screen[PreRunValues]):
                 "chk_free",
                 "chk_persistent",
                 "chk_integrity",
+                "chk_force_reassessment",
                 "inp_budget",
                 "goal_text",
             }:
@@ -772,7 +789,7 @@ class PreRunScreen(Screen[PreRunValues]):
         focused = self.focused
         current_index = -1
         if focused is not None:
-            focused_id = getattr(focused, "id", "")
+            focused_id = getattr(focused, "id", "") or ""
             for i, stop in enumerate(stops):
                 stop_id = getattr(stop, "id", "")
                 if focused is stop or focused_id == stop_id:
@@ -913,7 +930,13 @@ class PreRunScreen(Screen[PreRunValues]):
         """Recompute and update all tab labels with dot indicators."""
         try:
             tabs = self.query_one("#prerun_tabs", TabbedContent)
-            first_tab_name = "Run" if self._pending_tasks else "Goal"
+            first_tab_name = (
+                "Goal"
+                if self._pending_tasks and self._selected_action() == "replan"
+                else "Run"
+                if self._pending_tasks
+                else "Goal"
+            )
             tabs.get_tab(_TAB_GOAL).label = self._tab_label(first_tab_name, self._goal_complete)
             if self._show_provider_tab:
                 tabs.get_tab(_TAB_PROVIDER).label = self._tab_label(
@@ -1035,6 +1058,12 @@ class PreRunScreen(Screen[PreRunValues]):
         except Exception:
             pass
 
+        force_reassessment = True
+        try:
+            force_reassessment = bool(self.query_one("#chk_force_reassessment", Checkbox).value)
+        except Exception:
+            pass
+
         budget = 0
         try:
             raw = self.query_one("#inp_budget", Input).value or "0"
@@ -1052,6 +1081,7 @@ class PreRunScreen(Screen[PreRunValues]):
             free=free,
             persistent=persistent,
             integrity=integrity,
+            force_reassessment=force_reassessment,
             token_budget_per_hour=budget,
             action=action,
         )
@@ -1155,6 +1185,13 @@ class PreRunScreen(Screen[PreRunValues]):
         if not self._pending_tasks:
             return
         show_replan_fields = self._selected_action() == "replan"
+        for widget_id in ("pending_tasks_title", "pending_tasks_summary"):
+            try:
+                self.query_one(f"#{widget_id}").display = not show_replan_fields
+            except Exception as exc:
+                logger.debug(
+                    f"PreRunScreen: pending summary visibility failed for {widget_id}: {exc!r}"
+                )
         for widget_id in (
             "scope_title",
             "scope_hint",
@@ -1169,8 +1206,19 @@ class PreRunScreen(Screen[PreRunValues]):
                 logger.debug(
                     f"PreRunScreen: replan field visibility failed for {widget_id}: {exc!r}"
                 )
+        if show_replan_fields:
+            self.call_after_refresh(self._focus_goal_text)
         self._update_tab_labels()
         self._update_footer()
+
+    def _focus_goal_text(self) -> None:
+        """Focus the goal text area after switching an existing run to replan."""
+        try:
+            area = self.query_one("#goal_text", TextArea)
+            if area.display:
+                area.focus()
+        except Exception as exc:
+            logger.debug(f"PreRunScreen: goal focus failed: {exc!r}")
 
     # ── Helpers ──────────────────────────────────────────────────────
 

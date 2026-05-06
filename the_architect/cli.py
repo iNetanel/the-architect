@@ -24,6 +24,7 @@ from datetime import UTC
 import click
 from loguru import logger
 from prompt_toolkit.layout.dimension import D
+from rich.markup import escape
 
 from the_architect import __version__
 from the_architect.config import ArchitectConfig, load_config, write_config
@@ -65,6 +66,16 @@ from the_architect.core.tmux import PaddedConsole
 from the_architect.tui.screens.pre_run import BACK_SENTINEL
 
 console = PaddedConsole()
+
+GOAL_DISPLAY_LIMIT = 400
+
+
+def _truncate_goal_for_display(goal: str, limit: int = GOAL_DISPLAY_LIMIT) -> str:
+    """Return a bounded single-line goal summary for terminal/TUI headers."""
+    normalized = " ".join(goal.split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[:limit] + "..."
 
 
 # ---------------------------------------------------------------------------
@@ -1718,7 +1729,10 @@ def run_planning_mode(
         f"[grey62]v{__version__}[/grey62]  [grey62]planning[/grey62]"
     )
     console.print()
-    console.print(f"[grey62]Goal:[/grey62] [{ARCHITECT_GREEN}]{goal}[/{ARCHITECT_GREEN}]")
+    display_goal = _truncate_goal_for_display(goal)
+    console.print(
+        f"[grey62]Goal:[/grey62] [{ARCHITECT_GREEN}]{escape(display_goal)}[/{ARCHITECT_GREEN}]"
+    )
     console.print(f"[grey62]Scope:[/grey62] [{ARCHITECT_GREEN}]{scope.value}[/{ARCHITECT_GREEN}]")
     # Resolve the model from the provider when no explicit override was set,
     # so the planning header always shows which model will be used.
@@ -1798,7 +1812,7 @@ def run_planning_mode(
             from the_architect.tui import WaitLogRenderer, tui_wait_session
 
             with tui_wait_session(enabled=True, title="planning…") as _wait:
-                _wait.set_detail(f"Goal: {goal}\nScope: {scope.value}")
+                _wait.set_detail(f"Goal: {display_goal}\nScope: {scope.value}")
                 _plan_renderer = WaitLogRenderer(session=_wait)
                 result = asyncio.run(
                     run_planner(
@@ -1983,6 +1997,7 @@ def _collect_planning_prompts(
                 config.free_mode = result.free
                 config.persistent = result.persistent
                 config.integrity = result.integrity
+                config.force_reassessment = result.force_reassessment
                 config.token_budget_per_hour = result.token_budget_per_hour
                 if result.provider_name:
                     config.provider = result.provider_name
@@ -2007,6 +2022,7 @@ def _collect_planning_prompts(
                             "architect_model": architect_model_override,
                             "execution_agent": config.execution_agent,
                             "provider": config.provider,
+                            "force_reassessment": config.force_reassessment,
                         },
                     )
                 except Exception as exc:
@@ -2179,6 +2195,75 @@ async def _run_tasks_raw(
     # instead of spinning up a fresh WaitApp in a second thread.
     tui_overlay_app: dict[str, object | None] = {"app": None}
 
+    def run_reassessment_if_needed(result: TaskResult) -> None:
+        """Run targeted reassessment when a task may affect remaining work."""
+        force_reassessment = config.force_reassessment
+        if provider is None or (not force_reassessment and not _result_needs_reassessment(result)):
+            return
+
+        console.print(f"[dim]↺ reassessing downstream tasks after {result.prefix}…[/dim]")
+        if _tui_mode_enabled():
+            from the_architect.tui import WaitLogRenderer, tui_wait_session
+
+            _overlay_app = tui_overlay_app["app"]
+            with tui_wait_session(
+                enabled=True,
+                title=f"reassessing after {result.prefix}…",
+                overlay_app=_overlay_app,  # type: ignore[arg-type]
+            ) as _wait:
+                _wait.set_detail(
+                    f"Task: {result.prefix}\nStatus: {result.status}\n"
+                    f"Outcome: {result.outcome_summary[:200]}"
+                )
+                _reassess_renderer = WaitLogRenderer(session=_wait)
+                try:
+                    reassessment = _run_reassessment_in_thread(
+                        run_task_reassessment(
+                            project_dir=project,
+                            provider=provider,
+                            config=config,
+                            completed_task=result.prefix,
+                            outcome_summary=result.outcome_summary,
+                            original_goal=original_goal,
+                            model_override=model_override,
+                            log_path=reassessment_log_dir / f"{result.prefix.lower()}_reassess.log",
+                            renderer=_reassess_renderer,
+                            task_status=result.status,
+                            force=force_reassessment,
+                        )
+                    )
+                except Exception as exc:
+                    logger.warning(f"Inline reassessment failed for {result.prefix}: {exc!r}")
+                    reassessment = None
+        else:
+            # Non-TUI path: run reassessment in a fresh thread so we never
+            # nest asyncio.run() calls inside the outer event loop context.
+            try:
+                reassessment = _run_reassessment_in_thread(
+                    run_task_reassessment(
+                        project_dir=project,
+                        provider=provider,
+                        config=config,
+                        completed_task=result.prefix,
+                        outcome_summary=result.outcome_summary,
+                        original_goal=original_goal,
+                        model_override=model_override,
+                        log_path=reassessment_log_dir / f"{result.prefix.lower()}_reassess.log",
+                        task_status=result.status,
+                        force=force_reassessment,
+                    )
+                )
+            except Exception as exc:
+                logger.warning(f"Inline reassessment failed for {result.prefix}: {exc!r}")
+                reassessment = None
+
+        if reassessment is not None and reassessment.tasks_updated:
+            console.print()
+            console.print(
+                f"[yellow]↺ Reassessed after {result.prefix}[/yellow]  "
+                f"[dim]{reassessment.summary}[/dim]"
+            )
+
     def on_task_start(task: Task) -> None:
         remaining = sum(1 for t in plan.tasks if _task_needs_work(t))
         title = task.title or task.name
@@ -2196,65 +2281,7 @@ async def _run_tasks_raw(
     def on_task_done(result: TaskResult) -> None:
         results.append(result)
         _record_task_outcome(config.progress_file, result)
-        if provider is not None and _result_needs_reassessment(result):
-            console.print(f"[dim]↺ reassessing downstream tasks after {result.prefix}…[/dim]")
-            if _tui_mode_enabled():
-                from the_architect.tui import WaitLogRenderer, tui_wait_session
-
-                _overlay_app = tui_overlay_app["app"]
-                with tui_wait_session(
-                    enabled=True,
-                    title=f"reassessing after {result.prefix}…",
-                    overlay_app=_overlay_app,  # type: ignore[arg-type]
-                ) as _wait:
-                    _wait.set_detail(
-                        f"Completed: {result.prefix}\nOutcome: {result.outcome_summary[:200]}"
-                    )
-                    _reassess_renderer = WaitLogRenderer(session=_wait)
-                    try:
-                        reassessment = _run_reassessment_in_thread(
-                            run_task_reassessment(
-                                project_dir=project,
-                                provider=provider,
-                                config=config,
-                                completed_task=result.prefix,
-                                outcome_summary=result.outcome_summary,
-                                original_goal=original_goal,
-                                model_override=model_override,
-                                log_path=reassessment_log_dir
-                                / f"{result.prefix.lower()}_reassess.log",
-                                renderer=_reassess_renderer,
-                            )
-                        )
-                    except Exception as exc:
-                        logger.warning(f"Inline reassessment failed for {result.prefix}: {exc!r}")
-                        reassessment = None
-            else:
-                # Non-TUI path: run reassessment in a fresh thread so we never
-                # nest asyncio.run() calls inside the outer event loop context.
-                try:
-                    reassessment = _run_reassessment_in_thread(
-                        run_task_reassessment(
-                            project_dir=project,
-                            provider=provider,
-                            config=config,
-                            completed_task=result.prefix,
-                            outcome_summary=result.outcome_summary,
-                            original_goal=original_goal,
-                            model_override=model_override,
-                            log_path=reassessment_log_dir / f"{result.prefix.lower()}_reassess.log",
-                        )
-                    )
-                except Exception as exc:
-                    logger.warning(f"Inline reassessment failed for {result.prefix}: {exc!r}")
-                    reassessment = None
-
-            if reassessment is not None and reassessment.tasks_updated:
-                console.print()
-                console.print(
-                    f"[yellow]↺ Reassessed after {result.prefix}[/yellow]  "
-                    f"[dim]{reassessment.summary}[/dim]"
-                )
+        run_reassessment_if_needed(result)
         console.print()
         console.print(
             f"[#7cc800]✓ {result.prefix} done[/#7cc800]  "
@@ -2269,6 +2296,7 @@ async def _run_tasks_raw(
 
     def on_task_failed(result: TaskResult) -> None:
         results.append(result)
+        run_reassessment_if_needed(result)
         console.print()
         console.print(f"[red]✗ {result.prefix} failed after {config.max_retries} attempts[/red]")
         console.print(_SEPARATOR)
@@ -2422,6 +2450,65 @@ async def _run_tasks_raw(
         def _tui_publish_progress() -> None:
             _tui_session.update_progress_tasks(_tui_progress_rows())
 
+        def _enabled(value: bool) -> str:
+            return "enabled" if value else "disabled"
+
+        def _tui_execution_settings() -> dict[str, str]:
+            execution_model = ""
+            if config.free_mode and free_rotator is not None:
+                execution_model = str(getattr(free_rotator, "current_model", "") or "")
+            if not execution_model:
+                execution_model = config.standalone_mode or ""
+            if not execution_model and provider is not None:
+                try:
+                    execution_model = provider.get_resolved_model(
+                        project, config.execution_agent or "build"
+                    )
+                except Exception:
+                    execution_model = ""
+
+            supports_agents = False
+            if provider is not None:
+                try:
+                    supports_agents = provider.supports_agents()
+                except Exception:
+                    supports_agents = False
+
+            agent = config.execution_agent or "provider default"
+            if provider is not None and not supports_agents:
+                agent = "not supported"
+
+            return {
+                "Goal": _truncate_goal_for_display(original_goal),
+                "Project": str(project),
+                "Provider": getattr(provider, "display_name", "auto")
+                if provider is not None
+                else "auto",
+                "Configured provider": config.provider,
+                "Execution agent": agent,
+                "Execution model": execution_model or "provider default",
+                "Architect/review model": model_override
+                or config.architect_model
+                or "provider default",
+                "Free mode": _enabled(config.free_mode),
+                "Persistent mode": _enabled(config.persistent),
+                "Integrity defense": _enabled(config.integrity),
+                "Force reassessment": _enabled(config.force_reassessment),
+                "Retrospective rounds": str(config.retrospective_rounds),
+                "Max retries": str(config.max_retries),
+                "Retry pause": f"{config.retry_pause}s",
+                "Pause between tasks": f"{config.pause_between_tasks}s",
+                "Retry model 2": config.retry_model_2 or "same/default",
+                "Retry model 3": config.retry_model_3 or "same/default",
+                "Carry retry context": _enabled(config.carry_context),
+                "Retry prompt mode": config.retry_prompt_mode,
+                "Circuit replan": _enabled(config.circuit_enable_replan),
+                "Cooldown detection": _enabled(config.cooldown_detection),
+                "Circuit cooldown": f"{config.circuit_cooldown_minutes}m",
+                "Token budget/hour": str(config.token_budget_per_hour or "unlimited"),
+                "Tasks in run": str(len(plan.tasks)),
+            }
+
         def _tui_on_task_start(t: Task) -> None:
             _tui_task_statuses[t.prefix] = "running"
             _tui_publish_progress()
@@ -2544,6 +2631,8 @@ async def _run_tasks_raw(
             on_task_failed(result)
 
         if _tui_session.app is not None:
+            _tui_session.update_details(goal=original_goal)
+            _tui_session.update_settings(_tui_execution_settings())
             _tui_publish_progress()
             _ts = _tui_on_task_start
             _as = _tui_on_attempt_start
@@ -2658,16 +2747,14 @@ def _record_task_outcome(progress_file: Path, result: TaskResult) -> None:
 
 
 def _task_results_needing_reassessment(results: list[TaskResult]) -> list[TaskResult]:
-    """Return done task results that explicitly indicate downstream impact."""
-    return [
-        result
-        for result in results
-        if result.status == "done" and "Downstream impact: possible" in result.outcome_summary
-    ]
+    """Return task results that should trigger downstream task reassessment."""
+    return [result for result in results if _result_needs_reassessment(result)]
 
 
 def _result_needs_reassessment(result: TaskResult) -> bool:
-    """Return True when a task result should trigger downstream task reassessment."""
+    """Return True for conditional downstream reassessment triggers."""
+    if result.status == "failed":
+        return True
     return result.status == "done" and "Downstream impact: possible" in result.outcome_summary
 
 
@@ -3802,6 +3889,7 @@ def _run_main(
                     "free": pre_run.free,
                     "persistent": pre_run.persistent,
                     "integrity": pre_run.integrity,
+                    "force_reassessment": pre_run.force_reassessment,
                     "token_budget_per_hour": pre_run.token_budget_per_hour,
                     "action": pre_run.action,
                 }
@@ -3810,6 +3898,12 @@ def _run_main(
                 architect_model = pre_run.architect_model or ""
                 execution_model = pre_run.execution_agent or ""
                 config.execution_agent = execution_model
+                config.force_reassessment = pre_run.force_reassessment
+                # The tabbed pending-task screen already collected the model,
+                # agent, and mode choices. Replan should go straight into the
+                # planner from here, not fall through to legacy prompt screens.
+                config._tabbed_model_collected = True  # type: ignore[attr-defined]
+                config._tabbed_mode_collected = True  # type: ignore[attr-defined]
                 if pre_run.provider_name:
                     config.provider = pre_run.provider_name
                     if provider.name != pre_run.provider_name:
@@ -3839,7 +3933,10 @@ def _run_main(
                     context_paths=context_paths,
                     architect_model_override=architect_model,
                     execution_model_override=execution_model,
-                    _skip_pending_guard=bool(use_tui or _tui_mode_enabled()),
+                    # The user already chose Replan from the pending-task screen.
+                    # Do not show the same pending-task guard again before the
+                    # actual planning run starts.
+                    _skip_pending_guard=True,
                     provider=provider,
                 )
                 # After planning, reload and execute
@@ -3862,6 +3959,9 @@ def _run_main(
                 persistent = bool(resume.get("persistent", False))
                 config.persistent = persistent
                 config.integrity = bool(resume.get("integrity", config.integrity))
+                config.force_reassessment = bool(
+                    resume.get("force_reassessment", config.force_reassessment)
+                )
                 if persistent:
                     config.max_retries = 30
                     config.retrospective_rounds = 2
@@ -3877,6 +3977,7 @@ def _run_main(
                         "free_mode": config.free_mode,
                         "persistent": config.persistent,
                         "integrity": config.integrity,
+                        "force_reassessment": config.force_reassessment,
                         "token_budget_per_hour": config.token_budget_per_hour,
                         "last_scope": scope_text,
                         "architect_model": architect_model,

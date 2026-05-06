@@ -28,6 +28,18 @@ def _fake_asyncio_run(*results: object) -> object:
     return _run
 
 
+def _fake_reassessment_runner(result: object) -> object:
+    """Return a fake reassessment thread runner that closes coroutine args."""
+
+    def _run(awaitable: object) -> object:
+        close = getattr(awaitable, "close", None)
+        if callable(close):
+            close()
+        return result
+
+    return _run
+
+
 # ---------------------------------------------------------------------------
 # Helper Function Tests
 # ---------------------------------------------------------------------------
@@ -35,6 +47,19 @@ def _fake_asyncio_run(*results: object) -> object:
 
 class TestMoreHelperFunctions:
     """Tests for additional helper functions in CLI."""
+
+    def test_truncate_goal_for_display_limits_long_goal(self) -> None:
+        """Long goals should not overwhelm planning/execution surfaces."""
+        from the_architect.cli import _truncate_goal_for_display
+
+        result = _truncate_goal_for_display("x" * 450)
+        assert result == ("x" * 400) + "..."
+
+    def test_truncate_goal_for_display_normalizes_whitespace(self) -> None:
+        """Goal summaries collapse multiline input into one line."""
+        from the_architect.cli import _truncate_goal_for_display
+
+        assert _truncate_goal_for_display("one\n\n two\tthree") == "one two three"
 
     def test_ansi_supported_no_tty(self) -> None:
         """Should return False when stdout is not a TTY."""
@@ -133,7 +158,7 @@ class TestMoreHelperFunctions:
     def test_prompt_text_input_builds_layout(self) -> None:
         """Custom text prompt should build a right-padded prompt-toolkit layout."""
 
-    def test_task_results_needing_reassessment_filters_only_explicit_impact(self) -> None:
+    def test_task_results_needing_reassessment_includes_impact_and_failures(self) -> None:
         from the_architect.cli import _task_results_needing_reassessment
 
         results = [
@@ -145,9 +170,9 @@ class TestMoreHelperFunctions:
         ]
 
         filtered = _task_results_needing_reassessment(results)
-        assert [result.prefix for result in filtered] == ["T01"]
+        assert [result.prefix for result in filtered] == ["T01", "T03"]
 
-    def test_result_needs_reassessment_only_for_done_with_explicit_impact(self) -> None:
+    def test_result_needs_reassessment_for_done_impact_or_failure(self) -> None:
         from the_architect.cli import _result_needs_reassessment
 
         assert _result_needs_reassessment(
@@ -156,8 +181,11 @@ class TestMoreHelperFunctions:
         assert not _result_needs_reassessment(
             TaskResult(prefix="T02", status="done", outcome_summary="Downstream impact: none")
         )
-        assert not _result_needs_reassessment(
+        assert _result_needs_reassessment(
             TaskResult(prefix="T03", status="failed", outcome_summary="Downstream impact: possible")
+        )
+        assert _result_needs_reassessment(
+            TaskResult(prefix="T04", status="failed", outcome_summary="No summary")
         )
 
         import the_architect.cli as cli_mod
@@ -1350,6 +1378,131 @@ class TestRunMainExecution:
         assert config.integrity is False
         assert config.token_budget_per_hour == 123
 
+    def test_run_main_tui_pending_replan_skips_second_pending_guard(self, tmp_path: Path) -> None:
+        """Choosing replan from pending tasks must not show the pending guard again."""
+        from the_architect.cli import _run_main
+        from the_architect.tui.screens.pre_run_tabbed import PreRunValues
+
+        mock_task = Task(
+            name="T01_test",
+            prefix="T01",
+            number=1,
+            path=tmp_path / "T01_test.md",
+            title="Test task",
+            status=TaskStatus.PENDING,
+        )
+        config = ArchitectConfig()
+        mock_provider = MagicMock()
+        mock_provider.name = "opencode"
+        mock_provider.display_name = "OpenCode"
+        mock_provider.supports_free_tier.return_value = True
+        mock_provider.get_resolved_model.return_value = "model"
+        mock_provider.ensure_setup.return_value = tmp_path
+
+        pre_run_values = PreRunValues(
+            action="replan",
+            goal="Build a replacement plan",
+            scope="standard",
+            provider_name="opencode",
+            execution_agent="backend",
+        )
+
+        async def _fake_run_tasks(
+            *args: object, **kwargs: object
+        ) -> tuple[bool, list[TaskResult], float]:
+            return (True, [], 1.0)
+
+        with (
+            patch("the_architect.cli.discover_tasks", return_value=[mock_task]),
+            patch("the_architect.cli._filter_and_set_status", return_value=[mock_task]),
+            patch("the_architect.cli._tui_mode_enabled", return_value=True),
+            patch("the_architect.cli.detect_available_providers", return_value=[mock_provider]),
+            patch(
+                "the_architect.tui.screens.pre_run_tabbed.run_pre_run_tabbed",
+                return_value=pre_run_values,
+            ),
+            patch("the_architect.cli.run_planning_mode") as mock_plan,
+            patch("the_architect.cli._run_tasks_raw", side_effect=_fake_run_tasks),
+            patch("the_architect.cli.write_success_md"),
+            patch("the_architect.cli.print_success_summary"),
+            patch("the_architect.config.write_config", return_value=tmp_path / "architect.toml"),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                _run_main(
+                    project=tmp_path,
+                    plan=False,
+                    headless=False,
+                    _pre_loaded_config=config,
+                    provider=mock_provider,
+                    use_tui=True,
+                )
+
+        assert exc_info.value.code == 0
+        mock_plan.assert_called_once()
+        assert mock_plan.call_args.kwargs["_skip_pending_guard"] is True
+        assert getattr(config, "_tabbed_model_collected") is True
+        assert getattr(config, "_tabbed_mode_collected") is True
+
+    def test_run_main_tui_pending_replan_can_disable_force_reassessment(
+        self, tmp_path: Path
+    ) -> None:
+        """The tabbed Options value should be applied to the execution config."""
+        from the_architect.cli import _run_main
+        from the_architect.tui.screens.pre_run_tabbed import PreRunValues
+
+        mock_task = Task(
+            name="T01_test",
+            prefix="T01",
+            number=1,
+            path=tmp_path / "T01_test.md",
+            title="Test task",
+            status=TaskStatus.PENDING,
+        )
+        config = ArchitectConfig()
+        mock_provider = MagicMock()
+        mock_provider.name = "opencode"
+        mock_provider.display_name = "OpenCode"
+        mock_provider.supports_free_tier.return_value = True
+        mock_provider.get_resolved_model.return_value = "model"
+        mock_provider.ensure_setup.return_value = tmp_path
+        pre_run_values = PreRunValues(
+            action="execute",
+            provider_name="opencode",
+            force_reassessment=False,
+        )
+
+        async def _fake_run_tasks(
+            *args: object, **kwargs: object
+        ) -> tuple[bool, list[TaskResult], float]:
+            return (True, [], 1.0)
+
+        with (
+            patch("the_architect.cli.discover_tasks", return_value=[mock_task]),
+            patch("the_architect.cli._filter_and_set_status", return_value=[mock_task]),
+            patch("the_architect.cli._tui_mode_enabled", return_value=True),
+            patch("the_architect.cli.detect_available_providers", return_value=[mock_provider]),
+            patch(
+                "the_architect.tui.screens.pre_run_tabbed.run_pre_run_tabbed",
+                return_value=pre_run_values,
+            ),
+            patch("the_architect.cli._run_tasks_raw", side_effect=_fake_run_tasks),
+            patch("the_architect.cli.write_success_md"),
+            patch("the_architect.cli.print_success_summary"),
+            patch("the_architect.config.write_config", return_value=tmp_path / "architect.toml"),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                _run_main(
+                    project=tmp_path,
+                    plan=False,
+                    headless=False,
+                    _pre_loaded_config=config,
+                    provider=mock_provider,
+                    use_tui=True,
+                )
+
+        assert exc_info.value.code == 0
+        assert config.force_reassessment is False
+
     def test_run_main_execution_error(self, tmp_path: Path) -> None:
         """Should handle RuntimeError from execution."""
         from the_architect.cli import _run_main
@@ -2401,6 +2554,168 @@ class TestRunTasksRawCallbacks:
 
             success, results, duration = asyncio.run(_run_tasks_raw(tmp_path, config, [mock_task]))
             assert success is False
+
+    def test_run_tasks_raw_reassesses_failed_task(self, tmp_path: Path) -> None:
+        """Failed tasks should trigger downstream reassessment when a provider exists."""
+        from the_architect.cli import _run_tasks_raw
+
+        mock_task = Task(
+            name="T01_test",
+            prefix="T01",
+            number=1,
+            path=tmp_path / "T01_test.md",
+            title="Test task",
+            status=TaskStatus.PENDING,
+        )
+        config = ArchitectConfig()
+        config.max_retries = 3
+        mock_result = TaskResult(
+            prefix="T01",
+            title="Test task",
+            status="failed",
+            duration_seconds=5.0,
+            tokens=TokenUsage(),
+            outcome_summary="Task failed before completion.",
+        )
+        mock_provider = MagicMock()
+        mock_reassessment = MagicMock()
+        mock_reassessment.tasks_updated = []
+
+        async def _fake_run_all(*args: object, **kwargs: object) -> bool:
+            on_task_failed = kwargs.get("on_task_failed")
+            if on_task_failed:
+                on_task_failed(mock_result)
+            return False
+
+        async def _fake_reassess(*args: object, **kwargs: object) -> object:
+            return object()
+
+        mock_reassess = MagicMock(side_effect=_fake_reassess)
+
+        with (
+            patch("the_architect.cli._ansi_supported", return_value=False),
+            patch("the_architect.cli.run_all", side_effect=_fake_run_all),
+            patch("the_architect.cli.run_task_reassessment", new=mock_reassess),
+            patch(
+                "the_architect.cli._run_reassessment_in_thread",
+                side_effect=_fake_reassessment_runner(mock_reassessment),
+            ),
+        ):
+            import asyncio
+
+            success, results, duration = asyncio.run(
+                _run_tasks_raw(tmp_path, config, [mock_task], provider=mock_provider)
+            )
+
+        assert success is False
+        mock_reassess.assert_called_once()
+        assert mock_reassess.call_args.kwargs["task_status"] == "failed"
+        assert mock_reassess.call_args.kwargs["force"] is True
+
+    def test_run_tasks_raw_force_reassesses_done_task_without_impact(self, tmp_path: Path) -> None:
+        """Force reassessment should run after successful tasks even without impact markers."""
+        from the_architect.cli import _run_tasks_raw
+
+        mock_task = Task(
+            name="T01_test",
+            prefix="T01",
+            number=1,
+            path=tmp_path / "T01_test.md",
+            title="Test task",
+            status=TaskStatus.PENDING,
+        )
+        config = ArchitectConfig()
+        config.force_reassessment = True
+        mock_result = TaskResult(
+            prefix="T01",
+            title="Test task",
+            status="done",
+            duration_seconds=5.0,
+            tokens=TokenUsage(),
+            outcome_summary="Downstream impact: none",
+        )
+        mock_provider = MagicMock()
+        mock_reassessment = MagicMock()
+        mock_reassessment.tasks_updated = []
+
+        async def _fake_run_all(*args: object, **kwargs: object) -> bool:
+            on_task_done = kwargs.get("on_task_done")
+            if on_task_done:
+                on_task_done(mock_result)
+            return True
+
+        async def _fake_reassess(*args: object, **kwargs: object) -> object:
+            return object()
+
+        mock_reassess = MagicMock(side_effect=_fake_reassess)
+
+        with (
+            patch("the_architect.cli._ansi_supported", return_value=False),
+            patch("the_architect.cli.run_all", side_effect=_fake_run_all),
+            patch("the_architect.cli.run_task_reassessment", new=mock_reassess),
+            patch(
+                "the_architect.cli._run_reassessment_in_thread",
+                side_effect=_fake_reassessment_runner(mock_reassessment),
+            ),
+        ):
+            import asyncio
+
+            success, results, duration = asyncio.run(
+                _run_tasks_raw(tmp_path, config, [mock_task], provider=mock_provider)
+            )
+
+        assert success is True
+        mock_reassess.assert_called_once()
+        assert mock_reassess.call_args.kwargs["task_status"] == "done"
+        assert mock_reassess.call_args.kwargs["force"] is True
+
+    def test_run_tasks_raw_disabled_force_keeps_conditional_reassessment(
+        self, tmp_path: Path
+    ) -> None:
+        """Disabling force should keep reassessment conditional on impact/failure."""
+        from the_architect.cli import _run_tasks_raw
+
+        mock_task = Task(
+            name="T01_test",
+            prefix="T01",
+            number=1,
+            path=tmp_path / "T01_test.md",
+            title="Test task",
+            status=TaskStatus.PENDING,
+        )
+        config = ArchitectConfig()
+        config.force_reassessment = False
+        mock_result = TaskResult(
+            prefix="T01",
+            title="Test task",
+            status="done",
+            duration_seconds=5.0,
+            tokens=TokenUsage(),
+            outcome_summary="Downstream impact: none",
+        )
+        mock_provider = MagicMock()
+
+        async def _fake_run_all(*args: object, **kwargs: object) -> bool:
+            on_task_done = kwargs.get("on_task_done")
+            if on_task_done:
+                on_task_done(mock_result)
+            return True
+
+        mock_reassess = MagicMock()
+
+        with (
+            patch("the_architect.cli._ansi_supported", return_value=False),
+            patch("the_architect.cli.run_all", side_effect=_fake_run_all),
+            patch("the_architect.cli.run_task_reassessment", new=mock_reassess),
+        ):
+            import asyncio
+
+            success, results, duration = asyncio.run(
+                _run_tasks_raw(tmp_path, config, [mock_task], provider=mock_provider)
+            )
+
+        assert success is True
+        mock_reassess.assert_not_called()
 
     def test_run_tasks_raw_on_attempt_start_retry(self, tmp_path: Path) -> None:
         """Should call on_attempt_start with retry number."""

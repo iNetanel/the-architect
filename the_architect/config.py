@@ -146,6 +146,15 @@ class ArchitectConfig(BaseModel):
         ),
     )
 
+    force_reassessment: bool = Field(
+        default=True,
+        description=(
+            "When True, run targeted architect reassessment after every task. "
+            "When False, reassess only after failed tasks or explicit downstream-impact "
+            "signals."
+        ),
+    )
+
     # ── Circuit breaker settings ──────────────────────────────────────────
 
     circuit_no_progress_threshold: int = Field(

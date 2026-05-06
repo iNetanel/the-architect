@@ -53,6 +53,7 @@ async def test_splash_shows_title_and_spinner() -> None:
         title = app.screen.query_one("#splash_title", Static)
         assert "The Architect" in str(title.render())
         rain = app.screen.query_one("#splash_rain", MatrixRain)
+        assert rain.region.width == MatrixRain.COLS
         assert rain.region.height == MatrixRain.ROWS
         assert any(ch not in {" ", "\n"} for ch in rain.render().plain)
 
@@ -78,6 +79,7 @@ async def test_splash_animation_fits_short_startup_panes() -> None:
         await pilot.pause()
         rain = app.screen.query_one("#splash_rain", MatrixRain)
         subtitle = app.screen.query_one("#splash_subtitle", Static)
+        assert rain.region.width == MatrixRain.COLS
         assert rain.region.height == MatrixRain.ROWS
         assert rain.region.y + rain.region.height <= subtitle.region.y
         assert subtitle.region.y + subtitle.region.height <= app.size.height
@@ -163,11 +165,49 @@ async def test_update_details_merges_fields() -> None:
         await pilot.pause()
         app.update_details(task="T01 demo", phase="executing", attempt="1/3")
         await pilot.pause()
+        await pilot.pause()
         assert app._execution_screen is not None
         progress = app._execution_screen.query_one("#exec_progress_text", Static)
         text = str(progress.render())
         assert "T01 demo" in text
         assert "executing" in text
+
+
+@pytest.mark.asyncio
+async def test_update_execution_settings_populates_settings_tab() -> None:
+    app = ArchitectApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.switch_to_execution()
+        await pilot.pause()
+        app.update_execution_settings(
+            {
+                "Provider": "Claude Code",
+                "Execution agent": "build",
+                "Free mode": "disabled",
+            }
+        )
+        await pilot.pause()
+        await pilot.pause()
+        assert app._execution_screen is not None
+        settings = app._execution_screen.query_one("#exec_settings_text", Static)
+        text = str(settings.render())
+        assert "Execution Settings" in text
+        assert "Claude Code" in text
+        assert "build" in text
+
+
+@pytest.mark.asyncio
+async def test_execution_screen_includes_matrix_rain() -> None:
+    app = ArchitectApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.switch_to_execution()
+        await pilot.pause()
+        assert app._execution_screen is not None
+        rain = app._execution_screen.query_one("#exec_rain", MatrixRain)
+        assert rain.region.width == MatrixRain.COLS
+        assert rain.region.height == MatrixRain.ROWS
 
 
 @pytest.mark.asyncio
