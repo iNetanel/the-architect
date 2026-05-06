@@ -18,26 +18,31 @@ empty [Unreleased] above it. Use Keep a Changelog section headings:
 Added / Changed / Deprecated / Removed / Fixed / Security.
 -->
 
+## [1.2.1] (build 10231) — 2026-05-06
+
+### Added
+
+- Added Force Reassessment, enabled by default, so pending tasks stay aligned
+  after every completed or failed task.
+- Added richer execution context in the TUI, including run settings visibility
+  and the shared Matrix animation on the execution screen.
+
+### Changed
+
+- Reworked project memory so `ARCHITECT.md` now stores durable project
+  intelligence, while run history is written to `tasks/SUMMARY.md` and archived
+  with each task package.
+- Improved planning and execution guidance so tasks are outcome-first, include
+  bounded exploration plans, and avoid over-prescribing implementation details.
+- Moved final run summaries from root `SUCCESS.md` to `tasks/SUMMARY.md`.
+
 ### Fixed
 
-- Added Force Reassessment to TUI Options, enabled by default, so executions can
-  reassess after every task while still allowing conditional reassessment (build 10227).
-- Removed the goal line from the execution Progress tab to keep run status compact
-  while leaving goal context in planning/settings surfaces (build 10226).
-- Fixed a provider-tab focus crash in the pre-run screen when navigation focus
-  temporarily lands on Textual's tab strip instead of a form control (build 10225).
-- Fixed pending-task replan flow so choosing planning hides stale pending-task
-  details, focuses the goal input, and skips the duplicate pending guard (build 10224).
-- Resized the Matrix rain animation to a centered 20-column by 6-row grid across
-  TUI screens (build 10223).
-- Centralized Matrix rain layout sizing so splash, wait, success, and execution
-  screens all derive rain dimensions from `MatrixRain` constants (build 10222).
-- Improved execution TUI context by truncating long goals in planning/progress,
-  adding a settings tab, and matching the planning matrix rain animation (build 10221).
-- Cleaned up async test mocks that produced unawaited coroutine warnings during CI
-  runs (build 10220).
-- Fixed CI regressions around stale integration task fixtures, Claude Code tool-use
-  visibility expectations, and headless TUI `push_and_wait` timing (build 10219).
+- Fixed pending-task replan flow so it hides stale pending details, focuses the
+  goal input, skips duplicate prompts, and uses the settings already chosen.
+- Fixed TUI provider-tab focus crashes and headless execution-screen timing.
+- Fixed Claude Code tool-use visibility, stale integration fixtures, and async
+  test mock warnings that were causing noisy CI runs.
 
 ## [1.2.0] (build 10218) — 2026-05-05
 

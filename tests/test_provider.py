@@ -543,6 +543,20 @@ class TestClaudeCodeProviderPrompts:
         prompt = ClaudeCodeProvider().get_architect_prompt()
         assert "Architect" in prompt
 
+    def test_get_architect_prompt_discourages_invented_implementation_details(self) -> None:
+        """Planner prompt should keep tasks outcome-first, not guessed-internal-first."""
+        prompt = ClaudeCodeProvider().get_architect_prompt()
+        assert "Do **not** invent exact names" in prompt
+        assert "Outcome-first, not implementation-first" in prompt
+        assert "Avoid false coherence" in prompt
+        assert "Exploration plans — guide, do not constrain" in prompt
+
+    def test_get_architect_prompt_keeps_boundaries_scope_based(self) -> None:
+        """Prompt should prevent over-rigid file-level task boundaries."""
+        prompt = ClaudeCodeProvider().get_architect_prompt()
+        assert "Boundaries should prevent scope overlap" in prompt
+        assert "not block necessary integration edits" in prompt
+
     def test_get_reviewer_prompt_returns_string(self) -> None:
         prompt = ClaudeCodeProvider().get_reviewer_prompt()
         assert isinstance(prompt, str)

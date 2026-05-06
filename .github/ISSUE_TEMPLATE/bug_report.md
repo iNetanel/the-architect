@@ -36,7 +36,7 @@ architect --version
 ## Relevant output
 
 ```
-# Paste terminal output, error messages, or SUCCESS.md contents here
+# Paste terminal output, error messages, or tasks/SUMMARY.md contents here
 ```
 
 ## Environment

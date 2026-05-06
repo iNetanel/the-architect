@@ -37,8 +37,8 @@ It is published to PyPI as `the-architect` and works on any project regardless o
 25. [Configuration](#25-configuration)
 26. [Task Files](#26-task-files)
 27. [PROGRESS.md](#27-progressmd)
-28. [SUCCESS.md — Run Summary](#28-successmd--run-summary)
-29. [ARCHITECT.md — Persistent Project Intelligence](#29-architectmd--persistent-project-intelligence)
+28. [tasks/SUMMARY.md — Run Summary](#28-taskssummarymd--run-summary)
+29. [ARCHITECT.md — Durable Project Intelligence](#29-architectmd--durable-project-intelligence)
 30. [tmux Dashboard — Live Monitoring](#30-tmux-dashboard--live-monitoring)
 31. [Error Handling](#31-error-handling)
 32. [Project Structure — What The Architect Creates](#32-project-structure--what-the-architect-creates)
@@ -57,7 +57,7 @@ The Architect automates the entire development lifecycle:
 - **Stuck Detection** — Monitors agent output for "I'm stuck", "can't proceed", and similar patterns; the circuit breaker reacts to no-progress, repeated errors, and token decline signals
 - **Cooldown Handling** — Detects provider rate limits (HTTP 429, "rate limit" in output) and pauses automatically without consuming retry slots
 - **Retrospective Review** — After execution, runs a reviewer agent that examines completed work, runs tests, and creates fix-up tasks (R01, R02, …) if quality issues are found
-- **Persistent Memory** — Maintains `PROGRESS.md` and `ARCHITECT.md` as persistent memory between runs; ARCHITECT.md accumulates architectural decisions, lessons learned, and constraints over time; it is read and updated by the planner, build agent, and reviewer
+- **Persistent Memory** — Maintains `PROGRESS.md`, `tasks/SUMMARY.md`, and `ARCHITECT.md`; ARCHITECT.md stores durable project intelligence while run history stays with each task package
 - **Token Budget** — Optional hourly spend cap prevents runaway API costs
 - **Premature Exit Guard** — When all tasks are already done, refuses to re-enter planning mode without explicit `--plan`, preventing accidental re-Archictecting of an already-complete project
 
@@ -147,7 +147,7 @@ npm install -g @google/gemini-cli
 
 ### Token Counts with Plain-Text Providers
 
-Claude Code outputs plain text — there are no structured JSON events carrying token usage. Token counts will show as `0` in SUCCESS.md and the dashboard when using Claude Code. Codex CLI and Gemini CLI do emit structured JSONL usage events, so token tracking is available there.
+Claude Code outputs plain text — there are no structured JSON events carrying token usage. Token counts will show as `0` in `tasks/SUMMARY.md` and the dashboard when using Claude Code. Codex CLI and Gemini CLI do emit structured JSONL usage events, so token tracking is available there.
 
 ### Free Tier with Claude Code
 
@@ -298,7 +298,7 @@ Multiple context paths are separated by the OS path separator (`:` on Unix, `;` 
 During every planning session, The Architect automatically scans the project to understand its structure. This detection runs fresh on every `--plan` and the results are:
 
 1. **Injected into the architect's planning prompt** — so the architect knows what languages, frameworks, and components exist before creating tasks
-2. **Written into `ARCHITECT.md`** — persistent project intelligence that accumulates across sessions
+2. **Written into `ARCHITECT.md`** — the durable Repository Map that is refreshed across sessions
 
 ### What Is Detected
 
@@ -399,7 +399,7 @@ Detects inter-component dependencies from:
 
 ### Output Example
 
-The structure report is written into `ARCHITECT.md`'s Project Structure section as rich component blocks:
+The structure report is written into `ARCHITECT.md`'s Repository Map section as rich component blocks:
 
 ```markdown
 **Type:** Multi-repo
@@ -445,13 +445,13 @@ When you run `architect --plan`, The Architect enters interactive planning mode:
 ### What The Architect Does During Planning
 
 1. **Detects project structure** — runs the full detection pipeline (Section 4)
-2. **Reads existing `ARCHITECT.md`** — for persistent project intelligence (previous decisions, constraints, lessons)
+2. **Reads existing `ARCHITECT.md`** — for durable project intelligence (repo map, stack, contracts, decisions, constraints, lessons)
 3. **Reads `PROGRESS.md`** — extracts completed tasks and permanent decisions only (active state is excluded to prevent the architect from confusing "continue old plan" with "start new plan")
 4. **Gathers context** — reads `--context` files and directories if provided
 5. **Detects docs/** — reads file names and first 80 lines of each doc in `docs/` directory
 6. **Runs the provider CLI with the architect role** — OpenCode uses `opencode run --agent architect` with `OPENCODE_CONFIG` set to `.architect/architect.json`. Codex CLI, Claude Code, and Gemini CLI inject the architect prompt directly into the instruction and run non-interactively via their own CLI format.
 7. **Rescues stray task files** — if the architect wrote task files outside `tasks/`, moves them to the canonical location
-8. **Updates `ARCHITECT.md`** — rewrites the structure section, preserves all other sections
+8. **Updates `ARCHITECT.md`** — rewrites the Repository Map section, preserves all other sections
 9. **Writes `PROGRESS.md`** and `tasks/INSTRUCTIONS.md`
 
 ### Planning Retries
@@ -474,7 +474,7 @@ The architect and reviewer both perform high-reasoning work (planning and critiq
 
 The architect prompt is structured with context in priority order:
 
-1. **ARCHITECT.md** — persistent project intelligence (highest priority)
+1. **ARCHITECT.md** — durable project intelligence (highest priority)
 2. **Project Structure Report** — auto-detected repo type, languages, frameworks, components
 3. **Additional Context Files** — user-provided via `--context`
 4. **Project Context** — file tree, PROGRESS.md history (completed tasks + decisions only), docs, tasks status
@@ -492,7 +492,7 @@ The number of tasks is never fixed — it emerges from goal size ÷ scope. The s
 
 ### Previous Run Archiving
 
-When a new planning session starts, previous task files (T and R prefixes) and `INSTRUCTIONS.md` are moved to `tasks/archive/YYYY-MM-DD_HHMMSS/` — history is preserved but the new session starts clean. `INSTRUCTIONS.md` is archived alongside the task files because it contains the original goal, stack information, and plan context that makes the archived tasks meaningful. A fresh `INSTRUCTIONS.md` is generated for the new plan. The log directory (`.architect/logs/`) is also cleared before each run.
+When a new planning session starts, previous task files (T and R prefixes), `INSTRUCTIONS.md`, and `SUMMARY.md` are moved to `tasks/archive/YYYY-MM-DD_HHMMSS/` — history is preserved but the new session starts clean. `INSTRUCTIONS.md` and `SUMMARY.md` are archived alongside the task files because they contain the original goal, plan context, final outcomes, and retrospective information that make archived tasks meaningful. A fresh `INSTRUCTIONS.md` is generated for the new plan. The log directory (`.architect/logs/`) is also cleared before each run.
 
 ---
 
@@ -508,17 +508,17 @@ When you run `architect`, The Architect enters execution mode:
 6. Parses provider output according to the active CLI: OpenCode JSON events, Codex CLI JSONL events, Gemini CLI JSONL events, or Claude Code plain text. Token counts are available when the provider emits structured usage data
 7. After each task: 2-second pause to allow file writes to flush, then checks PROGRESS.md for completion
 8. Pauses `pause_between_tasks` seconds between tasks (configurable, default: 10)
-9. Writes `SUCCESS.md` with the final summary
+9. Writes `tasks/SUMMARY.md` with the final summary
 
 ### Execution Instruction Composition
 
 Each task's execution instruction is composed of three parts:
 
 1. **Execution Protocol** — The Architect's operating rules (from `resources/prompts/execution-protocol.md`), explaining how PROGRESS.md works, completion detection, and anti-hallucination guards
-2. **ARCHITECT.md content** — The full ARCHITECT.md is injected so the build agent has access to accumulated project intelligence: permanent decisions, known constraints, lessons learned, best practices, and the enriched project structure (descriptions, stack, test/lint commands)
+2. **ARCHITECT.md content** — The full ARCHITECT.md is injected so the build agent has access to durable project intelligence: repo map, stack, key flows, shared contracts, code locations, decisions, constraints, lessons, and best practices
 3. **Task-specific instruction** — Project root boundary, PROGRESS.md and task file pointers, retry context (if applicable)
 
-The build agent is also instructed to **update ARCHITECT.md** when it discovers new constraints, lessons, or decisions during execution — making project intelligence truly cumulative.
+The build agent is also instructed to **update ARCHITECT.md** when it discovers durable project knowledge during execution. Task-specific run history stays in `PROGRESS.md` and `tasks/SUMMARY.md`.
 
 ### How Provider Output Is Rendered
 
@@ -1030,6 +1030,7 @@ When no pending tasks exist, the configure run screen is shown:
   › [ ] Free Tier              (OpenRouter free models, rotate on rate limit)
     [ ] Persistent             (30 retries, deeper retrospective)
     [ ] File integrity defense (architect_eval snapshots before existing-file edits)
+    [x] Force Reassessment     (review pending tasks after every task)
     Token budget/hr: 0        (0 = unlimited)
 
   ↑↓ navigate   Space toggle   Enter confirm
@@ -1037,7 +1038,7 @@ When no pending tasks exist, the configure run screen is shown:
 
 Navigate with ↑/↓, toggle checkboxes with Space, type digits for the budget field, and press Enter to confirm.
 
-> **Provider-aware:** The Free Tier option is only shown when the active provider supports OpenRouter (OpenCode + OpenRouter configured). Claude Code users and OpenCode users without OpenRouter see only Persistent, File integrity defense, and Token Budget.
+> **Provider-aware:** The Free Tier option is only shown when the active provider supports OpenRouter (OpenCode + OpenRouter configured). Claude Code users and OpenCode users without OpenRouter see only Persistent, File integrity defense, Force Reassessment, and Token Budget.
 
 ### Resume Screen (Pending Tasks)
 
@@ -1055,6 +1056,7 @@ When pending tasks exist from a previous run, the resume screen is shown:
   › [ ] Free Tier              (OpenRouter free models)
     [x] Persistent             (30 retries, deeper retrospective)
     [x] File integrity defense (architect_eval snapshots before existing-file edits)
+    [x] Force Reassessment     (review pending tasks after every task)
     Token budget/hr: 500000   (0 = unlimited)
 
   Replan               (start fresh with a new goal)
@@ -1092,6 +1094,7 @@ When settings are changed via either interactive screen, they are automatically 
 - `free_mode`
 - `persistent`
 - `integrity`
+- `force_reassessment`
 - `token_budget_per_hour`
 
 ### When Screens Are Skipped
@@ -1230,9 +1233,13 @@ class RetrospectiveRequest(BaseModel):
 
 ## 19. Inter-Task Reassessment
 
-After each task completes, The Architect runs a lightweight **between-task reassessment** pass when the task's outcome indicates downstream impact.
+After each task completes, The Architect can run a lightweight **between-task reassessment** pass over the pending task files. By default, Force Reassessment is enabled, so this happens after every task. If disabled, reassessment remains conditional and runs only after failed tasks or task outcomes that indicate downstream impact.
 
 ### When It Triggers
+
+With `force_reassessment = true` (the default), The Architect invokes reassessment after every task. This keeps pending tasks aligned with the contracts and facts discovered during execution.
+
+With `force_reassessment = false`, The build agent's outcome summary controls the success-path trigger:
 
 The build agent is instructed to include a structured outcome section in its output:
 
@@ -1244,20 +1251,19 @@ Verification: ...
 Impact:       Downstream impact: possible
 ```
 
-When the outcome contains `Downstream impact: possible`, The Architect automatically invokes the architect agent on the **pending task files** — not a full replan, just a targeted review to update or adjust remaining tasks based on what was just completed.
+When the outcome contains `Downstream impact: possible`, or when the task failed, The Architect invokes the architect agent on the **pending task files** — not a full replan, just a targeted review to update or adjust remaining tasks based on what was just completed.
 
 ### What the Reassessment Does
 
 1. Reads the task outcome summary and the list of affected files
-2. Reads `ARCHITECT.md` for full project memory
+2. Reads `ARCHITECT.md` for durable project intelligence
 3. Sends the architect agent a targeted prompt: "Review pending tasks in light of what T02 just changed — update them if needed"
 4. Writes any updated task files to `tasks/`
 5. Does **not** modify `PROGRESS.md` or archived tasks
 
 ### When It Is Skipped
 
-- Outcome summary is empty or does not contain `Downstream impact: possible`
-- `--only` or `--from` targeted runs (reassessment is not meaningful for single-task runs)
+- `force_reassessment = false` and the outcome is neither failed nor marked `Downstream impact: possible`
 - Reassessment errors are caught and logged — they never abort the run
 
 ### File Integrity Snapshot Cleanup
@@ -1490,6 +1496,9 @@ persistent = false                   # 30 retries, 2 retrospective rounds
 # ── File Integrity Defense ───────────────────────────────────────────────────
 integrity = true                     # Snapshot existing files before edits (architect_eval_*)
 
+# ── Inter-Task Reassessment ──────────────────────────────────────────────────
+force_reassessment = true            # Reassess pending tasks after every task
+
 # ── Circuit Breaker ──────────────────────────────────────────────────────────
 circuit_no_progress_threshold = 3    # Zero-file-writes attempts before trip (0=off)
 circuit_same_error_threshold = 3     # Same-error attempts before trip (0=off)
@@ -1526,6 +1535,7 @@ token_budget_per_hour = 0           # Max tokens/rolling hour (0 = disabled)
 | `free_mode` | bool | `false` | Use free OpenRouter models |
 | `persistent` | bool | `false` | Persistent mode (30 retries, 2 retrospective rounds) |
 | `integrity` | bool | `true` | Snapshot existing files before edits (`architect_eval_*`) |
+| `force_reassessment` | bool | `true` | Reassess pending tasks after every task; when false, reassess only after failures or downstream-impact signals |
 | `circuit_no_progress_threshold` | int | `3` | No-progress threshold (0 = disabled) |
 | `circuit_same_error_threshold` | int | `3` | Same-error threshold (0 = disabled) |
 | `circuit_token_decline_pct` | int | `60` | Token decline % to trip (0 = disabled) |
@@ -1696,15 +1706,15 @@ Both must be present and correctly formatted. The Architect **always** writes PR
 |------|-------|-------|
 | `PROGRESS.md` | The Architect | Always written by The Architect |
 | `tasks/INSTRUCTIONS.md` | The Architect | Auto-generated, never by the architect agent |
-| `ARCHITECT.md` | The Architect + append-only sections | Structure section rewritten; others append-only |
+| `ARCHITECT.md` | The Architect + append-only durable sections | Repository Map rewritten; other durable sections append-only |
 | `AGENTS.md` | The User | The Architect reads it but never writes it |
 | `TXX_*.md` task files | Architect agent | Created during planning |
 
 ---
 
-## 28. SUCCESS.md — Run Summary
+## 28. tasks/SUMMARY.md — Run Summary
 
-After every run, The Architect writes `SUCCESS.md` to the project root with a complete summary of what happened.
+After every run, The Architect writes `tasks/SUMMARY.md` with a complete summary of what happened in the current task package. It is archived with the task files and `INSTRUCTIONS.md` when a new planning session starts.
 
 ### Format
 
@@ -1714,6 +1724,10 @@ After every run, The Architect writes `SUCCESS.md` to the project root with a co
 **Date:** 2026-04-19 14:30
 **Duration:** 43:59
 **Result:** ✓ All tasks completed
+
+## Goal
+
+Original user goal for this task package.
 
 ## Tasks
 
@@ -1835,9 +1849,9 @@ With 12 tasks × multiple API calls per task, cache read accumulates fast. **A l
 
 > **Note:** When using Claude Code (plain-text output), token counts are not available — there are no structured usage events. Token columns show `0` for those runs. OpenCode, Codex CLI, and Gemini CLI report token usage via structured events.
 
-### Known Gaps — What SUCCESS.md Does Not Show
+### Known Gaps — What tasks/SUMMARY.md Does Not Show
 
-The following information exists in the system but is not yet surfaced in `SUCCESS.md`:
+The following information exists in the system but is not yet surfaced in `tasks/SUMMARY.md`:
 
 | Missing info | Where the data exists |
 |---|---|
@@ -1848,24 +1862,37 @@ The following information exists in the system but is not yet surfaced in `SUCCE
 
 ---
 
-## 29. ARCHITECT.md — Persistent Project Intelligence
+## 29. ARCHITECT.md — Durable Project Intelligence
 
-`ARCHITECT.md` is The Architect's long-term memory for a specific project. It accumulates knowledge across all planning sessions and execution cycles. It is **read at the start of every planning session and every task execution**, and updated by the planner, the build agent, and the reviewer.
+`ARCHITECT.md` is The Architect's durable project brain. It stores stable project intelligence that future unrelated tasks need: repo responsibilities, tech stack, architecture, key flows, shared contracts, code locations, verification commands, style standards, agent conventions, data/storage, environment rules, operational constraints, permanent decisions, lessons, and best practices. It is **read at the start of every planning session and every task execution**, and updated by the planner, build agent, and reviewer only with durable knowledge.
+
+Run history does not belong in `ARCHITECT.md`. Detailed package history belongs in `tasks/SUMMARY.md` and archived task packages.
 
 ### Sections
 
-The file is organized into append-only sections (except Project Structure):
+The file is organized into durable sections. The Repository Map is tool-managed; other sections are append-only/curated by agents and users:
 
 | Section | Managed By | Update Frequency |
 |---------|-----------|-----------------|
-| **Project Structure** | The Architect | Rewritten fresh on every `--plan` |
+| **Project Overview** | Append-only / curated | Product purpose and major capabilities |
+| **Repository Map** | The Architect | Rewritten fresh on every `--plan` |
+| **Tech Stack** | Append-only / curated | Durable stack notes by repo/component |
+| **Architecture** | Append-only / curated | Major systems and ownership boundaries |
+| **Key Flows** | Append-only / curated | Important runtime flows |
+| **Shared Contracts** | Append-only / curated | APIs, schemas, events, config keys, stage/agent names |
+| **Code Locations** | Append-only / curated | Canonical files/dirs for focused exploration |
+| **Build, Test, and Verification** | Append-only / curated | Commands and verification expectations |
+| **Style and Code Standards** | Append-only / curated | Coding/style guidance for agents |
+| **Agent and AI Conventions** | Append-only / curated | Agent configs, model routing, tool metadata |
+| **Data and Storage** | Append-only / curated | DBs, buckets, collections, persistence conventions |
+| **Environment and Secrets** | Append-only / curated | Env files, required variables, secret rules |
+| **Operational Constraints** | Append-only / curated | Ports, services, dangerous commands, runtime limits |
 | **Permanent Decisions** | Append-only | New entries added during planning and execution |
 | **Known Constraints** | Append-only | New entries added during execution and retrospective |
 | **Lessons Learned** | Append-only | Discovered during execution and retrospective |
 | **Best Practices** | Append-only | Emerged patterns from the codebase |
-| **Planning History** | Append-only | One row per planning session (auto-appended) |
 
-### Project Structure Section
+### Repository Map Section
 
 Written fresh on every `--plan`. Contains:
 - Repo type (single repo, monorepo, multi-repo, untracked)
@@ -1882,17 +1909,17 @@ Written fresh on every `--plan`. Contains:
 
 **Planning phase:**
 1. ARCHITECT.md content is injected into the architect agent's planning prompt (highest priority context)
-2. The architect agent is instructed to update ARCHITECT.md with new decisions and constraints discovered during planning
-3. The structure section is rewritten fresh
-4. Planning history is **auto-appended** by The Architect after each successful plan (using `append_planning_history()`)
+2. The architect agent is instructed to update ARCHITECT.md only with durable project intelligence discovered during planning
+3. The Repository Map section is rewritten fresh
+4. Run history is not appended to ARCHITECT.md; it is written to `tasks/SUMMARY.md` after execution
 
 **Execution phase:**
 1. ARCHITECT.md content is injected into every build agent's execution instruction
-2. The build agent reads it for project context (decisions, constraints, lessons, stack info)
-3. The build agent is instructed to update ARCHITECT.md with new constraints, lessons, or decisions discovered during execution
+2. The build agent reads it for durable project context (repo map, stack, contracts, decisions, constraints, lessons, practices)
+3. The build agent is instructed to update ARCHITECT.md only with durable knowledge discovered during execution
 
 **Retrospective phase:**
-1. The reviewer agent is instructed to update ARCHITECT.md with cross-task patterns, repeated failures, and quality issues discovered during review
+1. The reviewer agent is instructed to promote only durable cross-task patterns, repeated failures, contracts, and quality lessons discovered during review
 
 ### Atomic Writes
 
@@ -1906,7 +1933,7 @@ During planning, execution, and retrospective, entries are appended to:
 - **Known Constraints**: Constraints discovered during work (e.g., "must use Python 3.9+ for compatibility")
 - **Lessons Learned**: What went wrong and why (e.g., "don't skip tests — T02 failed because tests weren't run")
 - **Best Practices**: Patterns that emerged (e.g., "always write tests before implementing feature")
-- **Planning History**: One row per plan with date, goal, task count, and notes (auto-appended after each plan)
+- **Shared Contracts / Code Locations / Verification**: Durable contracts, canonical code locations, and verification commands future work needs
 
 ---
 
@@ -2018,7 +2045,7 @@ When you press `Ctrl+C` during execution:
 1. The current task attempt is interrupted
 2. The lock file is released
 3. The tmux session is cleaned up
-4. A partial SUCCESS.md is written if possible
+4. A partial `tasks/SUMMARY.md` is written if possible
 
 The stop is "graceful" — no lock file is left behind, no tmux session is orphaned.
 
@@ -2042,10 +2069,12 @@ your-project/
 │   ├── T01_init.md
 │   ├── T02_feature.md
 │   ├── INSTRUCTIONS.md       # Project context (auto-generated)
+│   ├── SUMMARY.md            # Final run summary (auto-generated)
 │   └── archive/              # Previous run archives
 │       └── 2026-04-12_143000/
 │           ├── T01_old.md
-│           └── INSTRUCTIONS.md  # Plan context from previous run
+│           ├── INSTRUCTIONS.md  # Plan context from previous run
+│           └── SUMMARY.md       # Final summary from previous run
 ├── .architect/
 │   ├── architect.json        # The Architect's planning config (architect + reviewer agents)
 │   ├── prompts/             # Agent prompts (written from resources)
@@ -2063,8 +2092,7 @@ your-project/
 │   ├── monitor_stop.flag    # Graceful stop flag (Ctrl+C)
 │   └── monitor_kill.flag    # Immediate kill flag
 ├── PROGRESS.md              # Task state tracker
-├── SUCCESS.md               # Final run summary (auto-generated)
-├── ARCHITECT.md             # Project architecture memory
+├── ARCHITECT.md             # Durable project intelligence
 └── architect.toml           # Optional configuration
 ```
 
@@ -2095,7 +2123,7 @@ the_architect/              # Python package (published to PyPI as "the-architec
 │   ├── retrospective.py         # Retrospective reviewer runner
 │   ├── runner.py                # Task execution engine (stream_provider, run_task, run_all)
 │   ├── structure.py             # Project structure detection (repo type, framework, deps)
-│   ├── success.py               # SUCCESS.md generation + terminal summary
+│   ├── success.py               # tasks/SUMMARY.md generation + terminal summary
 │   ├── tasks.py                 # Task discovery and state
 │   └── tmux.py                  # tmux session management + dashboard launcher
 └── resources/

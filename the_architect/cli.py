@@ -2,7 +2,7 @@
 
 Planning uses interactive prompts (questionary arrow-key menus).
 Execution streams opencode output raw to the terminal — no TUI overlay.
-Results are written to SUCCESS.md and printed as a terminal summary.
+Results are written to tasks/SUMMARY.md and printed as a terminal summary.
 """
 
 from __future__ import annotations
@@ -1834,19 +1834,8 @@ def run_planning_mode(
         console.print(f"[#7cc800]✓ Created {len(result.tasks_created)} tasks[/#7cc800]")
         console.print()
 
-        # ── Auto-append planning history to ARCHITECT.md ──────────────
-        try:
-            from the_architect.core.architect_md import append_planning_history
-
-            tasks_desc = ", ".join(result.tasks_created) if result.tasks_created else "none"
-            append_planning_history(
-                project,
-                goal=goal,
-                tasks_created=tasks_desc,
-                notes=f"Scope: {scope.value}",
-            )
-        except Exception as arch_exc:
-            logger.debug(f"Failed to append planning history to ARCHITECT.md: {arch_exc!r}")
+        # Run history is written to tasks/SUMMARY.md at completion. ARCHITECT.md
+        # is reserved for durable project intelligence, not per-run logs.
     except PlanningFailedError as e:
         console.print(f"[red]Planning failed: {e}[/red]")
         raise SystemExit(1)
@@ -2389,7 +2378,7 @@ async def _run_tasks_raw(
         except Exception:
             pass  # Monitor write failure must not stop the run
 
-    # Pre-populate results for already-resolved tasks so the SUCCESS.md
+    # Pre-populate results for already-resolved tasks so the run summary
     # summary reflects their real state.  Done → skipped (they were
     # already complete before this run).  Failed → we surface them as
     # failed in the summary so the reviewer has full visibility and the
@@ -4183,7 +4172,7 @@ def _run_main(
                 break
             retro_duration = time.time() - retro_start
 
-            # Collect retrospective round summary for SUCCESS.md
+            # Collect retrospective round summary for tasks/SUMMARY.md
             collected_retrospective_rounds.append(
                 RetrospectiveRound(
                     round_number=round_num,
@@ -4279,7 +4268,12 @@ def _run_main(
             total_tokens = total_tokens + r.tokens
         retro_rounds = collected_retrospective_rounds if collected_retrospective_rounds else None
         success_path = write_success_md(
-            project, all_results, total_duration, total_tokens, retrospective_rounds=retro_rounds
+            project,
+            all_results,
+            total_duration,
+            total_tokens,
+            retrospective_rounds=retro_rounds,
+            original_goal=original_goal,
         )
 
         # TUI path: show the animated success screen instead of the plain

@@ -69,23 +69,25 @@ Silent file corruption gets caught at the source, not three tasks later when not
 
 AI agents are linear thinkers. When T02 adds a new database schema, the agent that runs T03 doesn't automatically know the schema changed — unless someone tells it.
 
-The Architect solves this with inter-task reassessment. After each task, the build agent reports its outcome in a structured block that includes an impact signal: `Downstream impact: possible` or `Downstream impact: none`.
+The Architect solves this with inter-task reassessment. By default, Force Reassessment is enabled, so the architect agent checks pending tasks after every completed or failed task. The build agent also reports its outcome in a structured block that includes an impact signal: `Downstream impact: possible` or `Downstream impact: none`.
 
-When downstream impact is flagged, The Architect immediately invokes the architect agent on the pending task files — a targeted pass to update T03, T04, and beyond to reflect what just changed. This is not a full replan. It's a surgical adjustment. Future tasks stay in sync with what has actually been built so far.
+During reassessment, The Architect invokes the architect agent on the pending task files — a targeted pass to update T03, T04, and beyond to reflect what just changed. This is not a full replan. It's a surgical adjustment. Future tasks stay in sync with what has actually been built so far.
 
-Tasks that are self-contained — a test fix, a doc update, a style change — set `Downstream impact: none` and no reassessment runs.
+If Force Reassessment is disabled, reassessment becomes conditional: failed tasks still trigger it, and successful tasks trigger it only when they report `Downstream impact: possible`.
 
 ---
 
 ## ARCHITECT.md — The File That Grows Smarter Over Time
 
-`ARCHITECT.md` is not a config file. It's a living document that accumulates project intelligence across sessions. Every time The Architect runs:
+`ARCHITECT.md` is not a config file and not a run log. It's a living document that stores durable project intelligence across sessions. Every time The Architect runs:
 
-1. **During planning** — the architect agent reads it to learn what the project is, what decisions were made, what went wrong last time
-2. **During execution** — the build agent reads it for context and *writes to it* when it discovers new constraints, patterns, or lessons
-3. **During retrospective** — the reviewer reads it and updates it with quality findings
+1. **During planning** — the architect agent reads it to learn the repo map, stack, contracts, decisions, constraints, and conventions
+2. **During execution** — the build agent reads it for context and *writes to it* when it discovers durable project knowledge
+3. **During retrospective** — the reviewer reads it and promotes durable quality findings, contracts, or lessons
 
 Over time, ARCHITECT.md becomes the project's institutional memory — the stuff that's normally locked in a senior developer's head, now captured in a file that any future AI session can read.
+
+Detailed run history belongs in `tasks/SUMMARY.md`, which is archived with each task package.
 
 It's worth committing to git. It improves with every run.
 

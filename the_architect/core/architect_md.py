@@ -13,12 +13,23 @@ Ownership rules:
     - The user can manually edit or remove entries at any time.
 
 Section layout:
-    - Project Structure (managed by tool)
+    - Project Overview (durable product/repo purpose)
+    - Repository Map (managed by tool)
+    - Tech Stack
+    - Architecture
+    - Key Flows
+    - Shared Contracts
+    - Code Locations
+    - Build, Test, and Verification
+    - Style and Code Standards
+    - Agent and AI Conventions
+    - Data and Storage
+    - Environment and Secrets
+    - Operational Constraints
     - Permanent Decisions (append-only)
     - Known Constraints (append-only)
     - Lessons Learned (append-only)
     - Best Practices (append-only)
-    - Planning History (append-only)
 
 Writes are atomic: temp file then rename, so readers never see partial content.
 """
@@ -41,13 +52,12 @@ from the_architect.core.structure import StructureReport, format_structure_repor
 ARCHITECT_MD_FILE = Path("ARCHITECT.md")
 
 # Section markers used for parsing
-_STRUCTURE_START = "## Project Structure"
-_STRUCTURE_END = "## Permanent Decisions"
+_STRUCTURE_START = "## Repository Map"
+_STRUCTURE_END = "## Tech Stack"
 _DECISIONS_START = "## Permanent Decisions"
 _CONSTRAINTS_START = "## Known Constraints"
 _LESSONS_START = "## Lessons Learned"
 _BEST_PRACTICES_START = "## Best Practices"
-_PLANNING_HISTORY_START = "## Planning History"
 
 
 # ---------------------------------------------------------------------------
@@ -59,15 +69,121 @@ _ARCHITECT_MD_TEMPLATE = """\
 
 > This file is The Architect's persistent memory for this project.
 > It is read at the start of every planning session and every task execution.
-> The structure section is updated automatically on each plan.
-> All other sections accumulate knowledge over time — never delete entries
-> unless they are factually wrong.
+> It stores durable project intelligence only — not run history.
+> Run/package history belongs in tasks/SUMMARY.md and archived task packages.
+> The Repository Map section is updated automatically on each plan.
+> Other sections accumulate durable knowledge over time — never add temporary
+> task notes here unless they will help future unrelated work.
 
 ---
 
-## Project Structure
+## Project Overview
+
+> What this product/project is, who it serves, and the main capabilities it owns.
+
+- _No project overview recorded yet._
+
+---
+
+## Repository Map
 
 {{STRUCTURE_SECTION}}
+
+---
+
+## Tech Stack
+
+> Languages, frameworks, package managers, runtimes, databases, storage,
+> and external services by repo/component.
+
+- _No durable tech stack notes recorded yet._
+
+---
+
+## Architecture
+
+> Major systems, ownership boundaries, and how components connect.
+
+- _No architecture notes recorded yet._
+
+---
+
+## Key Flows
+
+> Important runtime flows such as auth, lifecycle transitions, streaming,
+> agents, scheduling, persistence, and deployment.
+
+- _No key flows recorded yet._
+
+---
+
+## Shared Contracts
+
+> Stable API shapes, schemas, events, config keys, stage names, agent names,
+> and cross-component contracts.
+
+- _No shared contracts recorded yet._
+
+---
+
+## Code Locations
+
+> Where important systems live so agents can start focused exploration quickly.
+
+- _No code locations recorded yet._
+
+---
+
+## Build, Test, and Verification
+
+> Commands and verification expectations by repo/component.
+
+- _No verification commands recorded yet._
+
+---
+
+## Style and Code Standards
+
+> Coding style, naming, file-size guidance, class/function boundaries, logging,
+> typing, testing, comments, and frontend/backend conventions.
+
+- _No style standards recorded yet._
+
+---
+
+## Agent and AI Conventions
+
+> Agent configs, prompt locations, model routing, tool metadata,
+> AI communication patterns, and provider-specific conventions.
+
+- _No agent conventions recorded yet._
+
+---
+
+## Data and Storage
+
+> Databases, buckets, collections, object paths, persistence conventions,
+> and data ownership boundaries.
+
+- _No data/storage notes recorded yet._
+
+---
+
+## Environment and Secrets
+
+> Environment files, required variables, secret-handling rules, local services,
+> and setup constraints.
+
+- _No environment notes recorded yet._
+
+---
+
+## Operational Constraints
+
+> Ports, background services, rate limits, dangerous commands,
+> deployment assumptions, and runtime limits.
+
+- _No operational constraints recorded yet._
 
 ---
 
@@ -104,13 +220,67 @@ _ARCHITECT_MD_TEMPLATE = """\
 
 ---
 
-## Planning History
-
-> Summary of each planning session.
-
-| Date | Goal | Tasks Created | Notes |
-|------|------|---------------|-------|
 """
+
+_STANDARD_SECTION_DEFAULTS: dict[str, str] = {
+    "Project Overview": (
+        "> What this product/project is, who it serves, and the main capabilities it "
+        "owns.\n\n"
+        "- _No project overview recorded yet._"
+    ),
+    "Tech Stack": (
+        "> Languages, frameworks, package managers, runtimes, databases, storage, "
+        "and external services by repo/component.\n\n"
+        "- _No durable tech stack notes recorded yet._"
+    ),
+    "Architecture": (
+        "> Major systems, ownership boundaries, and how components connect.\n\n"
+        "- _No architecture notes recorded yet._"
+    ),
+    "Key Flows": (
+        "> Important runtime flows such as auth, lifecycle transitions, streaming, "
+        "agents, scheduling, persistence, and deployment.\n\n"
+        "- _No key flows recorded yet._"
+    ),
+    "Shared Contracts": (
+        "> Stable API shapes, schemas, events, config keys, stage names, agent names, "
+        "and cross-component contracts.\n\n"
+        "- _No shared contracts recorded yet._"
+    ),
+    "Code Locations": (
+        "> Where important systems live so agents can start focused exploration quickly.\n\n"
+        "- _No code locations recorded yet._"
+    ),
+    "Build, Test, and Verification": (
+        "> Commands and verification expectations by repo/component.\n\n"
+        "- _No verification commands recorded yet._"
+    ),
+    "Style and Code Standards": (
+        "> Coding style, naming, file-size guidance, class/function boundaries, "
+        "logging, typing, testing, comments, and frontend/backend conventions.\n\n"
+        "- _No style standards recorded yet._"
+    ),
+    "Agent and AI Conventions": (
+        "> Agent configs, prompt locations, model routing, tool metadata, "
+        "AI communication patterns, and provider-specific conventions.\n\n"
+        "- _No agent conventions recorded yet._"
+    ),
+    "Data and Storage": (
+        "> Databases, buckets, collections, object paths, persistence conventions, "
+        "and data ownership boundaries.\n\n"
+        "- _No data/storage notes recorded yet._"
+    ),
+    "Environment and Secrets": (
+        "> Environment files, required variables, secret-handling rules, local services, "
+        "and setup constraints.\n\n"
+        "- _No environment notes recorded yet._"
+    ),
+    "Operational Constraints": (
+        "> Ports, background services, rate limits, dangerous commands, "
+        "deployment assumptions, and runtime limits.\n\n"
+        "- _No operational constraints recorded yet._"
+    ),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -170,7 +340,7 @@ def parse_sections(content: str) -> dict[str, str]:
 
 
 def extract_structure_section(content: str) -> str:
-    """Extract the Project Structure section from ARCHITECT.md content.
+    """Extract the Repository Map section from ARCHITECT.md content.
 
     Args:
         content: Raw ARCHITECT.md content.
@@ -179,7 +349,7 @@ def extract_structure_section(content: str) -> str:
         The structure section text, or empty string if not found.
     """
     sections = parse_sections(content)
-    return sections.get("Project Structure", "")
+    return sections.get("Repository Map", sections.get("Project Structure", ""))
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +405,7 @@ def create_architect_md(project_dir: Path, structure_section: str) -> Path:
 
 
 def update_structure_section(project_dir: Path, structure_section: str) -> None:
-    """Update only the Project Structure section in ARCHITECT.md.
+    """Update only the Repository Map section in ARCHITECT.md.
 
     Rewrites the structure section fresh while preserving all other
     sections exactly as they are.
@@ -262,19 +432,24 @@ def update_structure_section(project_dir: Path, structure_section: str) -> None:
     # Parse sections
     sections = parse_sections(content)
 
-    if "Project Structure" not in sections:
-        # Malformed — recreate fresh
-        logger.warning("ARCHITECT.md has no Project Structure section — recreating")
-        create_architect_md(project_dir, structure_section)
-        return
+    if "Repository Map" not in sections:
+        if "Project Structure" in sections:
+            sections["Repository Map"] = sections.pop("Project Structure")
+        else:
+            # Malformed — recreate fresh
+            logger.warning("ARCHITECT.md has no Repository Map section — recreating")
+            create_architect_md(project_dir, structure_section)
+            return
 
     # Replace structure section, keep everything else
-    sections["Project Structure"] = structure_section
+    sections["Repository Map"] = structure_section
+    for section_name, default_body in _STANDARD_SECTION_DEFAULTS.items():
+        sections.setdefault(section_name, default_body)
 
     # Rebuild the file
     new_content = _rebuild_architect_md(sections, content)
     _atomic_write(path, new_content)
-    logger.debug("Updated ARCHITECT.md structure section")
+    logger.debug("Updated ARCHITECT.md repository map section")
 
 
 def _clean_section_body(body: str) -> str:
@@ -330,14 +505,26 @@ def _rebuild_architect_md(sections: dict[str, str], original_content: str) -> st
     while header_lines and not header_lines[-1].strip():
         header_lines.pop()
 
-    # Known section order
+    # Known section order. Run history is intentionally excluded from
+    # ARCHITECT.md; detailed run history lives in tasks/SUMMARY.md and archives.
     section_order = [
-        "Project Structure",
+        "Project Overview",
+        "Repository Map",
+        "Tech Stack",
+        "Architecture",
+        "Key Flows",
+        "Shared Contracts",
+        "Code Locations",
+        "Build, Test, and Verification",
+        "Style and Code Standards",
+        "Agent and AI Conventions",
+        "Data and Storage",
+        "Environment and Secrets",
+        "Operational Constraints",
         "Permanent Decisions",
         "Known Constraints",
         "Lessons Learned",
         "Best Practices",
-        "Planning History",
     ]
 
     parts: list[str] = []
@@ -441,7 +628,7 @@ def append_planning_history(
     tasks_created: str,
     notes: str = "",
 ) -> None:
-    """Append a row to the Planning History table.
+    """Deprecated no-op: run history now belongs in tasks/SUMMARY.md.
 
     Args:
         project_dir: The project root directory.
@@ -449,14 +636,7 @@ def append_planning_history(
         tasks_created: Description of tasks created (e.g. "T01-T09").
         notes: Optional notes about this planning session.
     """
-    path = project_dir / ARCHITECT_MD_FILE
-    if not path.exists():
-        return
-
-    date = datetime.now(tz=UTC).strftime("%Y-%m-%d")
-    row = f"| {date} | {goal} | {tasks_created} | {notes} |"
-
-    _append_to_section_table(path, _PLANNING_HISTORY_START, row)
+    return
 
 
 # ---------------------------------------------------------------------------
@@ -491,7 +671,7 @@ def _append_to_section_table(path: Path, section_marker: str, row: str) -> None:
 
     Args:
         path: Path to ARCHITECT.md.
-        section_marker: The ``## `` heading text to find (e.g. ``"## Planning History"``).
+        section_marker: The ``## `` heading text to find (e.g. ``"## Permanent Decisions"``).
         row: The table row to insert (must start and end with ``|``).
     """
     try:

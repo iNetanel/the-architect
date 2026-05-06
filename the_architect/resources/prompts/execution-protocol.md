@@ -12,14 +12,49 @@ override your agent's delegation or orchestration instructions.
 
 ## What The Architect expects from you
 
-1. Read `ARCHITECT.md` — persistent project intelligence (decisions, constraints, lessons, best practices)
+1. Read `ARCHITECT.md` — durable project intelligence (repo map, stack, contracts, decisions, constraints, lessons, best practices)
 2. Read `tasks/INSTRUCTIONS.md` — project context, stack, conventions, and full task list
 3. Read `PROGRESS.md` — current state, what is done, what is next
 4. Read `AGENTS.md` or `CLAUDE.md` if either exists — the user's project rules (read it explicitly if your CLI doesn't auto-load it; OpenCode uses `AGENTS.md`, Claude Code uses `CLAUDE.md`)
 5. Read your task file in `tasks/` — your specific instructions for this task
-6. Complete every item in the task file — work autonomously without asking the human for confirmation
-7. Rewrite `PROGRESS.md` when done — this is how The Architect knows you finished
-8. Output `<promise>TXX_COMPLETE</promise>` when done — this is the primary completion signal
+6. Follow the task's Exploration Plan before editing — inspect the smallest relevant code slice first
+7. Complete every item in the task file — work autonomously without asking the human for confirmation
+8. Rewrite `PROGRESS.md` when done — this is how The Architect knows you finished
+9. Output `<promise>TXX_COMPLETE</promise>` when done — this is the primary completion signal
+
+---
+
+## Focused Codebase Discovery Before Implementation
+
+Task files define outcomes and focused exploration lanes. They may intentionally
+avoid prescribing exact internals. Before editing files, use the task's
+Exploration Plan to inspect the smallest relevant part of the codebase.
+
+You are expected to discover:
+
+- Existing files, modules, routes, components, providers, or config patterns related to the task
+- Naming conventions and data shapes already used by the project
+- Existing tests and verification commands for the affected area
+- Whether an existing abstraction should be extended instead of creating a new one
+- Integration points with previous completed tasks and future pending tasks
+
+Do not perform broad, unfocused repo exploration. Start with the files and areas
+named or implied by the Exploration Plan, then broaden only when those files
+directly point to another dependency you must understand.
+
+Prefer existing project patterns over invented names or new structures. Do not
+create new files, APIs, components, hooks, models, agents, or config keys until
+you have checked whether an existing place should be extended.
+
+If the task suggests an approach, verify it against the codebase before following
+it. The task's required outcomes matter more than guessed implementation details.
+If the safest implementation differs from a suggested approach, implement the
+safest codebase-consistent approach and record the decision in PROGRESS.md.
+
+If you finalize a shared contract that downstream tasks depend on — for example
+an endpoint shape, event payload, data model, config key, component interface, or
+agent name — record the final contract in PROGRESS.md under Last Task Summary or
+Task Outcomes. Reassessment uses that record to update pending tasks.
 
 ---
 
@@ -172,18 +207,23 @@ One sentence describing what this task accomplishes.
 ## Context
 Prior decisions, architecture notes, or constraints.
 
+## Exploration Plan
+Focused areas and existing patterns to inspect before editing. Treat this as the
+starting point for discovery, not as permission to wander through the whole repo.
+
 ## Tasks
 
 ### TXX.1 — Sub-task title
-[Specific instruction]
+[Outcome to achieve; discover and follow existing implementation patterns]
 
 ### TXX.2 — Sub-task title
-[Specific instruction]
+[Outcome to achieve; discover and follow existing implementation patterns]
 ```
 
 Ensure every sub-task is completed. Do not skip any. If a sub-task depends on a previous
 one that was not completed, note it in your summary but continue with what
-you can do.
+you can do. If the task omits implementation details, that is intentional — use
+focused codebase discovery to choose the correct local implementation.
 
 ---
 
@@ -195,7 +235,9 @@ You MUST NOT mark a task as Done, and you MUST NOT output the completion
 promise, unless ALL of the following are true:
 
 - ✅ Every sub-task in the task file has been implemented
+- ✅ Relevant existing code paths were inspected before implementation
 - ✅ Tests have been **RUN and verified** (do not assume — confirm they actually pass)
+- ✅ New shared contracts follow existing conventions or are recorded in PROGRESS.md
 - ✅ No `print()` statements, debug code, or `TODO` comments remain
 - ✅ No outstanding errors or failures in the terminal output
 - ✅ PROGRESS.md has been rewritten with the correct status
@@ -218,13 +260,23 @@ exhausts retries) will take it from there. Do NOT write `Failed` or
 
 ## Updating ARCHITECT.md — Persistent Project Intelligence
 
-ARCHITECT.md is The Architect's long-term memory. It accumulates knowledge
-across all planning sessions and execution cycles. When you discover something
-that future tasks should know about, update ARCHITECT.md.
+ARCHITECT.md is The Architect's durable project brain. It should contain stable
+project intelligence that future unrelated tasks need: repo responsibilities,
+tech stack, architecture, key flows, shared contracts, code locations,
+verification commands, style standards, agent conventions, data/storage,
+environment rules, operational constraints, permanent decisions, lessons, and
+best practices.
+
+It is not run history. Task/package history belongs in PROGRESS.md while running
+and tasks/SUMMARY.md when the package completes.
 
 ### When to update ARCHITECT.md
 
 Update ARCHITECT.md **after** completing your task, **before** marking it Done:
+
+- **Project intelligence** — If you discovered a durable repo/component role,
+  important code location, key flow, shared contract, verification command,
+  environment rule, or operational constraint, add it to the matching section.
 
 - **Permanent Decisions** — If you made an architectural choice that should not
   be revisited (e.g. "use SQLite for local cache", "all API responses follow
@@ -245,14 +297,17 @@ Update ARCHITECT.md **after** completing your task, **before** marking it Done:
 ### How to update ARCHITECT.md
 
 - Only **append** — never remove or modify existing entries
-- Do NOT modify the Project Structure section — The Architect tool manages that
-- Add rows to tables (Permanent Decisions, Planning History)
-- Add list items (Known Constraints, Lessons Learned, Best Practices)
+- Do NOT modify the Repository Map section — The Architect tool manages that
+- Add rows to tables such as Permanent Decisions
+- Add list items to durable knowledge sections such as Known Constraints,
+  Lessons Learned, Best Practices, Shared Contracts, Code Locations, or
+  Verification
 - Replace placeholder text (`_No ... recorded yet._`) with real entries
 
 ### What NOT to put in ARCHITECT.md
 
-- Task-specific details that are already in PROGRESS.md
+- Task-specific details that are already in PROGRESS.md or tasks/SUMMARY.md
+- The current goal, task list, or run summary
 - Temporary state (what you're currently working on)
 - Information that only applies to this one task and won't help future tasks
 

@@ -395,8 +395,10 @@ This rule applies to all agents on all providers whenever `integrity = true`.
 
 ## Inter-Task Reassessment
 
-After each task, The Architect may run a lightweight reassessment pass.
-The build agent triggers this by including a structured outcome block at the end of its work:
+After each task, The Architect may run a lightweight reassessment pass. By default,
+Force Reassessment is enabled, so pending tasks are reassessed after every task.
+If Force Reassessment is disabled, the build agent triggers reassessment by
+including a structured outcome block at the end of its work:
 
 ```
 === TASK OUTCOME ===
@@ -406,9 +408,9 @@ Verification: tests run, linter result
 Impact:       Downstream impact: possible   ← or "none"
 ```
 
-When `Downstream impact: possible` is set, the architect agent reviews the pending
-task files and updates them to reflect what just changed. This prevents later tasks
-from doing redundant or conflicting work.
+When `Downstream impact: possible` is set, or when a task fails, the architect
+agent reviews the pending task files and updates them to reflect what just
+changed. This prevents later tasks from doing redundant or conflicting work.
 
 **Rules for build agents:**
 

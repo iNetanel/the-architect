@@ -140,14 +140,14 @@ That is it. The Architect plans, executes, retries, reviews, and reports — una
   |                Runs your test suite                         |
   |                Creates fix-up tasks if issues found         |
   |                                                             |
-  |  5. REMEMBER   ARCHITECT.md accumulates decisions,          |
-  |                constraints, and lessons across sessions     |
+  |  5. REMEMBER   ARCHITECT.md stores durable project          |
+  |                intelligence across sessions                 |
   |                Every run builds on the last                 |
   |                                                             |
   +-------------------------------------------------------------+
       |
       v
-  Results — code written, tests passing, SUCCESS.md summary
+  Results — code written, tests passing, tasks/SUMMARY.md summary
 ```
 
 **The Architect never writes your application code.** Your AI coding tool does. The Architect makes sure it actually finishes.
@@ -192,7 +192,7 @@ Everything below is what you get on top of your AI coding CLI — none of it exi
 | Scope control | Fixed | `simple` / `standard` / `complex` — controls task granularity |
 | Project awareness | None | Repo type, languages, frameworks, components, dependency graph auto-detected |
 | Context injection | Paste manually | `--context PRD.md` or `--context design/` — any file or directory injected into planning |
-| Memory across sessions | None | `ARCHITECT.md` accumulates decisions, constraints, and lessons learned |
+| Memory across sessions | None | `ARCHITECT.md` stores durable project intelligence |
 
 #### Execution
 
@@ -239,7 +239,7 @@ Everything below is what you get on top of your AI coding CLI — none of it exi
 |---|---|---|
 | UI | Raw terminal scroll | Full-screen Textual TUI with Output / Events / Details tabs |
 | Live monitoring | None | tmux split-pane dashboard (non-TUI fallback) |
-| Run summary | None | `SUCCESS.md` — tasks, attempts, models, tokens, duration, retrospective rounds |
+| Run summary | None | `tasks/SUMMARY.md` — tasks, attempts, models, tokens, duration, retrospective rounds |
 | Task history | None | Every run archived to `tasks/archive/YYYY-MM-DD_HHMMSS/` |
 | Logs | Wherever the CLI writes | Per-task logs in `.architect/logs/`, per-attempt, per-reassessment |
 | Circuit state | None | `architect circuit` — view and reset per-task circuit breaker state |
@@ -416,6 +416,7 @@ retrospective_rounds = 1             # 0 = disabled
 free_mode = false
 persistent = false
 integrity = true                     # snapshot existing files before edits (default: true)
+force_reassessment = true            # reassess pending tasks after every task
 standalone_mode = ""                 # bypass provider config, use this model directly
 
 # Circuit breaker
@@ -446,6 +447,7 @@ token_budget_per_hour = 0            # 0 = unlimited
 | `free_mode` | `false` | Rotate free OpenRouter models |
 | `persistent` | `false` | 30 retries, 2 retrospective rounds |
 | `integrity` | `true` | Snapshot existing files before edits (`architect_eval_*`) |
+| `force_reassessment` | `true` | Reassess pending tasks after every task; when false, only failed/downstream-impact tasks trigger reassessment |
 | `standalone_mode` | `""` | Bypass provider config, use this model for all operations |
 | `circuit_no_progress_threshold` | `3` | No-progress trips before circuit opens |
 | `circuit_same_error_threshold` | `3` | Same-error trips before circuit opens |
@@ -464,14 +466,15 @@ When stdout is a TTY and colour is supported, `architect` opens a Textual TUI in
 Screens and what they show:
 
 - **Execution** — tabbed viewport
-  - **Output** — provider stream, task-start banners, attempt lines, done/failed markers
-  - **Events** — `task_start`, `attempt_start`, `model_switched`, `circuit_state_change`, `cooldown_start`/`_end`, `replan_start`/`_end`, `task_done`, `task_failed`
-  - **Details** — current task, phase, attempt, model, tokens
+  - **Live** — provider stream, task-start banners, attempt lines, done/failed markers
+  - **Progress** — current task state and task list
+  - **Diagnostics** — retries, model switches, circuit events, cooldowns, and replans
+  - **Settings** — provider, model, agent, and feature flags used for the run
 - **Wait screen overlay** — animated spinner, title, detail block, log tail. Pushed onto the running app for planning, retrospective rounds, and between-task reassessment.
-- **Mode selection / Resume** — free tier, persistent, integrity defense, token budget.
+- **Mode selection / Resume** — provider/model choices, free tier, persistent mode, integrity defense, force reassessment, and token budget.
 - **Inspection** — `architect list --tui`, `architect status --tui`, `architect logs --tui`, `architect circuit --tui`, `architect monitor --tui`, `architect config --tui`.
 
-Key bindings inside the execution screen: `o` / `e` / `d` switch tabs, `q` or `Ctrl+C` quit.
+Key bindings inside the execution screen: `l` / `p` / `d` / `g` switch tabs, `q` or `Ctrl+C` quit.
 
 Opt out of the TUI when you need plain output:
 
@@ -567,15 +570,15 @@ your-project/
 │   ├── T01_init.md
 │   ├── T02_feature.md
 │   ├── INSTRUCTIONS.md       # Project context for the agent
+│   ├── SUMMARY.md            # Final summary for the current task package
 │   └── archive/              # Previous runs preserved here
 ├── .architect/
 │   ├── logs/                 # Full execution transcripts per task
 │   ├── circuit.json          # Circuit breaker state (persists across restarts)
 │   ├── monitor_state.json    # Live dashboard state
 │   └── runner.lock           # Prevents concurrent runs
-├── ARCHITECT.md              # Persistent project intelligence (grows over time)
+├── ARCHITECT.md              # Durable project intelligence (curated project brain)
 ├── PROGRESS.md               # Current task state
-├── SUCCESS.md                # Run summary (generated after each run)
 └── architect.toml            # Your configuration (optional)
 ```
 

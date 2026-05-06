@@ -161,7 +161,7 @@ Use the [bug report template](https://github.com/inetanel/the-architect/issues/n
 Always include:
 - `architect --version` output — version and build number
 - Provider and its version
-- Relevant terminal output or `SUCCESS.md` contents
+- Relevant terminal output or `tasks/SUMMARY.md` contents
 
 ---
 

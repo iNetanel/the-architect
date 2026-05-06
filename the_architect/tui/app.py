@@ -622,7 +622,7 @@ class ArchitectApp(App[None]):
 
         Thread-safe. Blocks the calling thread until the user dismisses
         the screen (presses Enter, Q, or Escape). Called from the worker
-        thread after SUCCESS.md has been written.
+        thread after tasks/SUMMARY.md has been written.
         """
         from the_architect.tui.screens.success import SuccessScreen
 

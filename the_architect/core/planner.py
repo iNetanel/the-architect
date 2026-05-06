@@ -536,9 +536,12 @@ def build_planning_instruction(request: PlanningRequest, context: str) -> str:
             "Do NOT write PROGRESS.md. Do NOT write INSTRUCTIONS.md. Write task files only.",
             "",
             "ABOUT ARCHITECT.md:",
-            "  ARCHITECT.md reflects PREVIOUS planning sessions — not the current goal.",
-            "  Use it for constraints, decisions, and lessons only.",
-            "  When you update it, append rows/entries only — "
+            "  ARCHITECT.md is durable project intelligence, not run history.",
+            "  Use it for repo knowledge, stack, architecture, contracts, constraints, "
+            "decisions, lessons, and best practices only.",
+            "  Do NOT append the current goal, task list, or planning history there; "
+            "run history belongs in tasks/SUMMARY.md.",
+            "  When you update it, append durable rows/entries only — "
             "no extra --- dividers, no blank lines between rows.",
             "",
             "ABOUT tasks/ AND tasks/archive/:",
@@ -813,13 +816,14 @@ def archive_previous_run(
 ) -> Path | None:
     """Archive task files from the previous run and clear the log directory.
 
-    Moves all T- and R-prefixed task files **and INSTRUCTIONS.md**
+    Moves all T- and R-prefixed task files, **INSTRUCTIONS.md**, and
+    **SUMMARY.md**
     into ``tasks/archive/YYYY-MM-DD_HHMMSS/`` so history is preserved but
     the new planning session starts clean.
 
-    INSTRUCTIONS.md is archived alongside the task files because it contains
-    the original goal, stack information, architecture notes, and the full
-    task list — context that is essential for understanding archived tasks.
+    INSTRUCTIONS.md and SUMMARY.md are archived alongside the task files because
+    they contain the original goal, stack information, architecture notes, final
+    outcomes, and retrospective information that make archived tasks meaningful.
 
     Also clears the log directory (``log_dir``) because logs are internal
     The Architect artifacts — they have no user value after a run completes and
@@ -853,6 +857,10 @@ def archive_previous_run(
     instructions_md = tasks_dir / "INSTRUCTIONS.md"
     if instructions_md.exists() and instructions_md.is_file():
         to_archive.append(instructions_md)
+
+    summary_md = tasks_dir / "SUMMARY.md"
+    if summary_md.exists() and summary_md.is_file():
+        to_archive.append(summary_md)
 
     if not to_archive:
         # Nothing to archive — still clear logs

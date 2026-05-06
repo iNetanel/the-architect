@@ -1,7 +1,7 @@
 """The Architect version — single source of truth from pyproject.toml.
 
-Uses ``importlib.metadata`` when the package is installed,
-falls back to reading ``pyproject.toml`` directly in development mode.
+Reads ``pyproject.toml`` in development mode and falls back to
+``importlib.metadata`` when running from an installed package.
 """
 
 from __future__ import annotations
@@ -14,23 +14,24 @@ def get_version() -> str:
     """Return The Architect version string.
 
     Resolution order:
-        1. ``importlib.metadata.version("the-architect")`` — works when installed.
-        2. Read ``pyproject.toml`` from the package root — works in dev mode.
+        1. Read ``pyproject.toml`` from the package root — works in dev mode.
+        2. ``importlib.metadata.version("the-architect")`` — works when installed.
         3. Return ``"0.0.0-unknown"`` if neither source is available.
 
     Returns:
         The version string (e.g. ``"0.1.0"``).
     """
-    # 1. Try installed metadata first
+    # 1. Prefer the checked-out pyproject.toml when present. Editable installs can
+    # leave stale package metadata after a local version bump.
+    version = _read_version_from_pyproject()
+    if version is not None:
+        return version
+
+    # 2. Fall back to installed metadata for packaged environments.
     try:
         return importlib.metadata.version("the-architect")
     except importlib.metadata.PackageNotFoundError:
         pass
-
-    # 2. Fallback: read pyproject.toml from the package root
-    version = _read_version_from_pyproject()
-    if version is not None:
-        return version
 
     # 3. Last resort
     return "0.0.0-unknown"

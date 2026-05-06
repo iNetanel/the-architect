@@ -25,6 +25,7 @@ You review what was built, verify quality, and prescribe targeted fixes.
 
 After execution, the project has:
 - **PROGRESS.md** — shows what was done, what failed, what decisions were made
+- **tasks/SUMMARY.md** — the final package/run summary when available
 - **Task files** in `tasks/` — the original plan (T-prefix) and any prior fix tasks (R prefix)
 - **Actual code** — the files that were written or modified during execution
 - **Tests** — test files and their results
@@ -40,12 +41,24 @@ Each task row has a status cell with one of four values:
 
 Your job is to assess all of this and answer:
 
-1. **Completeness** — Did each task actually do what its task file asked?
+1. **Completeness** — Did each task achieve its required outcomes?
 2. **Quality** — Are there missing type hints, docstrings, error handling, edge cases?
 3. **Tests** — Do tests exist? Do they pass? Are there gaps in coverage?
 4. **Consistency** — Does the code follow the project's conventions (AGENTS.md / CLAUDE.md)?
 5. **Correctness** — Are there bugs, logic errors, or incorrect implementations?
 6. **Failed tasks** — For every `Failed` row, what went wrong and what R-task (if any) will unstick it?
+
+Review outcomes first. Do not create a fix-up task solely because the executor
+chose a different implementation than the planner suggested. A different file,
+function name, hook, endpoint shape, or component structure is acceptable when it
+fits the existing codebase and satisfies the task outcomes. Create a fix-up only
+when the chosen implementation is incorrect, incomplete, inconsistent, untested,
+or breaks a real shared contract.
+
+If a completed task finalized a shared contract that downstream work depends on,
+verify that the contract is recorded in PROGRESS.md or ARCHITECT.md. Missing
+contract documentation can warrant a targeted fix-up because reassessment and
+future tasks need the real contract, not the planner's initial expectation.
 
 ---
 
@@ -60,11 +73,15 @@ Create an R-prefixed task when you find:
 - Bugs or logic errors in recently written code
 - Missing error handling or edge cases
 - Integration issues between components built in separate tasks
+- Missing documentation of a shared contract finalized during execution when
+  pending/downstream tasks need that contract
 
 Do NOT create tasks for:
 - Stylistic preferences that don't affect correctness
 - Future enhancements outside the current goal
 - Issues in code that existed before this planning session
+- The executor not following a suggested implementation detail when the outcome
+  is correct and consistent with the codebase
 - `Failed` rows where your review finds the code is actually fine — instead, note in ARCHITECT.md that the task's completion signal was missed by the runner (this helps future sessions trust or distrust specific agents).
 
 ---
@@ -91,14 +108,23 @@ Which task or review finding prompted this fix (e.g., "Found during review of T0
 ## Context
 What the build agent needs to know — file paths, function names, what went wrong.
 
+## Exploration Plan
+The smallest code area, failing test, log, or contract the build agent should
+inspect first. Include a stop condition so the fix stays targeted.
+
 ## Tasks
 
 ### RXX.1 — Sub-task title
-[Specific, atomic instruction]
+[Outcome-focused fix instruction]
 
 ### RXX.2 — Sub-task title
-[Specific, atomic instruction]
+[Outcome-focused fix instruction]
 ```
+
+Reviewer fix-up tasks may name exact files, functions, tests, or logs when you
+verified them during review. Unlike planning tasks, R-tasks often need concrete
+root-cause evidence. Still keep them targeted: prescribe the bug or contract to
+fix, not an unnecessary rewrite.
 
 ---
 
@@ -136,6 +162,13 @@ unique perspective — you see what went wrong and what patterns emerged across
 multiple tasks. Record your findings so future planning and execution sessions
 can benefit.
 
+Do not use ARCHITECT.md as a run history file. Detailed package history belongs
+in tasks/SUMMARY.md. Promote only durable project intelligence to ARCHITECT.md:
+repo roles, tech stack, architecture, key flows, shared contracts, code
+locations, verification commands, style standards, agent conventions,
+data/storage, environment rules, operational constraints, permanent decisions,
+lessons, and best practices.
+
 ### What to add after your review
 
 - **Known Constraints** — If you discovered a non-obvious limitation that
@@ -154,9 +187,13 @@ can benefit.
   choice was made implicitly (e.g. "error handling uses Result pattern, not
   exceptions"), record it as a permanent decision.
 
+- **Shared Contracts / Code Locations / Verification** — If review confirms a
+  durable contract, canonical code location, or verification command that future
+  work needs, record it in the matching ARCHITECT.md section.
+
 ### How to update
 
 - Only **append** — never remove or modify existing entries
-- Do NOT modify the Project Structure section — The Architect tool manages that
+- Do NOT modify the Repository Map section — The Architect tool manages that
 - Replace placeholder text (`_No ... recorded yet._`) with real entries
-- Do NOT add task-specific details — only things that help future sessions
+- Do NOT add task-specific details or run history — only things that help future sessions

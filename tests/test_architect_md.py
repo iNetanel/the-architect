@@ -70,11 +70,17 @@ class TestCreateArchitectMd:
         assert path.exists()
         content = path.read_text(encoding="utf-8")
         assert "ARCHITECT.md" in content
+        assert "Project Overview" in content
+        assert "Repository Map" in content
+        assert "Tech Stack" in content
+        assert "Shared Contracts" in content
+        assert "Build, Test, and Verification" in content
+        assert "Style and Code Standards" in content
         assert "Permanent Decisions" in content
         assert "Known Constraints" in content
         assert "Lessons Learned" in content
         assert "Best Practices" in content
-        assert "Planning History" in content
+        assert "Planning History" not in content
 
     def test_injects_structure_section(self, tmp_path: Path) -> None:
         """Should inject the provided structure section into the file."""
@@ -96,12 +102,14 @@ class TestParseSections:
         path = create_architect_md(tmp_path, structure_section="test")
         content = path.read_text(encoding="utf-8")
         sections = parse_sections(content)
-        assert "Project Structure" in sections
+        assert "Project Overview" in sections
+        assert "Repository Map" in sections
+        assert "Tech Stack" in sections
         assert "Permanent Decisions" in sections
         assert "Known Constraints" in sections
         assert "Lessons Learned" in sections
         assert "Best Practices" in sections
-        assert "Planning History" in sections
+        assert "Planning History" not in sections
 
     def test_returns_empty_dict_for_empty_content(self) -> None:
         """Should return empty dict for empty content."""
@@ -224,10 +232,10 @@ class TestAppendBestPractice:
 
 
 class TestAppendPlanningHistory:
-    """Tests for append_planning_history()."""
+    """Tests for deprecated append_planning_history()."""
 
-    def test_appends_planning_history_row(self, tmp_path: Path) -> None:
-        """Should append a row to the Planning History table."""
+    def test_does_not_append_planning_history_row(self, tmp_path: Path) -> None:
+        """ARCHITECT.md no longer stores run history."""
         create_architect_md(tmp_path, structure_section="test")
         append_planning_history(
             tmp_path,
@@ -237,9 +245,8 @@ class TestAppendPlanningHistory:
         )
         content = read_architect_md(tmp_path)
         assert content is not None
-        assert "Build a REST API" in content
-        assert "5" in content
-        assert "First planning session" in content
+        assert "Build a REST API" not in content
+        assert "First planning session" not in content
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +273,7 @@ class TestWriteOrUpdateArchitectMd:
         content = read_architect_md(tmp_path)
         assert content is not None
         # File should still have all standard sections
+        assert "Repository Map" in content
         assert "Permanent Decisions" in content
         assert "Known Constraints" in content
 
@@ -375,7 +383,7 @@ class TestUpdateStructureSectionErrorPaths:
         content = read_architect_md(tmp_path)
         assert content is not None
         assert "new structure content" in content
-        assert "Project Structure" in content
+        assert "Repository Map" in content
 
 
 # ---------------------------------------------------------------------------
@@ -470,26 +478,26 @@ class TestAppendToSectionTableBranches:
         arch_md = tmp_path / "ARCHITECT.md"
         arch_md.write_text(
             "# ARCHITECT.md\n\n"
-            "## Planning History\n\n"
-            "| Date | Goal | Tasks Created | Notes |\n"
-            "|------|------|---------------|-------|\n"
+            "## Permanent Decisions\n\n"
+            "| Decision | Value | Reason | Added |\n"
+            "|----------|-------|--------|-------|\n"
             "| | | | |\n",
             encoding="utf-8",
         )
-        append_planning_history(tmp_path, "Plan goal", "T01-T03", "notes")
+        append_permanent_decision(tmp_path, "Decision", "Value", "Reason")
         content = arch_md.read_text(encoding="utf-8")
-        assert "Plan goal" in content
+        assert "Decision" in content
 
     def test_appends_row_when_no_table_rows_at_end_of_file(self, tmp_path: Path) -> None:
         """Should append row when section has no table rows and is at end of file."""
         arch_md = tmp_path / "ARCHITECT.md"
         arch_md.write_text(
-            "# ARCHITECT.md\n\n## Planning History\n",
+            "# ARCHITECT.md\n\n## Permanent Decisions\n",
             encoding="utf-8",
         )
-        append_planning_history(tmp_path, "Plan goal", "T01", "")
+        append_permanent_decision(tmp_path, "Decision", "Value", "Reason")
         content = arch_md.read_text(encoding="utf-8")
-        assert "Plan goal" in content
+        assert "Decision" in content
 
 
 class TestAppendToSectionTableOSError:

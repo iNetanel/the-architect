@@ -2150,7 +2150,7 @@ async def run_task_once(
     model = select_model(attempt, config, model_override)
 
     # When no explicit model override is set, resolve the actual model from
-    # the provider so TaskResult.model is populated (for SUCCESS.md, terminal
+    # the provider so TaskResult.model is populated (for tasks/SUMMARY.md, terminal
     # summary, and PROGRESS.md).  Without this, the model column is always
     # empty because select_model returns None for the default case.
     if model is None:
@@ -2721,7 +2721,7 @@ async def run_task(
 
     logger.error(f"Task {task.prefix} failed after {config.max_retries} attempts")
     # Return failed result with accumulated tokens and the outcome summary from
-    # the last attempt so _record_task_outcome / SUCCESS.md have useful context.
+    # the last attempt so _record_task_outcome / tasks/SUMMARY.md have useful context.
     return TaskResult(
         prefix=task.prefix,
         title=task.title or task.name,

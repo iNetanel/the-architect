@@ -1,7 +1,7 @@
 """TUI success (run-complete) screen.
 
 Shown at the end of every TUI run — after all tasks are done and the
-SUCCESS.md has been written.  Mirrors the visual language of
+tasks/SUMMARY.md has been written.  Mirrors the visual language of
 :class:`~the_architect.tui.screens.wait.WaitScreen` (animated Matrix-rain
 title, branded green palette, structured summary body) while presenting
 the same data that :func:`~the_architect.core.success.print_success_summary`
@@ -66,7 +66,7 @@ class SuccessScreen(Screen[bool]):
         results: Per-task :class:`~the_architect.core.runner.TaskResult` list.
         total_duration: Total wall-clock duration in seconds.
         total_tokens: Accumulated :class:`~the_architect.core.runner.TokenUsage`.
-        success_md_path: Path to the written SUCCESS.md, or ``None``.
+        success_md_path: Path to the written SUMMARY.md, or ``None``.
         retrospective_rounds: Optional list of retrospective summaries.
     """
 

@@ -931,6 +931,23 @@ class TestArchivePreviousRunAdditional:
         )
         assert result is None
 
+    def test_archives_summary_with_task_package(self, tmp_path: Path) -> None:
+        """Should archive tasks/SUMMARY.md with task files and instructions."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        log_dir = tmp_path / ".architect" / "logs"
+        log_dir.mkdir(parents=True)
+        (tasks_dir / "T01_task.md").write_text("# T01", encoding="utf-8")
+        (tasks_dir / "INSTRUCTIONS.md").write_text("# Instructions", encoding="utf-8")
+        (tasks_dir / "SUMMARY.md").write_text("# Summary", encoding="utf-8")
+
+        archive_dir = archive_previous_run(tasks_dir, log_dir, tmp_path / "PROGRESS.md")
+
+        assert archive_dir is not None
+        assert (archive_dir / "T01_task.md").exists()
+        assert (archive_dir / "INSTRUCTIONS.md").exists()
+        assert (archive_dir / "SUMMARY.md").exists()
+
 
 class TestClearLogDirAdditional:
     """Additional tests for _clear_log_dir()."""

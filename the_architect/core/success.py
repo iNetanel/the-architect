@@ -1,4 +1,4 @@
-"""Success summary writer — writes SUCCESS.md and prints terminal summary.
+"""Run summary writer — writes tasks/SUMMARY.md and prints terminal summary.
 
 Called after all tasks complete.  Mirrors the bash runner's final log block.
 """
@@ -33,7 +33,7 @@ class RetrospectiveRound(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Formatting helpers (shared with terminal output and SUCCESS.md)
+# Formatting helpers (shared with terminal output and tasks/SUMMARY.md)
 # ---------------------------------------------------------------------------
 
 
@@ -89,8 +89,11 @@ def _fmt_model(model: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# SUCCESS.md writer
+# SUMMARY.md writer
 # ---------------------------------------------------------------------------
+
+
+SUMMARY_FILE_NAME = "SUMMARY.md"
 
 
 def write_success_md(
@@ -99,8 +102,9 @@ def write_success_md(
     total_duration: float,
     total_tokens: TokenUsage,
     retrospective_rounds: list[RetrospectiveRound] | None = None,
+    original_goal: str = "",
 ) -> Path:
-    """Write a SUCCESS.md file summarising the completed run.
+    """Write tasks/SUMMARY.md summarising the completed run.
 
     Args:
         project_dir: The project root directory.
@@ -108,9 +112,10 @@ def write_success_md(
         total_duration: Total wall-clock duration in seconds.
         total_tokens: Cumulative token usage across all tasks.
         retrospective_rounds: Optional list of retrospective round summaries.
+        original_goal: Original user goal for this task package.
 
     Returns:
-        Path to the written SUCCESS.md file.
+        Path to the written SUMMARY.md file.
     """
     done_count = sum(1 for r in results if r.status == "done")
     failed_count = sum(1 for r in results if r.status == "failed")
@@ -127,6 +132,12 @@ def write_success_md(
         f"{'✓ All tasks completed' if failed_count == 0 else f'✗ {failed_count} task(s) failed'}"
     )
     lines.append("")
+
+    if original_goal:
+        lines.append("## Goal")
+        lines.append("")
+        lines.append(original_goal.strip())
+        lines.append("")
 
     # Task table — includes attempts and model columns
     lines.append("## Tasks")
@@ -242,10 +253,31 @@ def write_success_md(
 
         lines.append("")
 
-    out_path = project_dir / "SUCCESS.md"
+    tasks_dir = project_dir / "tasks"
+    tasks_dir.mkdir(parents=True, exist_ok=True)
+    out_path = tasks_dir / SUMMARY_FILE_NAME
     out_path.write_text("\n".join(lines), encoding="utf-8")
-    logger.info(f"Written success summary: {out_path}")
+    logger.info(f"Written run summary: {out_path}")
     return out_path
+
+
+def write_summary_md(
+    project_dir: Path,
+    results: list[TaskResult],
+    total_duration: float,
+    total_tokens: TokenUsage,
+    retrospective_rounds: list[RetrospectiveRound] | None = None,
+    original_goal: str = "",
+) -> Path:
+    """Write tasks/SUMMARY.md summarising the completed run."""
+    return write_success_md(
+        project_dir,
+        results,
+        total_duration,
+        total_tokens,
+        retrospective_rounds=retrospective_rounds,
+        original_goal=original_goal,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +300,7 @@ def print_success_summary(
         results: Per-task results.
         total_duration: Total wall-clock duration in seconds.
         total_tokens: Cumulative token usage across all tasks.
-        success_md_path: Path to the written SUCCESS.md (shown in footer).
+        success_md_path: Path to the written SUMMARY.md (shown in footer).
         retrospective_rounds: Optional list of retrospective round summaries.
     """
     from rich import box

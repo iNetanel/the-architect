@@ -436,7 +436,7 @@ class TestArchitectMdCreation:
         content = read_architect_md(tmp_path)
         assert content is not None
         assert "Monorepo" in content
-        assert "Project Structure" in content
+        assert "Repository Map" in content
 
     def test_contains_all_sections(self, tmp_path: Path) -> None:
         """Created file should have all required sections."""
@@ -447,7 +447,9 @@ class TestArchitectMdCreation:
         assert "Known Constraints" in content
         assert "Lessons Learned" in content
         assert "Best Practices" in content
-        assert "Planning History" in content
+        assert "Planning History" not in content
+        assert "Tech Stack" in content
+        assert "Shared Contracts" in content
 
     def test_read_missing_returns_none(self, tmp_path: Path) -> None:
         """read_architect_md should return None when file doesn't exist."""
@@ -543,13 +545,13 @@ class TestArchitectMdAppend:
         assert "Always extend the custom AppError class" in content
 
     def test_append_planning_history(self, tmp_path: Path) -> None:
-        """append_planning_history should add a row to the history table."""
+        """append_planning_history is deprecated because history lives in SUMMARY.md."""
         create_architect_md(tmp_path, "**Type:** Single repo")
         append_planning_history(tmp_path, "Build user auth", "T01-T09", "T04 was replanned")
         content = read_architect_md(tmp_path)
         assert content is not None
-        assert "Build user auth" in content
-        assert "T01-T09" in content
+        assert "Build user auth" not in content
+        assert "T01-T09" not in content
 
     def test_append_noop_when_file_missing(self, tmp_path: Path) -> None:
         """Append operations should be no-op when file doesn't exist."""
@@ -599,7 +601,7 @@ class TestWriteOrUpdateArchitectMd:
         write_or_update_architect_md(tmp_path, report)
         content = read_architect_md(tmp_path)
         assert content is not None
-        assert "Project Structure" in content
+        assert "Repository Map" in content
 
 
 # ---------------------------------------------------------------------------

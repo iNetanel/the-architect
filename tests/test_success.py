@@ -88,15 +88,15 @@ class TestFmtModel:
 
 
 # ---------------------------------------------------------------------------
-# SUCCESS.md writer
+# SUMMARY.md writer
 # ---------------------------------------------------------------------------
 
 
 class TestWriteSuccessMd:
     """Tests for write_success_md()."""
 
-    def test_writes_success_md_file(self, tmp_path: Path) -> None:
-        """Should write SUCCESS.md (uppercase) to project directory."""
+    def test_writes_summary_md_file(self, tmp_path: Path) -> None:
+        """Should write SUMMARY.md inside the tasks directory."""
         results = [
             TaskResult(
                 prefix="T01",
@@ -111,14 +111,27 @@ class TestWriteSuccessMd:
         total_tokens = TokenUsage(input_tokens=5000, output_tokens=500)
         path = write_success_md(tmp_path, results, 120.0, total_tokens)
 
-        # File should be named SUCCESS.md (uppercase)
-        assert path.name == "SUCCESS.md"
+        assert path == tmp_path / "tasks" / "SUMMARY.md"
+        assert path.name == "SUMMARY.md"
         assert path.exists()
 
         content = path.read_text(encoding="utf-8")
         assert "# The Architect — Run Summary" in content
         assert "T01" in content
         assert "5.5K" in content  # 5500 total tokens formatted
+
+    def test_includes_original_goal_when_provided(self, tmp_path: Path) -> None:
+        """Should include the package goal in SUMMARY.md when provided."""
+        path = write_success_md(
+            tmp_path,
+            [TaskResult(prefix="T01", title="Test", status="done")],
+            1.0,
+            TokenUsage(),
+            original_goal="Build the thing",
+        )
+        content = path.read_text(encoding="utf-8")
+        assert "## Goal" in content
+        assert "Build the thing" in content
 
     def test_includes_attempts_and_model_columns(self, tmp_path: Path) -> None:
         """Should include Attempts and Model columns in the task table."""
@@ -349,7 +362,7 @@ class TestWriteSuccessMd:
 
 
 class TestWriteSuccessMdRetrospective:
-    """Tests for retrospective section in SUCCESS.md."""
+    """Tests for retrospective section in SUMMARY.md."""
 
     def test_retrospective_section_present(self, tmp_path: Path) -> None:
         """Should include Retrospective section when rounds are provided."""
@@ -633,7 +646,7 @@ class TestPrintSuccessSummary:
         print_success_summary(results, 60.0, total_tokens, retrospective_rounds=retro_rounds)
 
     def test_shows_success_md_path(self) -> None:
-        """Should print path to SUCCESS.md when provided."""
+        """Should print path to SUMMARY.md when provided."""
         results = [
             TaskResult(
                 prefix="T01",
@@ -646,6 +659,6 @@ class TestPrintSuccessSummary:
             ),
         ]
         total_tokens = TokenUsage(input_tokens=5000, output_tokens=500)
-        success_path = Path("/tmp/project/SUCCESS.md")
+        success_path = Path("/tmp/project/tasks/SUMMARY.md")
         # Should not raise — covers lines 379-380
         print_success_summary(results, 60.0, total_tokens, success_md_path=success_path)
