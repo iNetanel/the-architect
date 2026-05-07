@@ -88,7 +88,7 @@ class StatusApp(App[None]):
 
         # Tasks
         tasks_dir = self._project / config.tasks_dir.name
-        progress_file = self._project / config.progress_file.name
+        progress_file = config.progress_file
         tasks_table = self.query_one("#tasks_table", DataTable)
         tasks_table.clear()
         if tasks_dir.exists():

@@ -11,7 +11,9 @@ class ArchitectConfig(BaseModel):
     """Configuration for The Architect with sensible defaults."""
 
     tasks_dir: Path = Field(default=Path("tasks"), description="Directory containing task files")
-    progress_file: Path = Field(default=Path("PROGRESS.md"), description="Path to progress tracker")
+    progress_file: Path = Field(
+        default=Path("tasks/PROGRESS.md"), description="Path to progress tracker"
+    )
     log_dir: Path = Field(default=Path(".architect/logs"), description="Directory for log files")
     agents_path: Path = Field(
         default=Path("the_architect/prompts"), description="Path to agent prompts"
@@ -107,7 +109,7 @@ class ArchitectConfig(BaseModel):
         default="focused",
         description=(
             "How to vary the prompt on retry attempts. "
-            "'focused' — add structured retry guidance (read PROGRESS.md first, "
+            "'focused' — add structured retry guidance (read tasks/PROGRESS.md first, "
             "run tests, fix only what's broken). "
             "'same' — use the identical base prompt each retry (Ralph-style, "
             "relies on files on disk for state). "
@@ -233,16 +235,16 @@ class ArchitectConfig(BaseModel):
 
     @property
     def project_root(self) -> Path:
-        """Return the project root directory derived from progress_file.
+        """Return the resolved project root directory.
 
-        The progress file is always at the project root, so its parent
-        is the project root.  Only meaningful after ``resolve()`` has
-        been called (which makes all paths absolute).
+        The project root is the parent directory of the resolved tasks
+        directory. Only meaningful after ``resolve()`` has been called
+        (which makes all paths absolute).
 
         Returns:
             The resolved project root directory.
         """
-        return self.progress_file.parent
+        return self.tasks_dir.parent
 
     def resolve(self, project_dir: Path | str) -> ArchitectConfig:
         """Make all paths absolute relative to project_dir.

@@ -490,12 +490,11 @@ class TestRetryCommand:
     def test_retry_resets_and_runs(self, tmp_path: Path) -> None:
         """Should reset task status and run it."""
         (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
-        (tmp_path / "PROGRESS.md").write_text(
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        (tasks_dir / "PROGRESS.md").write_text(
             "# Progress\n\n| T01 | Test | Done | |\n", encoding="utf-8"
         )
-        tasks_dir = tmp_path / "tasks"
-        tasks_dir.mkdir()
-
         mock_task = Task(
             name="T01_test",
             prefix="T01",
@@ -844,9 +843,8 @@ class TestStatusCommandMore:
 
     def test_status_no_tasks_found(self, tmp_path: Path) -> None:
         """Should show 'No tasks found' when tasks dir is empty."""
-        tasks_dir = tmp_path / "tasks"
-        tasks_dir.mkdir()
         (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
+        (tmp_path / "tasks").mkdir(exist_ok=True)
 
         with patch("the_architect.cli.discover_tasks", return_value=[]):
             runner = CliRunner()
@@ -871,8 +869,7 @@ class TestStatusCommandMore:
         (lock_dir / "circuit.json").write_text(json.dumps(circuit_data), encoding="utf-8")
         (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
         tasks_dir = tmp_path / "tasks"
-        tasks_dir.mkdir()
-
+        tasks_dir.mkdir(exist_ok=True)
         mock_task = Task(
             name="T01_test",
             prefix="T01",
@@ -934,8 +931,7 @@ class TestCircuitCommandMore:
         }
         (arch_dir / "circuit.json").write_text(json.dumps(circuit_data), encoding="utf-8")
         tasks_dir = tmp_path / "tasks"
-        tasks_dir.mkdir()
-
+        tasks_dir.mkdir(exist_ok=True)
         mock_task = Task(
             name="T01_test",
             prefix="T01",
@@ -968,8 +964,7 @@ class TestCircuitCommandMore:
         }
         (arch_dir / "circuit.json").write_text(json.dumps(circuit_data), encoding="utf-8")
         tasks_dir = tmp_path / "tasks"
-        tasks_dir.mkdir()
-
+        tasks_dir.mkdir(exist_ok=True)
         mock_task = Task(
             name="T01_test",
             prefix="T01",
@@ -1992,13 +1987,15 @@ N/A
 |----------|-------|--------|------|
 | | | | |
 """
-        (tmp_path / "PROGRESS.md").write_text(progress_content, encoding="utf-8")
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        (tasks_dir / "PROGRESS.md").write_text(progress_content, encoding="utf-8")
 
         runner = CliRunner()
         result = runner.invoke(main, ["skip", "-t", "T01", "-p", str(tmp_path)])
         assert result.exit_code == 0
         # Verify the file was actually modified
-        updated = (tmp_path / "PROGRESS.md").read_text(encoding="utf-8")
+        updated = (tmp_path / "tasks" / "PROGRESS.md").read_text(encoding="utf-8")
         assert "Done" in updated
 
 
@@ -2385,12 +2382,11 @@ class TestRetryCommandMore:
     def test_retry_task_not_done(self, tmp_path: Path) -> None:
         """Should run task even if it's not marked Done."""
         (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
-        (tmp_path / "PROGRESS.md").write_text(
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        (tasks_dir / "PROGRESS.md").write_text(
             "# Progress\n\n| T01 | Test | Pending | — |\n", encoding="utf-8"
         )
-        tasks_dir = tmp_path / "tasks"
-        tasks_dir.mkdir()
-
         mock_task = Task(
             name="T01_test",
             prefix="T01",
@@ -2456,14 +2452,16 @@ N/A
 |----------|-------|--------|------|
 | | | | |
 """
-        (tmp_path / "PROGRESS.md").write_text(progress_content, encoding="utf-8")
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        (tasks_dir / "PROGRESS.md").write_text(progress_content, encoding="utf-8")
         (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
 
         runner = CliRunner()
         result = runner.invoke(main, ["reset", "-p", str(tmp_path)], input="y\n")
         assert result.exit_code == 0
         # Verify PROGRESS.md was overwritten
-        content = (tmp_path / "PROGRESS.md").read_text(encoding="utf-8")
+        content = (tmp_path / "tasks" / "PROGRESS.md").read_text(encoding="utf-8")
         assert "0" in content  # tasks_completed should be 0
 
 
@@ -3212,8 +3210,6 @@ class TestListCommandDeeper:
 
     def test_list_with_mixed_statuses(self, tmp_path: Path) -> None:
         """Should show both Done and Pending tasks."""
-        tasks_dir = tmp_path / "tasks"
-        tasks_dir.mkdir()
         (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
 
         done_task = Task(
@@ -3233,6 +3229,10 @@ class TestListCommandDeeper:
             status=TaskStatus.PENDING,
         )
 
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
+
         with (
             patch("the_architect.cli.discover_tasks", return_value=[done_task, pending_task]),
             patch("the_architect.cli.task_is_done", side_effect=lambda f, p: p == "T01"),
@@ -3245,9 +3245,9 @@ class TestListCommandDeeper:
 
     def test_list_shows_done_status(self, tmp_path: Path) -> None:
         """Should show ✓ Done for completed tasks."""
-        tasks_dir = tmp_path / "tasks"
-        tasks_dir.mkdir()
         (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
 
         done_task = Task(
             name="T01_done",
@@ -3917,13 +3917,15 @@ N/A
 |----------|-------|--------|------|
 | | | | |
 """
-        (tmp_path / "PROGRESS.md").write_text(progress_content, encoding="utf-8")
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        (tasks_dir / "PROGRESS.md").write_text(progress_content, encoding="utf-8")
 
         runner = CliRunner()
         result = runner.invoke(main, ["skip", "-t", "T01", "-p", str(tmp_path)])
         assert result.exit_code == 0
         # Verify the PROGRESS.md was updated
-        updated = (tmp_path / "PROGRESS.md").read_text(encoding="utf-8")
+        updated = (tmp_path / "tasks" / "PROGRESS.md").read_text(encoding="utf-8")
         assert "Done" in updated
 
 
@@ -3960,7 +3962,9 @@ class TestResetCommandDeeper:
 
     def test_reset_click_confirm_yes(self, tmp_path: Path) -> None:
         """Should accept 'y' input for click.confirm."""
-        (tmp_path / "PROGRESS.md").write_text("Old content", encoding="utf-8")
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        (tasks_dir / "PROGRESS.md").write_text("Old content", encoding="utf-8")
         (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
 
         runner = CliRunner()
@@ -4627,9 +4631,12 @@ class TestRetryCommandBranches:
 
     def test_retry_task_not_done(self, tmp_path: Path) -> None:
         """Should handle retrying a task that is not marked Done."""
-        tasks_dir = tmp_path / "tasks"
-        tasks_dir.mkdir()
         (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        (tasks_dir / "PROGRESS.md").write_text(
+            "# Progress\n\n| T01 | Test | Pending | — |\n", encoding="utf-8"
+        )
 
         mock_task = Task(
             name="T01_test",
@@ -4659,9 +4666,9 @@ class TestRetryCommandBranches:
 
     def test_retry_no_progress_file(self, tmp_path: Path) -> None:
         """Should handle retry when PROGRESS.md doesn't exist."""
-        tasks_dir = tmp_path / "tasks"
-        tasks_dir.mkdir()
         (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
 
         mock_task = Task(
             name="T01_test",
@@ -4684,8 +4691,6 @@ class TestRetryCommandBranches:
 
     def test_retry_task_not_found(self, tmp_path: Path) -> None:
         """Should exit with error when task not found."""
-        tasks_dir = tmp_path / "tasks"
-        tasks_dir.mkdir()
         (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
 
         with (
@@ -4734,9 +4739,9 @@ N/A
 |----------|-------|--------|------|
 | | | | |
 """
-        (tmp_path / "PROGRESS.md").write_text(progress_content, encoding="utf-8")
         tasks_dir = tmp_path / "tasks"
-        tasks_dir.mkdir()
+        tasks_dir.mkdir(exist_ok=True)
+        (tasks_dir / "PROGRESS.md").write_text(progress_content, encoding="utf-8")
         (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
 
         mock_task = Task(
@@ -4758,7 +4763,7 @@ N/A
             runner = CliRunner()
             result = runner.invoke(main, ["retry", "-t", "T01", "-p", str(tmp_path)])  # noqa: F841
             # Should have reset status
-            updated = (tmp_path / "PROGRESS.md").read_text(encoding="utf-8")
+            updated = (tmp_path / "tasks" / "PROGRESS.md").read_text(encoding="utf-8")
             assert "Pending" in updated
 
 
@@ -4809,7 +4814,9 @@ N/A
 |----------|-------|--------|------|
 | | | | |
 """
-        (tmp_path / "PROGRESS.md").write_text(progress_content, encoding="utf-8")
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        (tasks_dir / "PROGRESS.md").write_text(progress_content, encoding="utf-8")
 
         runner = CliRunner()
         result = runner.invoke(main, ["skip", "-t", "T01", "-p", str(tmp_path)])
@@ -4850,7 +4857,9 @@ N/A
 |----------|-------|--------|------|
 | | | | |
 """
-        (tmp_path / "PROGRESS.md").write_text(progress_content, encoding="utf-8")
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        (tasks_dir / "PROGRESS.md").write_text(progress_content, encoding="utf-8")
 
         runner = CliRunner()
         result = runner.invoke(main, ["skip", "-t", "T99", "-p", str(tmp_path)])
@@ -4872,7 +4881,9 @@ class TestResetCommandBranches:
 
     def test_reset_cancelled(self, tmp_path: Path) -> None:
         """Should show cancelled when user says no to confirm."""
-        (tmp_path / "PROGRESS.md").write_text("Old content", encoding="utf-8")
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        (tasks_dir / "PROGRESS.md").write_text("Old content", encoding="utf-8")
         (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
 
         runner = CliRunner()

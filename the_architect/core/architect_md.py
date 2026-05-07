@@ -3,7 +3,8 @@
 ARCHITECT.md is The Architect's long-term memory for a specific project.
 It accumulates knowledge across all planning sessions and execution cycles.
 
-The file lives at ``<project>/ARCHITECT.md`` alongside PROGRESS.md.
+The file lives at ``<project>/ARCHITECT.md`` while run-state tracking lives in
+``<project>/tasks/PROGRESS.md``.
 
 Ownership rules:
     - The Architect **tool** owns the structure section — rewritten fresh

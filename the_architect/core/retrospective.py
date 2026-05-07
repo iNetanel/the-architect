@@ -154,7 +154,7 @@ def _gather_review_context(project_dir: Path, original_goal: str) -> str:
     add_part("## Original Goal", original_goal)
 
     # PROGRESS.md — full current state (reviewer needs to see what failed)
-    progress_md = project_dir / "PROGRESS.md"
+    progress_md = project_dir / "tasks" / "PROGRESS.md"
     if progress_md.exists():
         try:
             content = progress_md.read_text(encoding="utf-8")
@@ -487,7 +487,7 @@ async def run_retrospective(
 
     # Update PROGRESS.md with any new R-prefixed tasks
     if new_r_tasks:
-        progress_md = project_dir / "PROGRESS.md"
+        progress_md = project_dir / "tasks" / "PROGRESS.md"
         _update_progress_with_retrospective_tasks(progress_md, new_r_tasks)
 
     # Count issues from the log if possible (heuristic: count R-tasks created)
@@ -539,7 +539,7 @@ async def run_task_reassessment(
     before_contents: dict[str, str] = {}
     task_sections: list[str] = []
     for task in pending_tasks:
-        if task_is_done(project_dir / "PROGRESS.md", task.prefix):
+        if task_is_done(project_dir / "tasks" / "PROGRESS.md", task.prefix):
             continue
         try:
             text = task.path.read_text(encoding="utf-8")
@@ -549,7 +549,7 @@ async def run_task_reassessment(
         task_sections.append(f"## {task.path.name}\n{text}")
 
     try:
-        progress_content = (project_dir / "PROGRESS.md").read_text(encoding="utf-8")
+        progress_content = (project_dir / "tasks" / "PROGRESS.md").read_text(encoding="utf-8")
     except OSError:
         progress_content = ""
 

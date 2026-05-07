@@ -64,7 +64,7 @@ class ListApp(App[None]):
     def _refresh_table(self) -> None:
         config = load_config(self._project)
         tasks_dir = self._project / config.tasks_dir.name
-        progress_file = self._project / config.progress_file.name
+        progress_file = config.progress_file
 
         table = self.query_one(DataTable)
         table.clear()

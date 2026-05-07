@@ -16,7 +16,7 @@ class TestArchitectConfig:
         config = ArchitectConfig()
 
         assert config.tasks_dir == Path("tasks")
-        assert config.progress_file == Path("PROGRESS.md")
+        assert config.progress_file == Path("tasks/PROGRESS.md")
         assert config.log_dir == Path(".architect/logs")
         assert config.max_retries == 3
         assert config.retry_pause == 30
@@ -30,7 +30,7 @@ class TestArchitectConfig:
         """Should make paths absolute when resolve is called."""
         config = ArchitectConfig(
             tasks_dir=Path("tasks"),
-            progress_file=Path("PROGRESS.md"),
+            progress_file=Path("tasks/PROGRESS.md"),
             log_dir=Path(".architect/logs"),
         )
 
@@ -60,7 +60,7 @@ class TestArchitectConfig:
         config = ArchitectConfig().resolve(Path("/project/root"))
 
         assert config.project_root == Path("/project/root")
-        assert config.project_root == config.progress_file.parent
+        assert config.project_root == config.tasks_dir.parent
 
 
 class TestLoadConfig:

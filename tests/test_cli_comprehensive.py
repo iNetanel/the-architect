@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 from click.testing import CliRunner
 
 from the_architect.cli import main
+from the_architect.config import ArchitectConfig
 
 
 class TestHelperFunctions:
@@ -48,7 +49,9 @@ class TestHelperFunctions:
 | T01 | Test task 1 | Done | 10m
 | T02 | Test task 2 | Pending | 15m
 """
-        progress_file = tmp_path / "PROGRESS.md"
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        progress_file = tasks_dir / "PROGRESS.md"
         progress_file.write_text(progress_content, encoding="utf-8")
 
         result = _filter_and_set_status([task1, task2], progress_file)
@@ -61,7 +64,9 @@ class TestHelperFunctions:
         """Should return empty list when tasks list is empty."""
         from the_architect.cli import _filter_and_set_status
 
-        progress_file = tmp_path / "PROGRESS.md"
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        progress_file = tasks_dir / "PROGRESS.md"
         result = _filter_and_set_status([], progress_file)
 
         assert len(result) == 0
@@ -80,7 +85,9 @@ class TestHelperFunctions:
             status=TaskStatus.PENDING,
         )
 
-        progress_file = tmp_path / "PROGRESS.md"
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        progress_file = tasks_dir / "PROGRESS.md"
         result = _filter_and_set_status([task], progress_file)
 
         assert len(result) == 1
@@ -375,9 +382,10 @@ class TestClickCommands:
         assert "T01" in result.output
 
     def test_skip_command(self, tmp_path: Path) -> None:
-        """Should mark task as Done in PROGRESS.md."""
-        # PROGRESS.md lives at the project root per ArchitectConfig defaults.
-        progress_file = tmp_path / "PROGRESS.md"
+        """Should mark task as Done in tasks/PROGRESS.md."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        progress_file = tasks_dir / "PROGRESS.md"
         progress_file.write_text(
             """# The Architect — Progress Tracker
 
@@ -397,10 +405,12 @@ class TestClickCommands:
         assert "Done" in updated_content
 
     def test_skip_command_not_found(self, tmp_path: Path) -> None:
-        """Should fail when task not found in PROGRESS.md."""
+        """Should fail when task not found in tasks/PROGRESS.md."""
         # Create an empty PROGRESS.md so the command runs past the
         # "file missing" guard and can fail on the lookup.
-        progress_file = tmp_path / "PROGRESS.md"
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        progress_file = tasks_dir / "PROGRESS.md"
         progress_file.write_text(
             """# The Architect — Progress Tracker
 
@@ -415,8 +425,10 @@ class TestClickCommands:
         assert result.exit_code == 1
 
     def test_reset_command(self, tmp_path: Path) -> None:
-        """Should reset PROGRESS.md at project root when user confirms."""
-        progress_file = tmp_path / "PROGRESS.md"
+        """Should reset tasks/PROGRESS.md when user confirms."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        progress_file = tasks_dir / "PROGRESS.md"
         progress_file.write_text(
             """# The Architect — Progress Tracker
 
@@ -437,7 +449,9 @@ class TestClickCommands:
 
     def test_reset_command_cancel(self, tmp_path: Path) -> None:
         """Should cancel reset when user declines."""
-        progress_file = tmp_path / "PROGRESS.md"
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        progress_file = tasks_dir / "PROGRESS.md"
         progress_file.write_text(
             """# The Architect — Progress Tracker
 
@@ -554,9 +568,12 @@ class TestExecutionModes:
         mock_task.prefix = "T01"
         mock_task.status = TaskStatus.PENDING
 
+        config = ArchitectConfig().resolve(tmp_path)
+        config.provider = "opencode"
+
         with patch(
             "the_architect.cli.load_config",
-            return_value=MagicMock(),
+            return_value=config,
         ):
             with patch(
                 "the_architect.cli.detect_provider",

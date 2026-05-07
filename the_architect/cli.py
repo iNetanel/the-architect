@@ -1596,7 +1596,7 @@ def run_planning_mode(
     # Skipped when prompts were already collected before the alternate screen.
     if not _skip_pending_guard:
         tasks_dir = project / config.tasks_dir.name
-        progress_file = project / config.progress_file.name
+        progress_file = config.progress_file
         pending = check_pending_tasks(tasks_dir, progress_file)
         if pending:
             if headless:
@@ -1922,7 +1922,7 @@ def _collect_planning_prompts(
 
     # ── Pending task guard ─────────────────────────────────────────────
     tasks_dir = project / config.tasks_dir.name
-    progress_file = project / config.progress_file.name
+    progress_file = config.progress_file
     pending = check_pending_tasks(tasks_dir, progress_file)
     if pending:
         # TUI fast-path — Phase 14.
@@ -3198,7 +3198,7 @@ def main(
     # then only ask about modes when we know execution will happen.
     tasks_dir = resolved_project / config.tasks_dir.name
     _tasks_pre = discover_tasks(tasks_dir)
-    progress_file = resolved_project / config.progress_file.name
+    progress_file = config.progress_file
     _tasks_pre = _filter_and_set_status(_tasks_pre, progress_file)
 
     # Apply --only / --from for the pre-check
@@ -3728,7 +3728,7 @@ def _run_main(
         # If pending tasks exist, skip — the resume screen below handles it.
         tasks_dir_pre = project / config.tasks_dir.name
         _tasks_pre_run = discover_tasks(tasks_dir_pre)
-        progress_file_pre = project / config.progress_file.name
+        progress_file_pre = config.progress_file
         _tasks_pre_run = _filter_and_set_status(_tasks_pre_run, progress_file_pre)
         _pending_pre_run = (
             [t for t in _tasks_pre_run if _task_needs_work(t)] if _tasks_pre_run else []
@@ -3782,7 +3782,7 @@ def _run_main(
 
     tasks_dir = project / config.tasks_dir.name
     tasks = discover_tasks(tasks_dir)
-    progress_file = project / config.progress_file.name
+    progress_file = config.progress_file
     tasks = _filter_and_set_status(tasks, progress_file)
 
     # Track the original goal for retrospective context
@@ -4389,7 +4389,7 @@ def list_cmd(project: Path | None, use_tui: bool) -> None:
         return
 
     tasks = discover_tasks(tasks_dir)
-    progress_file = proj / config.progress_file.name
+    progress_file = config.progress_file
 
     if not tasks:
         console.print("[dim]No tasks found.[/dim]")
@@ -4439,7 +4439,7 @@ def retry(task: str, project: Path | None) -> None:
     _setup_loguru()
     proj = (project or Path.cwd()).resolve()
     config = load_config(proj)
-    progress_file = proj / config.progress_file.name
+    progress_file = config.progress_file
 
     if not task_is_resolved(progress_file, task):
         console.print(f"[dim]Task {task} is not in a terminal state — running now.[/dim]")
@@ -4485,7 +4485,7 @@ def skip(task: str, project: Path | None) -> None:
     _setup_loguru()
     proj = (project or Path.cwd()).resolve()
     config = load_config(proj)
-    progress_file = proj / config.progress_file.name
+    progress_file = config.progress_file
 
     if not progress_file.exists():
         console.print("[red]PROGRESS.md not found.[/red]")
@@ -4706,7 +4706,7 @@ def status_cmd(project: Path | None, use_tui: bool) -> None:
 
     # ── Tasks ────────────────────────────────────────────────────────────
     tasks_dir = proj / config.tasks_dir.name
-    progress_file = proj / config.progress_file.name
+    progress_file = config.progress_file
 
     if not tasks_dir.exists():
         console.print(

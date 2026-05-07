@@ -300,7 +300,7 @@ def gather_project_context(
     # it should continue the old plan. We extract only completed tasks and
     # permanent decisions — useful context that does NOT include active state
     # like "Next task to run" or "Current State".
-    progress_md = project_dir / "PROGRESS.md"
+    progress_md = project_dir / "tasks" / "PROGRESS.md"
     if progress_md.exists():
         try:
             content = progress_md.read_text(encoding="utf-8")
@@ -1219,9 +1219,9 @@ async def run_planner(
 
     # --- The Architect owns PROGRESS.md unconditionally ---
     # Always (re)write it from the discovered task list so it is guaranteed
-    # to be at the correct project-root path with the correct content.
+    # to be at the correct tasks/ path with the correct content.
     # Whatever the architect may have written anywhere is irrelevant.
-    progress_md = project_dir / "PROGRESS.md"
+    progress_md = project_dir / "tasks" / "PROGRESS.md"
     _write_progress_md(progress_md, tasks_after)
 
     # --- The Architect owns tasks/INSTRUCTIONS.md location unconditionally ---

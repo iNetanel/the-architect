@@ -123,7 +123,8 @@ class TestGatherProjectContextEdgeCases:
 
     def test_gather_context_progress_md_oserror(self, tmp_path: Path) -> None:
         """Test handling of OSError when reading PROGRESS.md."""
-        progress_md = tmp_path / "PROGRESS.md"
+        progress_md = tmp_path / "tasks" / "PROGRESS.md"
+        progress_md.parent.mkdir(parents=True, exist_ok=True)
         progress_md.write_text("**Tasks completed:** 1", encoding="utf-8")
 
         # Mock read_text to raise OSError
@@ -284,7 +285,7 @@ class TestWriteProgressMdEdgeCases:
 
     def test_write_progress_md_empty_tasks_list(self, tmp_path: Path) -> None:
         """Test that _write_progress_md() handles empty tasks list."""
-        progress_file = tmp_path / "PROGRESS.md"
+        progress_file = tmp_path / "tasks" / "PROGRESS.md"
 
         # Should not crash, should return early
         _write_progress_md(progress_file, [])
@@ -307,7 +308,7 @@ class TestArchivePreviousRunEdgeCases:
 
         # Mock shutil.move to raise OSError
         with patch("shutil.move", side_effect=OSError("move failed")):
-            result = archive_previous_run(tasks_dir, log_dir, tmp_path / "PROGRESS.md")
+            result = archive_previous_run(tasks_dir, log_dir, tmp_path / "tasks" / "PROGRESS.md")
             # Should not crash, should handle the error and still clear logs
             assert result is not None
 
@@ -776,7 +777,8 @@ class TestCheckPendingTasks:
         (tasks_dir / "T01_init.md").write_text("# T01 — Init", encoding="utf-8")
         (tasks_dir / "T02_build.md").write_text("# T02 — Build", encoding="utf-8")
 
-        progress_file = tmp_path / "PROGRESS.md"
+        progress_file = tmp_path / "tasks" / "PROGRESS.md"
+        progress_file.parent.mkdir(parents=True, exist_ok=True)
         progress_file.write_text(
             "**Tasks completed:** 0\n**Next task to run:** T01\n"
             "| Task | Title | Status | Completed |\n"
@@ -796,7 +798,8 @@ class TestCheckPendingTasks:
         tasks_dir.mkdir()
         (tasks_dir / "T01_init.md").write_text("# T01 — Init", encoding="utf-8")
 
-        progress_file = tmp_path / "PROGRESS.md"
+        progress_file = tmp_path / "tasks" / "PROGRESS.md"
+        progress_file.parent.mkdir(parents=True, exist_ok=True)
         progress_file.write_text(
             "**Tasks completed:** 1\n**Next task to run:** —\n"
             "| Task | Title | Status | Completed |\n"
@@ -810,7 +813,7 @@ class TestCheckPendingTasks:
 
     def test_check_pending_nonexistent_dir(self, tmp_path: Path) -> None:
         """Should return empty list when tasks dir doesn't exist."""
-        progress_file = tmp_path / "PROGRESS.md"
+        progress_file = tmp_path / "tasks" / "PROGRESS.md"
         result = check_pending_tasks(tmp_path / "nonexistent", progress_file)
         assert result == []
 
@@ -821,7 +824,8 @@ class TestCheckPendingTasks:
         (tasks_dir / "S01_special.md").write_text("# S01 — Special", encoding="utf-8")
         (tasks_dir / "T01_init.md").write_text("# T01 — Init", encoding="utf-8")
 
-        progress_file = tmp_path / "PROGRESS.md"
+        progress_file = tmp_path / "tasks" / "PROGRESS.md"
+        progress_file.parent.mkdir(parents=True, exist_ok=True)
         progress_file.write_text(
             "**Tasks completed:** 0\n**Next task to run:** T01\n"
             "| Task | Title | Status | Completed |\n"
@@ -858,7 +862,8 @@ class TestGatherProjectContextAdditional:
 
     def test_progress_md_with_historical_summary(self, tmp_path: Path) -> None:
         """Test PROGRESS.md read with successful historical summary (lines 305-306)."""
-        progress_md = tmp_path / "PROGRESS.md"
+        progress_md = tmp_path / "tasks" / "PROGRESS.md"
+        progress_md.parent.mkdir(parents=True, exist_ok=True)
         progress_md.write_text(
             "## Task Log\n"
             "| Task | Title | Status | Completed |\n"
@@ -967,7 +972,7 @@ class TestArchivePreviousRunAdditional:
         log_dir.mkdir(parents=True)
 
         result = archive_previous_run(
-            tmp_path / "nonexistent_tasks", log_dir, tmp_path / "PROGRESS.md"
+            tmp_path / "nonexistent_tasks", log_dir, tmp_path / "tasks" / "PROGRESS.md"
         )
         assert result is None
 
@@ -981,7 +986,7 @@ class TestArchivePreviousRunAdditional:
         (tasks_dir / "INSTRUCTIONS.md").write_text("# Instructions", encoding="utf-8")
         (tasks_dir / "SUMMARY.md").write_text("# Summary", encoding="utf-8")
 
-        archive_dir = archive_previous_run(tasks_dir, log_dir, tmp_path / "PROGRESS.md")
+        archive_dir = archive_previous_run(tasks_dir, log_dir, tmp_path / "tasks" / "PROGRESS.md")
 
         assert archive_dir is not None
         assert (archive_dir / "T01_task.md").exists()

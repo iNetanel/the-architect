@@ -14,12 +14,12 @@ override your agent's delegation or orchestration instructions.
 
 1. Read `ARCHITECT.md` — durable project intelligence (repo map, stack, contracts, decisions, constraints, lessons, best practices)
 2. Read `tasks/INSTRUCTIONS.md` — project context, stack, conventions, and full task list
-3. Read `PROGRESS.md` — current state, what is done, what is next
+3. Read `tasks/PROGRESS.md` — current state, what is done, what is next
 4. Read `AGENTS.md` or `CLAUDE.md` if either exists — the user's project rules (read it explicitly if your CLI doesn't auto-load it; OpenCode uses `AGENTS.md`, Claude Code uses `CLAUDE.md`)
 5. Read your task file in `tasks/` — your specific instructions for this task
 6. Follow the task's Exploration Plan before editing — inspect the smallest relevant code slice first
 7. Complete every item in the task file — work autonomously without asking the human for confirmation
-8. Rewrite `PROGRESS.md` when done — this is how The Architect knows you finished
+8. Rewrite `tasks/PROGRESS.md` when done — this is how The Architect knows you finished
 9. Output `<promise>TXX_COMPLETE</promise>` when done — this is the primary completion signal
 
 ---
@@ -60,7 +60,7 @@ Task Outcomes. Reassessment uses that record to update pending tasks.
 
 ## PROGRESS.md — Critical format rules
 
-The runner parses PROGRESS.md with regex. The format must be exact.
+The runner parses `tasks/PROGRESS.md` with regex. The format must be exact.
 
 ### Task status vocabulary
 

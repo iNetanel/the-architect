@@ -199,7 +199,9 @@ class TestStatusCmd:
         tasks_dir.mkdir()
         (tasks_dir / "T01_first.md").write_text("# T01 First\n", encoding="utf-8")
         (tasks_dir / "T02_second.md").write_text("# T02 Second\n", encoding="utf-8")
-        (tmp_path / "PROGRESS.md").write_text(
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        (tasks_dir / "PROGRESS.md").write_text(
             """# The Architect — Progress Tracker
 
 | Task | Title | Status | Completed |
@@ -445,7 +447,9 @@ class TestSkipCmdMissingProgress:
 
     def test_skip_already_done(self, tmp_path: Path) -> None:
         """Skipping a task that is already Done prints an info message."""
-        (tmp_path / "PROGRESS.md").write_text(
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        (tasks_dir / "PROGRESS.md").write_text(
             """# Progress
 
 | Task | Title | Status | Completed |
@@ -481,7 +485,9 @@ class TestRetryCmd:
 
     def test_retry_task_not_found_in_tasks_dir(self, tmp_path: Path) -> None:
         """When there is no matching task file, retry exits 1."""
-        (tmp_path / "PROGRESS.md").write_text(
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        (tasks_dir / "PROGRESS.md").write_text(
             """# Progress
 
 | Task | Title | Status | Completed |
@@ -500,7 +506,7 @@ class TestRetryCmd:
         tasks_dir = tmp_path / "tasks"
         tasks_dir.mkdir()
         (tasks_dir / "T01_task.md").write_text("# T01 Task\n", encoding="utf-8")
-        (tmp_path / "PROGRESS.md").write_text(
+        (tasks_dir / "PROGRESS.md").write_text(
             """# Progress
 
 | Task | Title | Status | Completed |
@@ -529,7 +535,7 @@ class TestRetryCmd:
 
         assert result.exit_code == 0, result.output
         # PROGRESS.md should now have T01 back to Pending
-        content = (tmp_path / "PROGRESS.md").read_text(encoding="utf-8")
+        content = (tasks_dir / "PROGRESS.md").read_text(encoding="utf-8")
         assert "Pending" in content
 
 

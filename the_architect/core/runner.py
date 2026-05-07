@@ -1852,8 +1852,8 @@ def build_instruction(
         lines.append("")
 
     # --- Task-specific instruction ---
-    project_root = str(config.progress_file.parent)
-    progress_rel = config.progress_file.name
+    project_root = str(config.project_root)
+    progress_rel = str(config.progress_file.relative_to(config.project_root))
     task_rel = task.path.name
 
     lines.append(f"PROJECT ROOT: {project_root}")
@@ -1903,7 +1903,7 @@ def build_instruction(
         lines.append("=== END FILE INTEGRITY PROTOCOL ===")
         lines.append("")
     # Point to tasks/INSTRUCTIONS.md if it exists — The Architect's master context file
-    instructions_md = config.progress_file.parent / "tasks" / "INSTRUCTIONS.md"
+    instructions_md = config.tasks_dir / "INSTRUCTIONS.md"
     if instructions_md.exists():
         lines.append(
             f"Read tasks/INSTRUCTIONS.md for project context, "
@@ -1979,7 +1979,7 @@ def build_instruction(
         docs_path = config.docs_path
         # If relative, resolve against project root
         if not docs_path.is_absolute():
-            docs_path = config.progress_file.parent / docs_path
+            docs_path = config.project_root / docs_path
         if docs_path.exists():
             lines.append("")
             lines.append(f"Project documentation is available at: {docs_path}")
@@ -2154,7 +2154,7 @@ async def run_task_once(
     # summary, and PROGRESS.md).  Without this, the model column is always
     # empty because select_model returns None for the default case.
     if model is None:
-        project_dir = config.progress_file.parent
+        project_dir = config.project_root
         # Pass execution_agent directly — get_resolved_model handles "" by
         # reading default_agent from the config, so we don't hardcode "build".
         try:
@@ -2183,7 +2183,7 @@ async def run_task_once(
     try:
         stream_result = await stream_provider(
             instruction=instruction,
-            project_dir=config.progress_file.parent,
+            project_dir=config.project_root,
             provider=provider,
             model_override=model,
             agent_override=config.execution_agent or None,
@@ -2379,7 +2379,7 @@ async def run_task(
     try:
         from the_architect.core.architect_md import read_architect_md
 
-        architect_md_content = read_architect_md(config.progress_file.parent) or ""
+        architect_md_content = read_architect_md(config.project_root) or ""
     except Exception:
         pass  # Non-fatal — execution proceeds without ARCHITECT.md context
 
@@ -2445,7 +2445,7 @@ async def run_task(
                 # does before building the command.
                 if model_for_attempt is None and provider is not None:
                     try:
-                        project_dir_cb = config.progress_file.parent
+                        project_dir_cb = config.project_root
                         resolved_cb = provider.get_resolved_model(
                             project_dir_cb, config.execution_agent or ""
                         )
@@ -2992,7 +2992,7 @@ async def run_all(
     Raises:
         RuntimeError: If a concurrent run is detected (lock file exists).
     """
-    project_dir = config.progress_file.parent
+    project_dir = config.project_root
 
     if not acquire_lock(project_dir):
         raise RuntimeError(

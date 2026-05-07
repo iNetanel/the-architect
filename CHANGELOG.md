@@ -11,6 +11,10 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ## [Unreleased]
 
+### Changed
+
+- PROGRESS tracking now lives in `tasks/PROGRESS.md` so each goal package keeps its shared state alongside `INSTRUCTIONS.md` and task files (build 10237)
+
 <!--
 Every completed task appends a bullet here and bumps __build__ in /version.py.
 When cutting a release, rename [Unreleased] to the version and add a fresh

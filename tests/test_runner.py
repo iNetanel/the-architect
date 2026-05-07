@@ -51,13 +51,13 @@ from the_architect.core.tasks import Task, TaskPlan, TaskStatus
 
 @pytest.fixture
 def config(tmp_path: Path) -> ArchitectConfig:
-    progress_file = tmp_path / "PROGRESS.md"
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir(exist_ok=True)
+    progress_file = tasks_dir / "PROGRESS.md"
     progress_file.write_text(
         "**Tasks completed:** 0\n**Next task to run:** T01\n",
         encoding="utf-8",
     )
-    tasks_dir = tmp_path / "tasks"
-    tasks_dir.mkdir(exist_ok=True)
     log_dir = tmp_path / ".architect" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     return ArchitectConfig(
@@ -1391,7 +1391,7 @@ class TestRunTaskArchitectMdAndCallbacks:
             "| T01 | Test | Done | 2026-04-12 |\n",
             encoding="utf-8",
         )
-        architect_md = config.progress_file.parent / "ARCHITECT.md"
+        architect_md = config.project_root / "ARCHITECT.md"
         architect_md.write_text("# Project Intelligence\nSome decisions.", encoding="utf-8")
 
         captured_content = []
