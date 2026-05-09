@@ -5744,9 +5744,7 @@ class TestCheckProviderUpdateBeforeModelWork:
         provider = self._make_provider(update_msg="2.0 available", install_hint="pip install x")
         config = ArchitectConfig()
 
-        with patch(
-            "the_architect.cli._prompt_update_action", return_value="exit"
-        ) as mock_prompt:
+        with patch("the_architect.cli._prompt_update_action", return_value="exit") as mock_prompt:
             with pytest.raises(SystemExit) as exc_info:
                 _check_provider_update_before_model_work(provider, config, headless=False)
 

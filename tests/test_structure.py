@@ -2126,9 +2126,7 @@ class TestArchitectEvalFiltering:
         assert any("backend" in p for p in paths)
         assert not any("architect_eval" in p for p in paths)
 
-    def test_detect_dependencies_skips_architect_eval_for_shared_dirs(
-        self, tmp_path: Path
-    ) -> None:
+    def test_detect_dependencies_skips_architect_eval_for_shared_dirs(self, tmp_path: Path) -> None:
         """Line 1108: architect_eval_* dir is skipped in shared-dir scan."""
         shared_dir = tmp_path / "shared"
         shared_dir.mkdir()

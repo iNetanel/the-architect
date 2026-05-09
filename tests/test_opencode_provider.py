@@ -1817,9 +1817,7 @@ class TestOpenCodeProviderMissingCoverage:
         import json as _json
 
         provider = OpenCodeProvider()
-        event = _json.dumps(
-            {"type": "error", "message": "rate limit exceeded, retry after 60s"}
-        )
+        event = _json.dumps({"type": "error", "message": "rate limit exceeded, retry after 60s"})
         result = provider.parse_output_line(event)
         assert result is not None
         assert result.rate_limit is True

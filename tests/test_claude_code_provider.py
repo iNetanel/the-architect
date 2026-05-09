@@ -1010,9 +1010,7 @@ class TestParseOutputLineMissingBranches:
         line = json.dumps(
             {
                 "type": "assistant",
-                "message": {
-                    "content": [{"type": "text", "text": "line one\nline two"}]
-                },
+                "message": {"content": [{"type": "text", "text": "line one\nline two"}]},
             }
         )
         result = provider.parse_output_line(line)
