@@ -18,22 +18,25 @@ empty [Unreleased] above it. Use Keep a Changelog section headings:
 Added / Changed / Deprecated / Removed / Fixed / Security.
 -->
 
-## [1.2.3] (build 10259) — 2026-05-09
+## [1.2.3] (build 10268) — 2026-05-09
 
 ### Added
 
-- Added a stronger pre-planning learning stage that builds and repairs `ARCHITECT.md` before task planning, using fast repo detection plus an optional model-backed intelligence pass when project memory is still shallow.
+- Added a stronger pre-planning learning stage that builds and repairs `ARCHITECT.md` before task planning, using fast repo detection plus an optional model-backed intelligence pass when project memory is still shallow (build 10259).
 
 ### Changed
 
-- Planning now has better first-run and large-repo awareness, including root package manifests, Python source packages, docs, CI workflows, provider rule files, prompt locations, and Architect runtime storage.
-- Current run state now lives in `tasks/PROGRESS.md`, keeping each goal's task state beside its instructions, task files, summary, and archive.
+- Provider setup now fails safer and earlier: update warnings appear before model-backed work, provider health issues are surfaced while the user is still present, and outdated providers can be updated directly with `U` (builds 10262-10266).
+- Planning now has better first-run and large-repo awareness, including root package manifests, Python source packages, docs, CI workflows, provider rule files, prompt locations, and Architect runtime storage (build 10259).
+- Current run state now lives in `tasks/PROGRESS.md`, keeping each goal's task state beside its instructions, task files, summary, and archive (build 10259).
 
 ### Fixed
 
-- Provider update warnings now appear immediately after the goal is submitted, before scope/model prompts or model-backed learning/planning, so users can safely walk away after setup.
-- Reassessment output is visible again during TUI execution runs, so downstream task checks no longer look like a blank wait screen.
-- Single-package projects are no longer misidentified as only secondary dev config directories when their main manifest lives at the repository root.
+- Provider and model selection stays in sync when switching providers, with cached model/agent lists, no wrong-provider model rows, and no blocking wait when provider defaults are sufficient (builds 10267-10268).
+- Long execution TUI tabs are now scrollable, including Live output, Progress, Diagnostics, and Settings (build 10264).
+- Planning, execution, retrospective, and reassessment now stop cleanly on provider quota, billing, budget, update, or configuration failures instead of retrying misleadingly or reporting false success (builds 10262-10265).
+- Reassessment output is visible again during TUI execution runs, so downstream task checks no longer look like a blank wait screen (build 10259).
+- Single-package projects are no longer misidentified as only secondary dev config directories when their main manifest lives at the repository root (build 10259).
 
 ## [1.2.2] (build 10236) — 2026-05-06
 

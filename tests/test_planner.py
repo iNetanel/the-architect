@@ -1278,6 +1278,43 @@ class TestRunPlannerProviderError:
                 await run_planner(request, config, provider=provider)
 
     @pytest.mark.asyncio
+    async def test_run_planner_quota_exhausted_fails_without_cooldown(self, tmp_path: Path) -> None:
+        """Account budget failures should stop instead of entering cooldown wait."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+
+        config = ArchitectConfig().resolve(tmp_path)
+        request = PlanningRequest(
+            goal="Test goal",
+            scope=TaskScope.STANDARD,
+            project_dir=tmp_path,
+        )
+
+        provider = Mock()
+        provider.name = "gemini-cli"
+        provider.display_name = "Gemini CLI"
+        provider.supports_agents.return_value = False
+        provider.ensure_setup.return_value = None
+        provider.get_architect_prompt.return_value = "architect"
+
+        async def fake_stream(**kwargs: object) -> StreamResult:  # type: ignore[misc]
+            return StreamResult(
+                exit_code=1,
+                tokens=TokenUsage(),
+                accumulated_text="RESOURCE_EXHAUSTED: quota exceeded; billing not enabled",
+                rate_limit_hit=True,
+            )
+
+        with (
+            patch("the_architect.core.planner.stream_provider", side_effect=fake_stream),
+            patch("asyncio.sleep") as sleep_mock,
+        ):
+            with pytest.raises(PlanningFailedError, match="quota"):
+                await run_planner(request, config, provider=provider)
+
+        sleep_mock.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_run_planner_unknown_error_surfaces_output(self, tmp_path: Path) -> None:
         """Planning should surface unknown provider errors as dim output but still retry."""
         tasks_dir = tmp_path / "tasks"

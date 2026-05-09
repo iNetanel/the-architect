@@ -5762,6 +5762,55 @@ class TestCheckProviderUpdateBeforeModelWork:
             # Should not raise
             _check_provider_update_before_model_work(provider, config, headless=False)
 
+    def test_interactive_update_action_runs_provider_update(self) -> None:
+        """When action='update' is returned, the provider update command is run."""
+        from the_architect.cli import _check_provider_update_before_model_work
+
+        update_msg = (
+            "OpenCode 1.0 is installed, but 1.1 is available. Update with: opencode upgrade"
+        )
+        provider = self._make_provider(update_msg=update_msg, install_hint="opencode upgrade")
+        config = ArchitectConfig()
+
+        with (
+            patch("the_architect.cli._prompt_update_action", return_value="update"),
+            patch("the_architect.cli._run_provider_update", return_value=True) as update,
+        ):
+            _check_provider_update_before_model_work(provider, config, headless=False)
+
+        update.assert_called_once_with(update_msg=update_msg, install_hint="opencode upgrade")
+
+    def test_provider_update_command_prefers_update_with_text(self) -> None:
+        """Provider update commands should come from explicit update warnings."""
+        from the_architect.cli import _provider_update_command
+
+        command = _provider_update_command(
+            "Gemini CLI 0.1 is installed. Update with: npm i -g @google/gemini-cli@latest",
+            "npm install -g @google/gemini-cli",
+        )
+
+        assert command == ["npm", "i", "-g", "@google/gemini-cli@latest"]
+
+    def test_provider_update_command_rejects_documentation_hint(self) -> None:
+        """Documentation URLs are not executable update commands."""
+        from the_architect.cli import _provider_update_command
+
+        assert _provider_update_command("", "see https://example.test") is None
+
+    def test_run_provider_update_executes_command(self) -> None:
+        """The provider update runner executes the parsed command."""
+        from subprocess import CompletedProcess
+
+        from the_architect.cli import _run_provider_update
+
+        with patch(
+            "the_architect.cli.subprocess.run",
+            return_value=CompletedProcess(["opencode", "upgrade"], 0),
+        ) as run:
+            assert _run_provider_update("Update with: opencode upgrade", "") is True
+
+        run.assert_called_once_with(["opencode", "upgrade"], check=False)
+
     def test_interactive_install_hint_fetched_and_passed(self) -> None:
         """install_hint() return value is passed to _prompt_update_action."""
         from the_architect.cli import _check_provider_update_before_model_work
@@ -5793,3 +5842,33 @@ class TestCheckProviderUpdateBeforeModelWork:
             _check_provider_update_before_model_work(provider, config, headless=False)
 
         mock_prompt.assert_called_once_with(update_msg="2.0 available", install_hint="")
+
+    def test_provider_health_warning_does_not_exit(self, tmp_path: Path) -> None:
+        """Provider health issues should warn before model work without exiting."""
+        from the_architect.cli import _check_provider_update_before_model_work
+        from the_architect.core.provider_health import ProviderHealthError
+
+        provider = self._make_provider(update_msg="")
+        provider.name = "gemini-cli"
+        provider.display_name = "Gemini CLI"
+        provider.supports_agents.return_value = False
+        config = ArchitectConfig()
+
+        with (
+            patch(
+                "the_architect.core.provider_health.check_provider_health",
+                side_effect=ProviderHealthError("quota exceeded"),
+            ) as health_check,
+            patch("the_architect.cli._prompt_provider_issue_warning") as warning,
+        ):
+            _check_provider_update_before_model_work(
+                provider,
+                config,
+                headless=False,
+                project=tmp_path,
+                model_override="gemini-2.5-pro",
+            )
+
+        health_check.assert_called_once()
+        warning.assert_called_once_with("quota exceeded")
+        assert getattr(config, "_provider_health_checked", None) is True

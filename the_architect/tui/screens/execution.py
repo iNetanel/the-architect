@@ -23,7 +23,7 @@ from datetime import datetime
 from rich.markup import escape
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Header, RichLog, Static, TabbedContent, TabPane
 
@@ -172,7 +172,7 @@ class ExecutionScreen(Screen[None]):
                     auto_scroll=True,
                 )
             with TabPane("Progress", id="tab_progress"):
-                with Vertical(id="exec_progress"):
+                with VerticalScroll(id="exec_progress"):
                     yield Static(self._render_progress(), id="exec_progress_text")
             with TabPane("Diagnostics", id="tab_diagnostics"):
                 yield RichLog(
@@ -183,7 +183,7 @@ class ExecutionScreen(Screen[None]):
                     auto_scroll=True,
                 )
             with TabPane("Settings", id="tab_settings"):
-                with Vertical(id="exec_settings"):
+                with VerticalScroll(id="exec_settings"):
                     yield Static(self._render_settings(), id="exec_settings_text")
         yield Static(
             _idle_footer_text(),
@@ -193,13 +193,14 @@ class ExecutionScreen(Screen[None]):
     def on_mount(self) -> None:
         # Start the spinner at 10 FPS — same cadence as WaitScreen.
         self.set_interval(0.1, self._tick_spinner)
-        # Disable focus on the RichLog widgets so they never show a blinking
-        # cursor in the middle of the output area during execution.
-        for log_id in ("#exec_output", "#exec_diagnostics"):
+        # Make every tab body focusable so keyboard scrolling works when a tab
+        # has more content than the available terminal height.
+        for scroll_id in ("#exec_output", "#exec_diagnostics", "#exec_progress", "#exec_settings"):
             try:
-                self.query_one(log_id, RichLog).can_focus = False
+                self.query_one(scroll_id).can_focus = True
             except Exception:
                 pass
+        self.call_after_refresh(self._focus_active_tab_scroller)
         # Flush any output that arrived before the DOM was ready first,
         # then write placeholders only for tabs that received nothing.
         # Both callbacks are deferred to the post-refresh tick so every
@@ -276,6 +277,22 @@ class ExecutionScreen(Screen[None]):
         """Switch execution tabs from execution-scoped key bindings."""
         try:
             self.query_one("#exec_tabs", TabbedContent).active = tab_id
+            self.call_after_refresh(self._focus_active_tab_scroller)
+        except Exception:
+            pass
+
+    def _focus_active_tab_scroller(self) -> None:
+        """Focus the active tab's scrollable body for keyboard scrolling."""
+        try:
+            active = self.query_one("#exec_tabs", TabbedContent).active
+            target_id = {
+                "tab_live": "#exec_output",
+                "tab_progress": "#exec_progress",
+                "tab_diagnostics": "#exec_diagnostics",
+                "tab_settings": "#exec_settings",
+            }.get(active)
+            if target_id:
+                self.query_one(target_id).focus()
         except Exception:
             pass
 

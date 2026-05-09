@@ -651,6 +651,49 @@ class TestPreRunScreen:
             screen.action_cancel()
             await pilot.pause()
 
+    def test_stale_provider_fetch_results_are_ignored(self) -> None:
+        """Late model results from a previous provider must not overwrite current state."""
+        prov_a = _mock_provider("opencode", "OpenCode")
+        prov_b = _mock_provider("codex", "Codex CLI")
+        screen = PreRunScreen(
+            providers=[prov_a, prov_b],
+            config=_mock_config(),
+            project_dir=Path("/tmp/test"),
+        )
+        screen._values.provider_name = "codex"
+        screen._provider_fetch_generation = {"opencode": 1, "codex": 2}
+        screen._provider_loading = {"opencode", "codex"}
+        screen._models = []
+        screen._agents = []
+        screen._models_loading = True
+
+        screen._apply_provider_data("opencode", 1, ["wrong-opencode-model"], ["backend"], True)
+
+        assert screen._models == []
+        assert screen._agents == []
+        assert screen._models_loading is True
+        assert "opencode" not in screen._provider_loading
+
+        screen._apply_provider_data("codex", 2, ["right-codex-model"], [], True)
+
+        assert screen._models == ["right-codex-model"]
+        assert screen._agents == []
+        assert screen._models_loading is False
+        assert screen._provider_data_cache["codex"] == (["right-codex-model"], [], True)
+
+    def test_models_tab_stays_complete_while_provider_models_loading(self) -> None:
+        """Provider defaults remain valid while optional model choices load."""
+        screen = PreRunScreen(
+            providers=[_mock_provider("opencode")],
+            config=_mock_config(),
+            project_dir=Path("/tmp/test"),
+            goal_text="Build something useful",
+        )
+
+        screen._models_loading = True
+
+        assert screen._models_complete is True
+
     @pytest.mark.asyncio
     async def test_only_one_provider_radio_selected_at_a_time(self) -> None:
         """RadioSet enforces single provider selection.

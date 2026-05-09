@@ -923,6 +923,14 @@ async def stream_provider(
                         # cooldown detection, retry context, and promise scanning.
                         if parsed.event_type in ("text", "assistant") and parsed.display_lines:
                             accumulated_text_parts.append("\n".join(parsed.display_lines))
+                        elif parsed.display_lines and (
+                            parsed.event_type in ("error", "result")
+                            or parsed.rate_limit
+                            or parsed.model_not_found
+                        ):
+                            accumulated_text_parts.append("\n".join(parsed.display_lines))
+                        elif (parsed.rate_limit or parsed.model_not_found) and line.strip():
+                            accumulated_text_parts.append(line)
 
                         # Render display lines to terminal.  Fire the
                         # on_first_output callback the first time we are
@@ -2495,6 +2503,24 @@ async def run_task(
         last_result = result
 
         success = result.status == "done"
+
+        if not success:
+            from the_architect.core.circuit import ProviderErrorKind, detect_provider_error
+
+            provider_error = detect_provider_error(result.accumulated_text, result.exit_code)
+            if provider_error is not None and provider_error.kind in (
+                ProviderErrorKind.UPDATE_REQUIRED,
+                ProviderErrorKind.MISCONFIGURED,
+                ProviderErrorKind.QUOTA_EXHAUSTED,
+            ):
+                msg = f"Provider stopped: {provider_error.message}. {provider_error.action}"
+                logger.error(f"Task {task.prefix} aborted — {msg}")
+                if renderer is not None:
+                    try:
+                        renderer.write_line(f"Warning: {msg}")
+                    except Exception:
+                        pass
+                break
 
         # ── Circuit breaker: record attempt ─────────────────────────────
         cooldown_triggered = False

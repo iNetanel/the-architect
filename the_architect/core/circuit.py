@@ -314,6 +314,9 @@ class ProviderErrorKind(StrEnum):
     MISCONFIGURED = "MISCONFIGURED"
     """Provider is installed but not properly configured."""
 
+    QUOTA_EXHAUSTED = "QUOTA_EXHAUSTED"
+    """Provider account has no usable quota, credits, or billing budget."""
+
     UNKNOWN = "UNKNOWN"
     """Provider exited with an error but the cause is unclear."""
 
@@ -350,6 +353,30 @@ _UPDATE_REQUIRED_PATTERNS: list[str] = [
     "please upgrade",
 ]
 
+# Text patterns that indicate waiting/retrying will not help without user action.
+# These are intentionally checked before transient cooldown handling so provider
+# budget/billing failures do not turn into a misleading 1-hour wait loop.
+_QUOTA_EXHAUSTED_PATTERNS: list[str] = [
+    "insufficient quota",
+    "insufficient_quota",
+    "quota exceeded",
+    "quota_exceeded",
+    "quota exhausted",
+    "free quota exhausted",
+    "exceeded your current quota",
+    "billing hard limit",
+    "billing not enabled",
+    "billing account",
+    "credit balance is too low",
+    "out of credits",
+    "out_of_credits",
+    "out of extra usage",
+    "your account has run out",
+    "no budget",
+    "budget exhausted",
+    "resource_exhausted",
+]
+
 # Text patterns that indicate the provider is misconfigured
 # (not an update issue, not a rate limit — something else is wrong).
 _MISCONFIGURED_PATTERNS: list[str] = [
@@ -382,7 +409,7 @@ def detect_provider_error(text: str, exit_code: int) -> ProviderError | None:
         ``None`` if no actionable error is found (the failure may be
         transient or the cause is unknown).
     """
-    if exit_code == 0:
+    if exit_code == 0 and not text.strip():
         return None
 
     text_lower = text.lower()
@@ -405,6 +432,21 @@ def detect_provider_error(text: str, exit_code: int) -> ProviderError | None:
                 raw_text=text[:500],
             )
 
+    # Check for account quota / billing exhaustion before generic
+    # misconfiguration. These are not transient cooldowns: the user must switch
+    # provider/model, add credits, enable billing, or wait for their provider's
+    # own quota reset outside The Architect.
+    for pattern in _QUOTA_EXHAUSTED_PATTERNS:
+        if pattern in text_lower:
+            return ProviderError(
+                kind=ProviderErrorKind.QUOTA_EXHAUSTED,
+                message=f'Provider account has no usable quota or budget (matched: "{pattern}")',
+                action=(
+                    "Switch provider/model, add credits or enable billing, then rerun The Architect"
+                ),
+                raw_text=text[:500],
+            )
+
     # Check for misconfiguration patterns
     for pattern in _MISCONFIGURED_PATTERNS:
         if pattern in text_lower:
@@ -414,6 +456,9 @@ def detect_provider_error(text: str, exit_code: int) -> ProviderError | None:
                 action="Check your API key configuration and provider authentication",
                 raw_text=text[:500],
             )
+
+    if exit_code == 0:
+        return None
 
     # Non-zero exit code but no recognized pattern — return a generic error
     # so the caller can at least show *something* useful instead of "no tasks created"

@@ -9,6 +9,7 @@ intentionally distinct from :class:`~the_architect.tui.screens.wait.WaitScreen`
 from __future__ import annotations
 
 import pytest
+from textual.containers import VerticalScroll
 from textual.widgets import RichLog, Static
 
 from the_architect.tui.app import ArchitectApp, SplashScreen
@@ -232,6 +233,36 @@ async def test_update_progress_tasks_shows_overall_task_picture() -> None:
         assert "1/3 done" in text
         assert "T02" in text
         assert "RUNNING" in text
+
+
+@pytest.mark.asyncio
+async def test_execution_tab_bodies_are_scrollable_and_focusable() -> None:
+    app = ArchitectApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.switch_to_execution()
+        await pilot.pause()
+        await pilot.pause()
+        assert app._execution_screen is not None
+        screen = app._execution_screen
+
+        progress = screen.query_one("#exec_progress", VerticalScroll)
+        settings = screen.query_one("#exec_settings", VerticalScroll)
+        output = screen.query_one("#exec_output", RichLog)
+        diagnostics = screen.query_one("#exec_diagnostics", RichLog)
+
+        assert progress.can_focus is True
+        assert settings.can_focus is True
+        assert output.can_focus is True
+        assert diagnostics.can_focus is True
+
+        screen.action_switch_tab("tab_progress")
+        await pilot.pause()
+        assert screen.focused is progress
+
+        screen.action_switch_tab("tab_settings")
+        await pilot.pause()
+        assert screen.focused is settings
 
 
 @pytest.mark.asyncio

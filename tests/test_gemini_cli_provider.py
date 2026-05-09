@@ -241,6 +241,15 @@ class TestGeminiCliProviderOutputParsing:
         assert result is not None
         assert result.rate_limit is True
 
+    def test_quota_exhausted_error_event_is_rate_limit_signal(self) -> None:
+        line = json.dumps(
+            {"type": "error", "message": "RESOURCE_EXHAUSTED: quota exceeded; billing not enabled"}
+        )
+        result = GeminiCliProvider().parse_output_line(line)
+        assert result is not None
+        assert result.rate_limit is True
+        assert "quota exceeded" in " ".join(result.display_lines).lower()
+
     def test_rate_limit_in_plain_text(self) -> None:
         result = GeminiCliProvider().parse_output_line("Error: rate limit exceeded")
         assert result is not None

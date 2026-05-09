@@ -42,6 +42,16 @@ class TestDetectProviderError:
         result = detect_provider_error("", 1)
         assert result is None
 
+    def test_quota_exhausted_is_actionable_even_with_zero_exit(self) -> None:
+        """Provider budget failures require user action, not retries/cooldown."""
+        result = detect_provider_error(
+            "RESOURCE_EXHAUSTED: quota exceeded for this project; billing not enabled",
+            0,
+        )
+        assert result is not None
+        assert result.kind == ProviderErrorKind.QUOTA_EXHAUSTED
+        assert "billing" in result.action.lower() or "credits" in result.action.lower()
+
     def test_update_required_opencode(self) -> None:
         """Detect OpenCode update-required error."""
         result = detect_provider_error("A new version of opencode is available. Please update.", 1)

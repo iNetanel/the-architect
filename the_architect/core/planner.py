@@ -1118,6 +1118,41 @@ async def run_planner(
             # Planning succeeded — at least one task was created.
             break
 
+        # ── Actionable provider error detection ────────────────────────────────
+        # Check before cooldown handling so budget/billing failures do not turn
+        # into a misleading one-hour wait loop.
+        provider_error = detect_provider_error(
+            stream_result.accumulated_text,
+            stream_result.exit_code,
+        )
+        if provider_error is not None and provider_error.kind in (
+            ProviderErrorKind.UPDATE_REQUIRED,
+            ProviderErrorKind.MISCONFIGURED,
+            ProviderErrorKind.QUOTA_EXHAUSTED,
+        ):
+            if provider_error.kind == ProviderErrorKind.UPDATE_REQUIRED:
+                # Also check the provider for a precise version message
+                update_msg = provider.check_update_available()
+                if update_msg:
+                    error_msg = update_msg
+                else:
+                    error_msg = f"{provider_error.message}\n  → {provider_error.action}"
+                _console.print(f"\n[bold red]⛔  {error_msg}[/bold red]")
+                logger.error(
+                    f"Planning aborted — provider update required: {provider_error.message}"
+                )
+            elif provider_error.kind == ProviderErrorKind.QUOTA_EXHAUSTED:
+                error_msg = f"{provider_error.message}\n  → {provider_error.action}"
+                _console.print(f"\n[bold yellow]⚠  {error_msg}[/bold yellow]")
+                logger.error(
+                    f"Planning aborted — provider quota exhausted: {provider_error.message}"
+                )
+            else:
+                error_msg = f"{provider_error.message}\n  → {provider_error.action}"
+                _console.print(f"\n[bold yellow]⚠  {error_msg}[/bold yellow]")
+                logger.error(f"Planning aborted — provider misconfigured: {provider_error.message}")
+            raise PlanningFailedError(error_msg)
+
         # ── Cooldown detection ───────────────────────────────────────────
         # Priority order (most precise first):
         #   1. stream_result.cooldown_until — Unix timestamp from rate_limit_event.resetsAt.
@@ -1191,35 +1226,7 @@ async def run_planner(
             attempt -= 1
             continue
 
-        # ── Actionable provider error detection ────────────────────────────────
-        # Check for errors that require user action (update required,
-        # misconfiguration, etc.). Retrying won't help — show the user
-        # what's wrong and what to do.
-        provider_error = detect_provider_error(
-            stream_result.accumulated_text,
-            stream_result.exit_code,
-        )
-        if provider_error is not None and provider_error.kind in (
-            ProviderErrorKind.UPDATE_REQUIRED,
-            ProviderErrorKind.MISCONFIGURED,
-        ):
-            if provider_error.kind == ProviderErrorKind.UPDATE_REQUIRED:
-                # Also check the provider for a precise version message
-                update_msg = provider.check_update_available()
-                if update_msg:
-                    error_msg = update_msg
-                else:
-                    error_msg = f"{provider_error.message}\n  → {provider_error.action}"
-                _console.print(f"\n[bold red]⛔  {error_msg}[/bold red]")
-                logger.error(
-                    f"Planning aborted — provider update required: {provider_error.message}"
-                )
-            elif provider_error.kind == ProviderErrorKind.MISCONFIGURED:
-                error_msg = f"{provider_error.message}\n  → {provider_error.action}"
-                _console.print(f"\n[bold yellow]⚠  {error_msg}[/bold yellow]")
-                logger.error(f"Planning aborted — provider misconfigured: {provider_error.message}")
-            raise PlanningFailedError(error_msg)
-        elif provider_error is not None and provider_error.kind == ProviderErrorKind.UNKNOWN:
+        if provider_error is not None and provider_error.kind == ProviderErrorKind.UNKNOWN:
             # Unknown error — surface the output snippet for visibility but
             # still allow retries (the error may be transient).
             logger.warning(f"Provider error detected (attempt {attempt}): {provider_error.message}")

@@ -269,6 +269,26 @@ class TestStreamProviderSubprocess:
             assert result.accumulated_text == "hello"
 
     @pytest.mark.asyncio
+    async def test_accumulates_structured_rate_limit_events_without_display_lines(self):
+        provider = _make_mock_provider()
+        event = ParsedEvent(
+            event_type="rate_limit_event",
+            display_lines=[],
+            tokens=None,
+            rate_limit=True,
+            model_not_found=False,
+            cooldown_until=0,
+        )
+        provider.parse_output_line = MagicMock(return_value=event)
+        raw = b'{"type":"rate_limit_event","overageDisabledReason":"out_of_credits"}\n'
+
+        with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = _make_mock_process(stdout_lines=[raw], exit_code=0)
+            result = await stream_provider("test", Path("/tmp"), provider)
+
+        assert "out_of_credits" in result.accumulated_text
+
+    @pytest.mark.asyncio
     async def test_rate_limit_detected(self):
         provider = _make_mock_provider()
         rl_event = ParsedEvent(
@@ -1441,6 +1461,33 @@ class TestRunTaskArchitectMdAndCallbacks:
 
         assert result.status == "done"
         assert received_renderers == [renderer]
+
+    @pytest.mark.asyncio
+    async def test_quota_exhausted_stops_without_retry(self, task, config):
+        renderer = MagicMock()
+
+        async def mock_run_once(**kwargs):
+            return TaskResult(
+                prefix=task.prefix,
+                title=task.title or task.name,
+                status="failed",
+                duration_seconds=1.0,
+                attempts=1,
+                tokens=TokenUsage(),
+                model="gemini-2.5-pro",
+                accumulated_text="RESOURCE_EXHAUSTED: quota exceeded; billing not enabled",
+                exit_code=1,
+                rate_limit_hit=True,
+            )
+
+        with patch(
+            "the_architect.core.runner.run_task_once", side_effect=mock_run_once
+        ) as run_once:
+            result = await run_task(task=task, config=config, renderer=renderer)
+
+        assert result.status == "failed"
+        assert run_once.call_count == 1
+        renderer.write_line.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_on_attempt_start_callback_exception(self, task, config):

@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
+import shlex
+import subprocess
 import sys
 import time
 from collections.abc import Callable, Generator
@@ -526,7 +529,8 @@ def _prompt_update_action(update_msg: str, install_hint: str) -> str:
 
     Replaces ``questionary.confirm`` with a :mod:`prompt_toolkit` screen that
     reacts to a single keystroke — no Enter required.  The user can press
-    ``Enter`` to continue with the outdated provider or ``Esc`` / Ctrl+C to abort.
+    ``Enter`` to continue with the outdated provider, ``U`` to update it, or
+    ``Esc`` / Ctrl+C to abort.
 
     Args:
         update_msg: The warning message from ``provider.check_update_available()``.
@@ -536,6 +540,7 @@ def _prompt_update_action(update_msg: str, install_hint: str) -> str:
 
     Returns:
         ``"continue"`` — user chose to proceed with the outdated provider.
+        ``"update"``   — user chose to run the provider update command.
         ``"exit"``     — user chose to abort.
     """
     # TUI fast-path — Phase 13. Render the outdated-provider warning
@@ -564,6 +569,13 @@ def _prompt_update_action(update_msg: str, install_hint: str) -> str:
         result = "continue"
         event.app.exit()
 
+    @kb.add("u")
+    @kb.add("U")
+    def _(event: KeyPressEvent) -> None:
+        nonlocal result
+        result = "update"
+        event.app.exit()
+
     @kb.add("q")
     @kb.add("Q")
     @kb.add("escape")
@@ -579,6 +591,8 @@ def _prompt_update_action(update_msg: str, install_hint: str) -> str:
             ("class:dim", f"  Update:  {install_hint}\n\n"),
             ("class:key", "  Enter"),
             ("class:dim", "  continue anyway    "),
+            ("class:key", "U"),
+            ("class:dim", "  update provider    "),
             ("class:key", "Esc"),
             ("class:dim", "  exit\n"),
         ]
@@ -608,35 +622,151 @@ def _check_provider_update_before_model_work(
     provider: ArchitectProvider,
     config: ArchitectConfig,
     headless: bool,
+    project: Path | None = None,
+    model_override: str | None = None,
 ) -> None:
-    """Warn about provider updates before any model-backed learning or planning.
+    """Warn about provider readiness before any model-backed learning or planning.
 
     This runs immediately after the goal is known. If the provider is outdated,
     interactive users can stop before walking away; headless users see the
-    warning without blocking automation. A per-config flag prevents duplicate
-    prompts when planning prompts are collected in one phase and executed in
-    another.
+    warning without blocking automation. If *project* is supplied, a small live
+    provider health check also runs at the same stage and reports auth/quota/
+    billing issues without exiting the process. Per-config flags prevent
+    duplicate prompts when planning prompts are collected in one phase and
+    executed in another.
     """
-    if getattr(config, "_provider_update_checked", False):
-        return
-    config._provider_update_checked = True  # type: ignore[attr-defined]
+    if not getattr(config, "_provider_update_checked", False):
+        config._provider_update_checked = True  # type: ignore[attr-defined]
 
-    update_msg = provider.check_update_available()
-    if not update_msg:
-        return
+        update_msg = provider.check_update_available()
+        if update_msg:
+            if not headless:
+                try:
+                    hint = provider.install_hint()
+                except Exception:
+                    hint = ""
+                action = _prompt_update_action(update_msg=update_msg, install_hint=hint)
+                if action == "update":
+                    _run_provider_update(update_msg=update_msg, install_hint=hint)
+                if action == "exit":
+                    console.print("[dim]Aborted by user.[/dim]")
+                    raise SystemExit(0)
+            else:
+                console.print(f"\n[bold yellow]⚠  {update_msg}[/bold yellow]")
+            console.print()
 
-    if not headless:
+    if project is None or getattr(config, "_provider_health_checked", False):
+        return
+    config._provider_health_checked = True  # type: ignore[attr-defined]
+
+    from the_architect.core.provider_health import ProviderHealthError, check_provider_health
+
+    try:
+        asyncio.run(
+            check_provider_health(
+                provider=provider,
+                project_dir=project,
+                model_override=model_override or None,
+                agent_override="architect" if provider.supports_agents() else None,
+                config_override=(project / ".architect" / "architect.json")
+                if provider.supports_agents()
+                else None,
+            )
+        )
+    except ProviderHealthError as exc:
+        message = str(exc)
+        logger.warning(f"Provider health check warning: {message}")
+        if headless:
+            console.print(f"\n[bold yellow]⚠  Provider issue: {message}[/bold yellow]")
+            console.print()
+        else:
+            _prompt_provider_issue_warning(message)
+
+
+def _provider_update_command(update_msg: str, install_hint: str) -> list[str] | None:
+    """Return a safe provider update command from the provider's warning text."""
+    match = re.search(r"Update with:\s*(.+)", update_msg)
+    command = match.group(1).strip() if match else install_hint.strip()
+    if not command or command.startswith(("http://", "https://")):
+        return None
+    if command.lower().startswith("see "):
+        return None
+    try:
+        return shlex.split(command)
+    except ValueError:
+        return None
+
+
+def _run_provider_update(update_msg: str, install_hint: str) -> bool:
+    """Run the provider's advertised update command and keep the session alive."""
+    command = _provider_update_command(update_msg, install_hint)
+    if not command:
+        console.print("[yellow]Provider update command is not executable automatically.[/yellow]")
+        if install_hint:
+            console.print(f"[dim]Update manually: {install_hint}[/dim]")
+        return False
+
+    console.print(f"\n[dim]Running: {' '.join(command)}[/dim]\n")
+    result = subprocess.run(command, check=False)  # noqa: S603 - user approved update command
+    if result.returncode == 0:
+        console.print("[green]Provider update completed. Continuing...[/green]\n")
+        return True
+
+    console.print(
+        f"[yellow]Provider update failed with exit code {result.returncode}. Continuing...[/yellow]"
+    )
+    console.print(f"[dim]Run manually: {' '.join(command)}[/dim]\n")
+    return False
+
+
+def _prompt_provider_issue_warning(message: str) -> None:
+    """Show a provider health warning without exiting The Architect."""
+    if _tui_mode_enabled():
         try:
-            hint = provider.install_hint()
+            console.print(f"\n[bold yellow]⚠  Provider issue: {message}[/bold yellow]")
+            console.print("[dim]Fix the provider if needed, then continue.[/dim]\n")
+            return
         except Exception:
-            hint = ""
-        action = _prompt_update_action(update_msg=update_msg, install_hint=hint)
-        if action == "exit":
-            console.print("[dim]Aborted by user.[/dim]")
-            raise SystemExit(0)
-    else:
-        console.print(f"\n[bold yellow]⚠  {update_msg}[/bold yellow]")
-    console.print()
+            pass
+
+    from prompt_toolkit import Application
+    from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
+    from prompt_toolkit.layout.controls import FormattedTextControl
+    from prompt_toolkit.styles import Style as PtStyle
+
+    kb = KeyBindings()
+
+    @kb.add("enter")
+    @kb.add("c")
+    @kb.add("C")
+    def _(event: KeyPressEvent) -> None:
+        event.app.exit()
+
+    def _render() -> list[tuple[str, str]]:
+        return [
+            ("class:warning", f"\n  ⚠  Provider issue detected\n\n  {message}\n\n"),
+            (
+                "class:dim",
+                "  The Architect will continue, but provider work may fail "
+                "until this is fixed.\n\n",
+            ),
+            ("class:key", "  Enter"),
+            ("class:dim", "  continue\n"),
+        ]
+
+    app: Application[object] = Application(
+        layout=_padded_window(FormattedTextControl(_render)),
+        key_bindings=kb,
+        style=PtStyle(
+            [
+                ("warning", "bold yellow"),
+                ("dim", "#888888"),
+                ("key", f"bold {ARCHITECT_GREEN}"),
+            ]
+        ),
+        full_screen=False,
+    )
+    app.run()
 
 
 def _prompt_self_update_action(current_version: str, latest_version: str) -> str:
@@ -1731,7 +1861,13 @@ def run_planning_mode(
     # Warn immediately after the goal is known, before scope/model prompts,
     # learning, or planning. If the user intends to walk away after submitting
     # a goal, this is the last safe point to block for provider maintenance.
-    _check_provider_update_before_model_work(provider, config, headless)
+    _check_provider_update_before_model_work(
+        provider,
+        config,
+        headless,
+        project=project,
+        model_override=architect_model_override or None,
+    )
 
     # ── Scope resolution ───────────────────────────────────────────────
     if scope_text:
@@ -2059,7 +2195,13 @@ def _collect_planning_prompts(
                 scope_text = result.scope
                 architect_model_override = result.architect_model or ""
                 execution_model_override = result.execution_agent or ""
-                _check_provider_update_before_model_work(provider, config, headless)
+                _check_provider_update_before_model_work(
+                    provider,
+                    config,
+                    headless,
+                    project=project,
+                    model_override=architect_model_override or None,
+                )
                 config.execution_agent = result.execution_agent or ""
                 config.free_mode = result.free
                 config.persistent = result.persistent
@@ -2122,7 +2264,13 @@ def _collect_planning_prompts(
             if not goal_text:
                 # Back pressed on first screen — stay at goal
                 continue
-            _check_provider_update_before_model_work(provider, config, headless)
+            _check_provider_update_before_model_work(
+                provider,
+                config,
+                headless,
+                project=project,
+                model_override=architect_model_override or None,
+            )
             step = "scope"
 
         elif step == "scope":

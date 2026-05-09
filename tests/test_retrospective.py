@@ -11,6 +11,7 @@ from the_architect.config import ArchitectConfig
 from the_architect.core.claude_code_provider import ClaudeCodeProvider
 from the_architect.core.retrospective import (
     ReassessmentResult,
+    RetrospectiveFailedError,
     RetrospectiveRequest,
     RetrospectiveResult,
     _gather_review_context,
@@ -788,6 +789,41 @@ class TestRendererPassthrough:
             await run_retrospective(request, config, provider=provider, renderer=renderer)
 
         assert captured.get("renderer") is renderer
+
+
+class TestProviderFailureHandling:
+    @pytest.mark.asyncio
+    async def test_retrospective_quota_exhausted_fails_fast(
+        self, tmp_path: Path, config: ArchitectConfig
+    ) -> None:
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "PROGRESS.md").write_text(
+            "**Tasks completed:** 0\n**Next task to run:** T01\n",
+            encoding="utf-8",
+        )
+
+        provider = MagicMock()
+        provider.supports_agents.return_value = False
+        provider.name = "gemini-cli"
+        provider.display_name = "Gemini CLI"
+
+        async def fake_stream(**kwargs: object) -> StreamResult:
+            return StreamResult(
+                exit_code=1,
+                tokens=TokenUsage(),
+                accumulated_text="RESOURCE_EXHAUSTED: quota exceeded; billing not enabled",
+                rate_limit_hit=True,
+            )
+
+        request = RetrospectiveRequest(
+            round_number=1,
+            project_dir=tmp_path,
+            original_goal="test",
+        )
+        with patch("the_architect.core.retrospective.stream_provider", side_effect=fake_stream):
+            with pytest.raises(RetrospectiveFailedError, match="quota"):
+                await run_retrospective(request, config, provider=provider)
 
     @pytest.mark.asyncio
     async def test_reassessment_forwards_renderer(

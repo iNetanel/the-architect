@@ -308,6 +308,10 @@ class PreRunScreen(Screen[PreRunValues]):
         self._models: list[str] = []
         self._agents: list[str] = []
         self._model_fetch_error = False
+        self._models_loading = False
+        self._provider_data_cache: dict[str, tuple[list[str], list[str], bool]] = {}
+        self._provider_loading: set[str] = set()
+        self._provider_fetch_generation: dict[str, int] = {}
 
         # Warning message for footer
         self._warning_text = ""
@@ -485,12 +489,9 @@ class PreRunScreen(Screen[PreRunValues]):
             except Exception as exc:
                 logger.debug(f"PreRunScreen: goal pre-fill failed: {exc!r}")
 
-        # Kick off provider data fetch in a worker so subprocess calls
-        # to `opencode models` / `claude agents` don't block the
-        # Textual event loop (which would freeze the splash animation
-        # behind us and make the whole screen feel dead while the
-        # CLI subprocesses run).
-        self.run_worker(self._fetch_provider_data_async, thread=True, exclusive=True)
+        # Kick off provider data fetches once up front so switching providers
+        # usually becomes an instant cache swap instead of a new blocking wait.
+        self._refresh_all_provider_data()
 
         # Apply cross-tab state (free checkbox visibility)
         self._update_free_checkbox_visibility()
@@ -510,7 +511,7 @@ class PreRunScreen(Screen[PreRunValues]):
 
         self._update_tab_labels()
 
-    def _fetch_provider_data_async(self) -> None:
+    def _fetch_provider_data_async(self, provider_name: str, generation: int) -> None:
         """Worker-thread body: fetch models/agents then push UI update.
 
         Runs in a background thread so the synchronous ``subprocess.run``
@@ -518,7 +519,7 @@ class PreRunScreen(Screen[PreRunValues]):
         not block the Textual event loop. The UI update is scheduled
         back onto the event loop via ``call_from_thread``.
         """
-        provider = self._get_active_provider()
+        provider = self._get_provider_by_name(provider_name)
         models: list[str] = []
         agents: list[str] = []
         model_ok = True
@@ -543,18 +544,37 @@ class PreRunScreen(Screen[PreRunValues]):
             model_ok = False
 
         # Hop back onto the Textual event loop to mutate widgets.
-        self.app.call_from_thread(self._apply_provider_data, models, agents, model_ok and agent_ok)
+        self.app.call_from_thread(
+            self._apply_provider_data,
+            provider_name,
+            generation,
+            models,
+            agents,
+            model_ok and agent_ok,
+        )
 
     def _apply_provider_data(
         self,
+        provider_name: str,
+        generation: int,
         models: list[str],
         agents: list[str],
         ok: bool,
     ) -> None:
         """Event-loop-side update after the worker finishes."""
+        if generation != self._provider_fetch_generation.get(provider_name):
+            return
+
+        self._provider_data_cache[provider_name] = (models, agents, ok)
+        self._provider_loading.discard(provider_name)
+
+        if provider_name != self._values.provider_name:
+            return
+
         self._models = models
         self._agents = agents
         self._model_fetch_error = not ok
+        self._models_loading = False
 
         # Coerce persisted model if it no longer exists
         if self._values.architect_model and self._values.architect_model not in self._models:
@@ -564,27 +584,72 @@ class PreRunScreen(Screen[PreRunValues]):
             )
 
         self._update_models_tab()
+        self._update_tab_labels()
+        self._update_footer()
 
     # ── Provider data loading ────────────────────────────────────────
 
-    def _refresh_provider_data(self) -> None:
-        """Kick off provider data fetch in a worker thread.
+    def _refresh_all_provider_data(self) -> None:
+        """Start one model/agent fetch for each installed provider."""
+        for provider in self._providers:
+            self._start_provider_fetch(provider.name)
+        self._refresh_provider_data()
 
-        Subprocess calls to ``opencode models`` / ``claude agents`` block
-        for up to 15s, so running them on the event loop would freeze
-        the splash animation and every PreRunScreen redraw. Delegating
-        to a Textual worker keeps the UI responsive during the fetch
-        and ``_apply_provider_data`` hops back to the event loop when
-        it's done.
+    def _start_provider_fetch(self, provider_name: str) -> None:
+        """Start a provider data fetch unless that provider is cached/loading."""
+        if provider_name in self._provider_data_cache or provider_name in self._provider_loading:
+            return
+
+        generation = self._provider_fetch_generation.get(provider_name, 0) + 1
+        self._provider_fetch_generation[provider_name] = generation
+        self._provider_loading.add(provider_name)
+        self.run_worker(
+            lambda: self._fetch_provider_data_async(provider_name, generation),
+            thread=True,
+            exclusive=False,
+        )
+
+    def _refresh_provider_data(self) -> None:
+        """Sync the visible Models tab with the active provider cache.
+
+        If the provider is already cached, the list changes immediately. If it
+        is still loading, stale rows stay cleared and a loading message is shown.
         """
-        # Show "Loading models…" status while the worker runs
+        provider = self._get_active_provider()
+        provider_name = provider.name if provider is not None else ""
+
+        if provider_name in self._provider_data_cache:
+            models, agents, ok = self._provider_data_cache[provider_name]
+            self._models = models
+            self._agents = agents
+            self._model_fetch_error = not ok
+            self._models_loading = False
+            if self._values.architect_model and self._values.architect_model not in self._models:
+                self._values.architect_model = None
+            self._update_models_tab()
+            self._update_tab_labels()
+            self._update_footer()
+            return
+
+        if provider_name:
+            self._start_provider_fetch(provider_name)
+
+        self._models = []
+        self._agents = []
+        self._model_fetch_error = False
+        self._models_loading = bool(provider_name)
+
+        # Show loading status and clear stale provider rows while the worker runs.
         try:
             status = self.query_one("#model_fetch_status", Static)
-            status.update("Loading models…")
+            provider_label = provider.display_name if provider is not None else "provider"
+            status.update(f"Loading models for {provider_label}…")
             status.display = True
         except Exception:
             pass
-        self.run_worker(self._fetch_provider_data_async, thread=True, exclusive=True)
+        self._update_models_tab()
+        self._update_tab_labels()
+        self._update_footer()
 
     def _update_models_tab(self) -> None:
         """Update Models tab UI in-place — no remove+remount."""
@@ -594,7 +659,12 @@ class PreRunScreen(Screen[PreRunValues]):
         # Update fetch-status line
         try:
             status = self.query_one("#model_fetch_status", Static)
-            if self._model_fetch_error:
+            if self._models_loading:
+                provider_label = provider.display_name if provider is not None else "provider"
+                status.update(f"Loading models for {provider_label}…")
+                status.styles.color = "$text-muted"
+                status.display = True
+            elif self._model_fetch_error:
                 status.update("Could not load models — using provider default.")
                 status.styles.color = "$warning"
                 status.display = True
@@ -894,7 +964,7 @@ class PreRunScreen(Screen[PreRunValues]):
 
     @property
     def _models_complete(self) -> bool:
-        """Models tab is always complete (defaults valid)."""
+        """Models tab is always complete because provider defaults are valid."""
         return True
 
     @property
@@ -1154,6 +1224,8 @@ class PreRunScreen(Screen[PreRunValues]):
         """Handle provider selection change — refresh model/agent lists."""
         values = self._collect_values()
         self._values.provider_name = values.provider_name
+        self._values.architect_model = None
+        self._values.execution_agent = None
 
         # Refresh Models tab from new provider
         self._refresh_provider_data()
@@ -1229,6 +1301,13 @@ class PreRunScreen(Screen[PreRunValues]):
             if p.name == name:
                 return p
         return self._providers[0] if self._providers else None
+
+    def _get_provider_by_name(self, name: str) -> ArchitectProvider | None:
+        """Return a provider by name without falling back to the first provider."""
+        for provider in self._providers:
+            if provider.name == name:
+                return provider
+        return None
 
     def _format_pending_tasks(self) -> str:
         """Return a compact pending-task summary for existing-task runs."""

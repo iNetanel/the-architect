@@ -551,6 +551,8 @@ class UpdateActionScreen(Screen[str]):
 
     BINDINGS = [
         Binding("enter", "confirm", "Continue"),
+        Binding("u", "update", "Update"),
+        Binding("U", "update", "Update"),
         Binding("escape", "exit", "Exit"),
         Binding("ctrl+c", "exit", "Exit"),
     ]
@@ -567,7 +569,7 @@ class UpdateActionScreen(Screen[str]):
             yield Static(self._update_msg, id="update_msg")
             yield Static(f"Update:  {self._install_hint}", id="update_hint")
             yield Static(
-                "[dim]Enter continue · Esc exit[/dim]",
+                "[dim]Enter continue · U update provider · Esc exit[/dim]",
                 id="update_instructions",
                 markup=True,
             )
@@ -575,6 +577,9 @@ class UpdateActionScreen(Screen[str]):
 
     def action_confirm(self) -> None:
         self.dismiss("continue")
+
+    def action_update(self) -> None:
+        self.dismiss("update")
 
     def action_exit(self) -> None:
         self.dismiss("exit")

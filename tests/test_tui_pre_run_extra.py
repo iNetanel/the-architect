@@ -102,6 +102,16 @@ class TestUpdateActionScreen:
             await pilot.pause()
         assert harness.dismissed == "exit"
 
+    @pytest.mark.asyncio
+    async def test_update_returns_update(self) -> None:
+        screen = UpdateActionScreen(update_msg="outdated", install_hint="pip install -U x")
+        harness = _Harness(screen)
+        async with harness.run_test() as pilot:
+            await pilot.pause()
+            screen.action_update()
+            await pilot.pause()
+        assert harness.dismissed == "update"
+
 
 class TestPendingTasksScreen:
     @pytest.mark.asyncio

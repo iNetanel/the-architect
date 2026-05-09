@@ -477,6 +477,18 @@ async def run_retrospective(
             f"{provider.display_name} reviewer exited with code {stream_result.exit_code}"
         )
 
+    from the_architect.core.circuit import ProviderErrorKind, detect_provider_error
+
+    provider_error = detect_provider_error(stream_result.accumulated_text, stream_result.exit_code)
+    if provider_error is not None and provider_error.kind in (
+        ProviderErrorKind.UPDATE_REQUIRED,
+        ProviderErrorKind.MISCONFIGURED,
+        ProviderErrorKind.QUOTA_EXHAUSTED,
+    ):
+        msg = f"{provider_error.message}\n  -> {provider_error.action}"
+        logger.error(f"Retrospective aborted — provider error: {provider_error.message}")
+        raise RetrospectiveFailedError(msg)
+
     # Rescue any task files the reviewer wrote outside the canonical tasks_dir.
     _rescue_stray_tasks(project_dir, tasks_dir)
 
@@ -631,18 +643,33 @@ async def run_task_reassessment(
         ]
     )
 
-    await stream_provider(
+    config_override = (
+        project_dir / ".architect" / "architect.json" if provider.supports_agents() else None
+    )
+    agent_override = "architect" if provider.supports_agents() else None
+
+    stream_result = await stream_provider(
         instruction=instruction,
         project_dir=project_dir,
         provider=provider,
         model_override=model_override,
-        agent_override="architect" if provider.supports_agents() else None,
+        agent_override=agent_override,
         log_path=log_path,
-        config_override=(project_dir / ".architect" / "architect.json")
-        if provider.supports_agents()
-        else None,
+        config_override=config_override,
         renderer=renderer,
     )
+
+    from the_architect.core.circuit import ProviderErrorKind, detect_provider_error
+
+    provider_error = detect_provider_error(stream_result.accumulated_text, stream_result.exit_code)
+    if provider_error is not None and provider_error.kind in (
+        ProviderErrorKind.UPDATE_REQUIRED,
+        ProviderErrorKind.MISCONFIGURED,
+        ProviderErrorKind.QUOTA_EXHAUSTED,
+    ):
+        msg = f"{provider_error.message}\n  -> {provider_error.action}"
+        logger.error(f"Reassessment aborted — provider error: {provider_error.message}")
+        raise RetrospectiveFailedError(msg)
 
     updated: list[str] = []
     for task in discover_tasks(tasks_dir):
