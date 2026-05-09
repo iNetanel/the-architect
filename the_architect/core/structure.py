@@ -10,6 +10,7 @@ Detection always runs fresh on every ``architect --plan`` — never cached.
 
 from __future__ import annotations
 
+import importlib
 import json
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -1138,8 +1139,7 @@ def _parse_docker_compose(
         return dependencies, False
 
     try:
-        import yaml  # type: ignore[import-untyped]  # noqa: F811
-
+        yaml = importlib.import_module("yaml")
         data = yaml.safe_load(content)
     except ImportError:
         # yaml not available — try a simple regex-based parse

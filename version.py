@@ -17,7 +17,7 @@
 #   v3.0.0  build 30000+
 #
 # PyPI shows : 1.2.3
-# CLI shows  : The Architect v1.2.3 (build 10260)
+# CLI shows  : The Architect v1.2.3 (build 10261)
 #
 # To release:
 #   1. Bump __version__ here and version in pyproject.toml
@@ -35,7 +35,7 @@
 # for every file operation it performs. This is the intended workflow.
 
 __version__ = "1.2.3"
-__build__ = 10260
+__build__ = 10261
 __author__ = "Netanel Eliav"
 __email__ = "inetanel@me.com"
 __repo__ = "https://github.com/inetanel/the-architect"
