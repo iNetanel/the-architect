@@ -380,7 +380,7 @@ class CodexCliProvider:
         return project_dir / ".architect" / "prompts"
 
     def _write_architect_prompts(self, project_dir: Path) -> None:
-        """Write architect.md, reviewer.md, and execution-protocol.md to .architect/prompts/."""
+        """Write packaged Architect prompts to .architect/prompts/."""
         import importlib.resources as resources
 
         prompts_dir = project_dir / ".architect" / "prompts"
@@ -388,7 +388,12 @@ class CodexCliProvider:
 
         package_prompts = resources.files("the_architect.resources.prompts")
 
-        for filename in ("architect.md", "reviewer.md", "execution-protocol.md"):
+        for filename in (
+            "architect.md",
+            "intelligence.md",
+            "reviewer.md",
+            "execution-protocol.md",
+        ):
             source = package_prompts / filename
             target = prompts_dir / filename
             content = source.read_text(encoding="utf-8")

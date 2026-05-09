@@ -58,6 +58,17 @@ def test_execution_protocol_loads() -> None:
     assert "Done" in prompt
 
 
+def test_intelligence_prompt_loads() -> None:
+    """Verify project intelligence prompt loads correctly."""
+    from the_architect.resources import get_prompt
+
+    prompt = get_prompt("intelligence.md")
+    assert len(prompt) > 100
+    assert "Project Intelligence Curator" in prompt
+    assert "Edit only `ARCHITECT.md`" in prompt
+    assert "Do not create task files" in prompt
+
+
 def test_execution_protocol_requires_focused_codebase_discovery() -> None:
     """Execution protocol should make executor discovery explicit and bounded."""
     from the_architect.resources import get_prompt
@@ -100,5 +111,7 @@ def test_opencode_template_loads() -> None:
     config = json.loads(template)
     assert "agent" in config
     assert "architect" in config["agent"]
-    # The Architect only defines the architect agent — execution uses user's opencode
+    assert "intelligence" in config["agent"]
+    assert "reviewer" in config["agent"]
+    # Execution uses user's opencode agents, not The Architect's internal agents.
     assert "build" not in config["agent"]

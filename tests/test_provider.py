@@ -664,13 +664,37 @@ class TestClaudeCodeProviderModel:
 class TestClaudeCodeProviderModels:
     """Tests for ClaudeCodeProvider model listing."""
 
+    _MOCK_MODELS_OUTPUT = (
+        "The current Claude models available:\n\n"
+        "| Model | ID |\n"
+        "|---|---|\n"
+        "| **Opus 4.7** | `claude-opus-4-7` |\n"
+        "| **Sonnet 4.6** | `claude-sonnet-4-6` |\n"
+    )
+
     def test_list_models_returns_list(self) -> None:
-        models = ClaudeCodeProvider().list_models()
+        import subprocess
+
+        mock_result = subprocess.CompletedProcess(
+            args=["claude", "models"], returncode=0, stdout=self._MOCK_MODELS_OUTPUT
+        )
+        with patch(
+            "the_architect.core.claude_code_provider.subprocess.run", return_value=mock_result
+        ):
+            models = ClaudeCodeProvider().list_models()
         assert isinstance(models, list)
         assert len(models) > 0
 
     def test_list_models_contains_known_models(self) -> None:
-        models = ClaudeCodeProvider().list_models()
+        import subprocess
+
+        mock_result = subprocess.CompletedProcess(
+            args=["claude", "models"], returncode=0, stdout=self._MOCK_MODELS_OUTPUT
+        )
+        with patch(
+            "the_architect.core.claude_code_provider.subprocess.run", return_value=mock_result
+        ):
+            models = ClaudeCodeProvider().list_models()
         # At least one known model should be in the list
         assert any("claude" in m.lower() for m in models)
 

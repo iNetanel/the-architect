@@ -511,6 +511,11 @@ class TestCodexCliProviderSetup:
         CodexCliProvider().ensure_setup(tmp_path, config)
         assert not (tmp_path / "opencode.json").exists()
 
+    def test_write_architect_prompts_includes_intelligence_md(self, tmp_path: Path) -> None:
+        """Test that intelligence.md is written to .architect/prompts/."""
+        CodexCliProvider()._write_architect_prompts(tmp_path)
+        assert (tmp_path / ".architect" / "prompts" / "intelligence.md").exists()
+
 
 # ---------------------------------------------------------------------------
 # Prompts

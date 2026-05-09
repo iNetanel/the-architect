@@ -425,6 +425,20 @@ class TestOpenCodeProviderListAgents:
         assert result == ["master"]
 
     @patch("the_architect.core.opencode_provider.subprocess.run")
+    def test_list_agents_excludes_intelligence_agent(self, mock_run: MagicMock) -> None:
+        """Should exclude 'intelligence' even when it appears as a primary agent."""
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="master (primary)\nintelligence (primary)\nbackend (primary)\n",
+            stderr="",
+        )
+        provider = OpenCodeProvider()
+        result = provider.list_agents(Path("/tmp"))
+        assert "intelligence" not in result
+        assert "master" in result
+        assert "backend" in result
+
+    @patch("the_architect.core.opencode_provider.subprocess.run")
     @patch("the_architect.core.opencode_provider.OpenCodeProvider.find_user_config")
     def test_fallbacks_to_debug_config_on_primary_failure(
         self, mock_find: MagicMock, mock_run: MagicMock
@@ -1751,3 +1765,160 @@ class TestParseOutputLineAdditional:
         result = provider.parse_output_line(event)
         assert result is not None
         assert any("test.py" in line for line in result.display_lines)
+
+
+# ---------------------------------------------------------------------------
+# TestOpenCodeProviderMissingCoverage — covers lines 132, 591-608, 621-624,
+#   754, 772, 789, 794, 810-855
+# ---------------------------------------------------------------------------
+
+
+class TestOpenCodeProviderMissingCoverage:
+    """Targeted tests for OpenCodeProvider methods not yet exercised."""
+
+    def test_binary_name_property(self) -> None:
+        """binary_name returns 'opencode' (line 132)."""
+        provider = OpenCodeProvider()
+        assert provider.binary_name == "opencode"
+
+    @patch("shutil.which", return_value="/usr/local/bin/opencode")
+    def test_build_command_basic(self, mock_which: MagicMock) -> None:
+        """build_command returns expected command list (lines 591-598)."""
+        provider = OpenCodeProvider()
+        cmd = provider.build_command("do the thing")
+        assert cmd[0] == "/usr/local/bin/opencode"
+        assert "run" in cmd
+        assert "--format" in cmd
+        assert "json" in cmd
+        assert "--dangerously-skip-permissions" in cmd
+        assert "do the thing" in cmd
+
+    @patch("shutil.which", return_value="/usr/local/bin/opencode")
+    def test_build_command_with_model_and_agent(self, mock_which: MagicMock) -> None:
+        """build_command includes --model and --agent when overrides provided (lines 600-606)."""
+        provider = OpenCodeProvider()
+        cmd = provider.build_command("goal", model_override="gpt-4o", agent_override="backend")
+        assert "--model" in cmd
+        assert "gpt-4o" in cmd
+        assert "--agent" in cmd
+        assert "backend" in cmd
+
+    def test_get_env_overrides_with_config(self, tmp_path: Path) -> None:
+        """get_env_overrides sets OPENCODE_CONFIG when config_override provided (lines 621-624)."""
+        provider = OpenCodeProvider()
+        config_file = tmp_path / "opencode.json"
+        config_file.write_text("{}")
+        env = provider.get_env_overrides(config_override=config_file)
+        assert "OPENCODE_CONFIG" in env
+        assert str(config_file.resolve()) in env["OPENCODE_CONFIG"]
+
+    def test_error_event_with_rate_limit_signal(self) -> None:
+        """Error event triggers rate_limit flag when is_rate_limit_event matches (line 754)."""
+        import json as _json
+
+        provider = OpenCodeProvider()
+        event = _json.dumps(
+            {"type": "error", "message": "rate limit exceeded, retry after 60s"}
+        )
+        result = provider.parse_output_line(event)
+        assert result is not None
+        assert result.rate_limit is True
+
+    def test_supports_json_output_returns_true(self) -> None:
+        """OpenCode emits JSON events, so supports_json_output is True (line 772)."""
+        provider = OpenCodeProvider()
+        assert provider.supports_json_output() is True
+
+    def test_supports_free_tier_with_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Fast path: OPENROUTER_API_KEY set → supports_free_tier True (line 789)."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-key-value")
+        provider = OpenCodeProvider()
+        assert provider.supports_free_tier() is True
+
+    def test_supports_free_tier_slow_path_openrouter_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Slow path: openrouter/ model in list → supports_free_tier True (line 794)."""
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        with patch.object(OpenCodeProvider, "list_models", return_value=["openrouter/gpt-4o"]):
+            provider = OpenCodeProvider()
+            assert provider.supports_free_tier() is True
+
+    def test_check_update_returns_empty_when_not_installed(self) -> None:
+        """Early return when opencode not installed (line 813)."""
+        provider = OpenCodeProvider()
+        with patch.object(provider, "is_installed", return_value=False):
+            assert provider.check_update_available() == ""
+
+    def test_check_update_returns_empty_when_version_unknown(self) -> None:
+        """Early return when version is 'unknown' (line 818)."""
+        provider = OpenCodeProvider()
+        with patch.object(provider, "is_installed", return_value=True):
+            with patch.object(provider, "get_version", return_value="unknown"):
+                assert provider.check_update_available() == ""
+
+    def test_check_update_returns_empty_when_no_semver(self) -> None:
+        """Early return when version string has no semver (line 823)."""
+        provider = OpenCodeProvider()
+        with patch.object(provider, "is_installed", return_value=True):
+            with patch.object(provider, "get_version", return_value="nightly"):
+                assert provider.check_update_available() == ""
+
+    def test_check_update_returns_empty_on_network_error(self) -> None:
+        """Returns '' on urllib failure (line 838-840)."""
+        provider = OpenCodeProvider()
+        with patch.object(provider, "is_installed", return_value=True):
+            with patch.object(provider, "get_version", return_value="1.14.28"):
+                with patch("urllib.request.urlopen", side_effect=OSError("network")):
+                    assert provider.check_update_available() == ""
+
+    def test_check_update_returns_message_when_newer_available(self) -> None:
+        """Returns update message when installed < latest (lines 849-853)."""
+        import json as _json
+        from unittest.mock import Mock
+
+        mock_resp = Mock()
+        mock_resp.__enter__ = Mock(return_value=mock_resp)
+        mock_resp.__exit__ = Mock(return_value=False)
+        mock_resp.read.return_value = _json.dumps({"version": "2.0.0"}).encode("utf-8")
+
+        provider = OpenCodeProvider()
+        with patch.object(provider, "is_installed", return_value=True):
+            with patch.object(provider, "get_version", return_value="1.14.28"):
+                with patch("urllib.request.urlopen", return_value=mock_resp):
+                    result = provider.check_update_available()
+                    assert "1.14.28" in result
+                    assert "2.0.0" in result
+                    assert "opencode upgrade" in result
+
+    def test_check_update_returns_empty_when_already_up_to_date(self) -> None:
+        """Returns '' when installed version equals latest (line 855)."""
+        import json as _json
+        from unittest.mock import Mock
+
+        mock_resp = Mock()
+        mock_resp.__enter__ = Mock(return_value=mock_resp)
+        mock_resp.__exit__ = Mock(return_value=False)
+        mock_resp.read.return_value = _json.dumps({"version": "1.14.28"}).encode("utf-8")
+
+        provider = OpenCodeProvider()
+        with patch.object(provider, "is_installed", return_value=True):
+            with patch.object(provider, "get_version", return_value="1.14.28"):
+                with patch("urllib.request.urlopen", return_value=mock_resp):
+                    assert provider.check_update_available() == ""
+
+    def test_check_update_returns_empty_when_no_version_in_response(self) -> None:
+        """Returns '' when registry response has no version field (line 836-837)."""
+        import json as _json
+        from unittest.mock import Mock
+
+        mock_resp = Mock()
+        mock_resp.__enter__ = Mock(return_value=mock_resp)
+        mock_resp.__exit__ = Mock(return_value=False)
+        mock_resp.read.return_value = _json.dumps({}).encode("utf-8")
+
+        provider = OpenCodeProvider()
+        with patch.object(provider, "is_installed", return_value=True):
+            with patch.object(provider, "get_version", return_value="1.14.28"):
+                with patch("urllib.request.urlopen", return_value=mock_resp):
+                    assert provider.check_update_available() == ""

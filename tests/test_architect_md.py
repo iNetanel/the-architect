@@ -2,16 +2,27 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
 from the_architect.core.architect_md import (
+    _all_components,
+    _as_dict,
+    _as_list,
+    _detected_project_intelligence_sections,
+    _read_json,
+    _read_toml,
+    _remove_auto_intelligence_block,
+    _script_lines_from_pyproject,
+    _verification_lines,
     append_best_practice,
     append_constraint,
     append_lesson,
     append_permanent_decision,
     append_planning_history,
     create_architect_md,
+    enrich_from_structure_report,
     extract_structure_section,
     parse_sections,
     read_architect_md,
@@ -357,7 +368,51 @@ class TestWriteOrUpdateArchitectMd:
         updated = arch_md.read_text(encoding="utf-8")
         assert "Manual note: Python services use typed models" in updated
         assert "FastAPI" in updated
-        assert updated.count("### Auto-Detected Project Intelligence") == 6
+        assert updated.count("### Auto-Detected Project Intelligence") == 8
+
+    def test_enrichment_adds_repo_level_docs_ci_and_agent_contracts(self, tmp_path: Path) -> None:
+        """Pre-planner memory should capture repo-level facts beyond components."""
+        (tmp_path / "the_architect" / "resources" / "prompts").mkdir(parents=True)
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "documentation").mkdir()
+        (tmp_path / ".github" / "workflows").mkdir(parents=True)
+        (tmp_path / "AGENTS.md").write_text("# Rules\n", encoding="utf-8")
+        (tmp_path / "README.md").write_text("# Example\n", encoding="utf-8")
+        (tmp_path / "CHANGELOG.md").write_text("# Changelog\n", encoding="utf-8")
+        (tmp_path / "version.py").write_text("__build__ = 1\n", encoding="utf-8")
+        (tmp_path / "documentation" / "PRACTICES.md").write_text("# Practices\n", encoding="utf-8")
+        (tmp_path / ".github" / "workflows" / "ci.yml").write_text("name: CI\n", encoding="utf-8")
+        (tmp_path / "pyproject.toml").write_text(
+            "\n".join(
+                [
+                    "[build-system]",
+                    'build-backend = "hatchling.build"',
+                    "[project]",
+                    'name = "example"',
+                    'description = "Example package"',
+                    'dependencies = ["pytest", "ruff", "mypy"]',
+                    "[project.scripts]",
+                    'example = "example.cli:main"',
+                ]
+            ),
+            encoding="utf-8",
+        )
+        report = StructureReport(
+            repo_type=RepoType.SINGLE_REPO,
+            components=[Component(path="./", language="Python", test_command="pytest tests/ -v")],
+        )
+
+        write_or_update_architect_md(tmp_path, report)
+
+        content = read_architect_md(tmp_path) or ""
+        assert "Root Python project: `example`" in content
+        assert "Python build backend: `hatchling.build`" in content
+        assert "CLI entry point `example` resolves to `example.cli:main`" in content
+        assert "documentation/`" in content or "`documentation/`" in content
+        assert "`.github/workflows/ci.yml`" in content
+        assert "`AGENTS.md` is a provider/user rule file" in content
+        assert "`the_architect/resources/prompts/`" in content
+        assert "Root `version.py` exists" in content
 
 
 # ---------------------------------------------------------------------------
@@ -665,3 +720,495 @@ class TestAppendToSectionListWriteFailure:
         ):
             # Should not raise — the exception is caught and silently swallowed
             append_best_practice(tmp_path, "a practice")
+
+
+# ---------------------------------------------------------------------------
+# TestIoHelpers — _read_toml, _read_json, _as_dict, _as_list
+# ---------------------------------------------------------------------------
+
+
+class TestIoHelpers:
+    """Tests for the IO helper functions in architect_md.py."""
+
+    # --- _read_toml ---
+
+    def test_read_toml_returns_empty_when_file_missing(self, tmp_path: Path) -> None:
+        """Should return {} when the TOML file does not exist."""
+        result = _read_toml(tmp_path / "nonexistent.toml")
+        assert result == {}
+
+    def test_read_toml_returns_parsed_data(self, tmp_path: Path) -> None:
+        """Should parse and return dict from a valid TOML file."""
+        toml_file = tmp_path / "config.toml"
+        toml_file.write_text('[project]\nname = "test"\nversion = "1.0.0"\n', encoding="utf-8")
+        result = _read_toml(toml_file)
+        assert result == {"project": {"name": "test", "version": "1.0.0"}}
+
+    def test_read_toml_returns_empty_on_os_error(self, tmp_path: Path) -> None:
+        """Should return {} when read_text raises OSError."""
+        toml_file = tmp_path / "config.toml"
+        toml_file.write_text("[project]\nname = 'x'\n", encoding="utf-8")
+        with patch.object(Path, "read_text", side_effect=OSError("disk error")):
+            result = _read_toml(toml_file)
+        assert result == {}
+
+    def test_read_toml_returns_empty_on_decode_error(self, tmp_path: Path) -> None:
+        """Should return {} when the file contains invalid TOML."""
+        toml_file = tmp_path / "bad.toml"
+        toml_file.write_text("[[[[invalid toml\n", encoding="utf-8")
+        result = _read_toml(toml_file)
+        assert result == {}
+
+    # --- _read_json ---
+
+    def test_read_json_returns_empty_when_file_missing(self, tmp_path: Path) -> None:
+        """Should return {} when the JSON file does not exist."""
+        result = _read_json(tmp_path / "nonexistent.json")
+        assert result == {}
+
+    def test_read_json_returns_parsed_dict(self, tmp_path: Path) -> None:
+        """Should parse and return dict from a valid JSON object file."""
+        json_file = tmp_path / "data.json"
+        json_file.write_text(json.dumps({"key": "value"}), encoding="utf-8")
+        result = _read_json(json_file)
+        assert result == {"key": "value"}
+
+    def test_read_json_returns_empty_when_top_level_is_list(self, tmp_path: Path) -> None:
+        """Should return {} when the JSON top-level value is a list, not a dict."""
+        json_file = tmp_path / "list.json"
+        json_file.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+        result = _read_json(json_file)
+        assert result == {}
+
+    def test_read_json_returns_empty_on_decode_error(self, tmp_path: Path) -> None:
+        """Should return {} when the file contains invalid JSON."""
+        json_file = tmp_path / "bad.json"
+        json_file.write_text("{not valid json}", encoding="utf-8")
+        result = _read_json(json_file)
+        assert result == {}
+
+    # --- _as_dict ---
+
+    def test_as_dict_returns_dict_unchanged(self) -> None:
+        """Should return the dict as-is when given a dict."""
+        data: dict[str, object] = {"a": 1, "b": "two"}
+        assert _as_dict(data) == {"a": 1, "b": "two"}
+
+    def test_as_dict_returns_empty_for_non_dict(self) -> None:
+        """Should return {} when given a non-dict value."""
+        assert _as_dict("string") == {}
+        assert _as_dict(42) == {}
+        assert _as_dict([1, 2]) == {}
+        assert _as_dict(None) == {}
+
+    # --- _as_list ---
+
+    def test_as_list_returns_list_unchanged(self) -> None:
+        """Should return the list as-is when given a list."""
+        data = [1, "two", 3.0]
+        assert _as_list(data) == [1, "two", 3.0]
+
+    def test_as_list_returns_empty_for_non_list(self) -> None:
+        """Should return [] when given a non-list value."""
+        assert _as_list({"a": 1}) == []
+        assert _as_list("string") == []
+        assert _as_list(42) == []
+        assert _as_list(None) == []
+
+
+# ---------------------------------------------------------------------------
+# TestScriptAndVerificationHelpers — _script_lines_from_pyproject, _verification_lines
+# ---------------------------------------------------------------------------
+
+
+class TestScriptAndVerificationHelpers:
+    """Tests for _script_lines_from_pyproject() and _verification_lines()."""
+
+    # --- _script_lines_from_pyproject ---
+
+    def test_script_lines_empty_when_no_pyproject(self, tmp_path: Path) -> None:
+        """Should return [] when no pyproject.toml exists."""
+        result = _script_lines_from_pyproject(tmp_path)
+        assert result == []
+
+    def test_script_lines_empty_when_no_scripts_section(self, tmp_path: Path) -> None:
+        """Should return [] when pyproject.toml has no [project.scripts] section."""
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "mypkg"\nversion = "0.1.0"\n', encoding="utf-8"
+        )
+        result = _script_lines_from_pyproject(tmp_path)
+        assert result == []
+
+    def test_script_lines_extracts_entry_points(self, tmp_path: Path) -> None:
+        """Should return a line for each string entry in [project.scripts]."""
+        (tmp_path / "pyproject.toml").write_text(
+            '[project.scripts]\nmy-cli = "my_pkg.cli:main"\n', encoding="utf-8"
+        )
+        result = _script_lines_from_pyproject(tmp_path)
+        assert any("my-cli" in line and "my_pkg.cli:main" in line for line in result)
+
+    def test_script_lines_skips_non_string_values(self, tmp_path: Path) -> None:
+        """Should skip entries whose target value is not a string."""
+        # TOML doesn't allow raw integers as values in [project.scripts] in practice,
+        # but _script_lines_from_pyproject guards isinstance(target, str). We test via
+        # _read_toml by writing a valid TOML with a boolean (non-string) value.
+        (tmp_path / "pyproject.toml").write_text(
+            '[project.scripts]\nbad = true\ngood = "pkg.cli:main"\n', encoding="utf-8"
+        )
+        result = _script_lines_from_pyproject(tmp_path)
+        assert not any("bad" in line for line in result)
+        assert any("good" in line for line in result)
+
+    # --- _verification_lines ---
+
+    def test_verification_lines_detects_pytest(self, tmp_path: Path) -> None:
+        """Should include pytest command when pyproject.toml mentions pytest."""
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.pytest]\naddopts = "-v"\n', encoding="utf-8"
+        )
+        result = _verification_lines(tmp_path)
+        assert any("pytest tests/ -v --tb=short" in line for line in result)
+
+    def test_verification_lines_detects_ruff(self, tmp_path: Path) -> None:
+        """Should include ruff command when pyproject.toml mentions ruff."""
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.ruff]\nline-length = 100\n", encoding="utf-8"
+        )
+        result = _verification_lines(tmp_path)
+        assert any("ruff check ." in line for line in result)
+
+    def test_verification_lines_detects_mypy(self, tmp_path: Path) -> None:
+        """Should include mypy command when pyproject.toml mentions mypy."""
+        (tmp_path / "pyproject.toml").write_text("[tool.mypy]\nstrict = true\n", encoding="utf-8")
+        result = _verification_lines(tmp_path)
+        assert any("mypy" in line for line in result)
+
+    def test_verification_lines_empty_when_no_pyproject(self, tmp_path: Path) -> None:
+        """Should not include Python lines when no pyproject.toml is present."""
+        result = _verification_lines(tmp_path)
+        assert not any("pytest" in line or "ruff" in line or "mypy" in line for line in result)
+
+    def test_verification_lines_detects_npm_test_and_lint(self, tmp_path: Path) -> None:
+        """Should include npm test and lint lines when package.json has those scripts."""
+        pkg = {"scripts": {"test": "jest", "lint": "eslint ."}}
+        (tmp_path / "package.json").write_text(json.dumps(pkg), encoding="utf-8")
+        result = _verification_lines(tmp_path)
+        assert any("npm test" in line for line in result)
+        assert any("npm run lint" in line for line in result)
+
+    def test_verification_lines_detects_npm_typecheck(self, tmp_path: Path) -> None:
+        """Should include npm typecheck line when package.json has a typecheck script."""
+        pkg = {"scripts": {"typecheck": "tsc --noEmit"}}
+        (tmp_path / "package.json").write_text(json.dumps(pkg), encoding="utf-8")
+        result = _verification_lines(tmp_path)
+        assert any("npm run typecheck" in line for line in result)
+
+    def test_verification_lines_detects_ci_workflows(self, tmp_path: Path) -> None:
+        """Should include CI workflow file names when .github/workflows/ contains yml files."""
+        workflows_dir = tmp_path / ".github" / "workflows"
+        workflows_dir.mkdir(parents=True)
+        (workflows_dir / "ci.yml").write_text("name: CI\n", encoding="utf-8")
+        result = _verification_lines(tmp_path)
+        assert any("ci.yml" in line for line in result)
+
+    def test_verification_lines_handles_oserror_on_pyproject_read(self, tmp_path: Path) -> None:
+        """Should not raise and should omit Python lines when reading pyproject.toml fails."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text("[tool.pytest]\n", encoding="utf-8")
+
+        original_read_text = Path.read_text
+
+        def selective_raise(self: Path, *args: object, **kwargs: object) -> str:
+            if self.name == "pyproject.toml":
+                raise OSError("permission denied")
+            return original_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+        with patch.object(Path, "read_text", selective_raise):
+            result = _verification_lines(tmp_path)
+
+        assert not any("pytest" in line or "ruff" in line or "mypy" in line for line in result)
+
+    def test_verification_lines_handles_oserror_on_workflows_iterdir(self, tmp_path: Path) -> None:
+        """Should not raise and should skip CI lines when iterdir() fails on workflows dir."""
+        workflows_dir = tmp_path / ".github" / "workflows"
+        workflows_dir.mkdir(parents=True)
+
+        with patch.object(Path, "iterdir", side_effect=OSError("permission denied")):
+            result = _verification_lines(tmp_path)
+
+        assert not any(".github/workflows" in line for line in result)
+
+
+# ---------------------------------------------------------------------------
+# TestDetectedProjectIntelligenceSections — _detected_project_intelligence_sections
+# ---------------------------------------------------------------------------
+
+
+class TestDetectedProjectIntelligenceSections:
+    """Tests for _detected_project_intelligence_sections() branch coverage."""
+
+    def test_dev_opencode_dir_adds_agent_convention(self, tmp_path: Path) -> None:
+        """Should add an Agent and AI Conventions entry when dev/opencode/ exists."""
+        (tmp_path / "dev" / "opencode").mkdir(parents=True)
+        result = _detected_project_intelligence_sections(tmp_path)
+        assert "Agent and AI Conventions" in result
+        assert "dev/opencode/" in result["Agent and AI Conventions"]
+
+    def test_tasks_dir_adds_data_storage_entry(self, tmp_path: Path) -> None:
+        """Should mention tasks/ in Data and Storage when the tasks/ dir exists."""
+        (tmp_path / "tasks").mkdir()
+        result = _detected_project_intelligence_sections(tmp_path)
+        assert "Data and Storage" in result
+        assert "tasks/" in result["Data and Storage"]
+
+    def test_architect_dir_detected_in_data_storage(self, tmp_path: Path) -> None:
+        """Should record .architect/ runtime state path when .architect/ exists."""
+        (tmp_path / ".architect").mkdir()
+        result = _detected_project_intelligence_sections(tmp_path)
+        assert "Data and Storage" in result
+        assert ".architect/" in result["Data and Storage"]
+        assert "stores Architect runtime state" in result["Data and Storage"]
+
+    def test_no_architect_dir_uses_runtime_creates_note(self, tmp_path: Path) -> None:
+        """Should mention 'creates .architect/ at runtime' when .architect/ is absent."""
+        result = _detected_project_intelligence_sections(tmp_path)
+        assert "Data and Storage" in result
+        assert "creates `.architect/` at runtime" in result["Data and Storage"]
+
+    def test_env_file_adds_environment_secrets_entry(self, tmp_path: Path) -> None:
+        """Should add Environment and Secrets entry when .env exists."""
+        (tmp_path / ".env").write_text("SECRET=x\n", encoding="utf-8")
+        result = _detected_project_intelligence_sections(tmp_path)
+        assert "Environment and Secrets" in result
+        assert "never commit secrets" in result["Environment and Secrets"]
+
+    def test_env_example_also_triggers_environment_entry(self, tmp_path: Path) -> None:
+        """Should add Environment and Secrets entry when only .env.example exists."""
+        (tmp_path / ".env.example").write_text("SECRET=\n", encoding="utf-8")
+        result = _detected_project_intelligence_sections(tmp_path)
+        assert "Environment and Secrets" in result
+        assert "never commit secrets" in result["Environment and Secrets"]
+
+    def test_version_py_adds_operational_constraint(self, tmp_path: Path) -> None:
+        """Should add an Operational Constraints entry when version.py exists."""
+        (tmp_path / "version.py").write_text('__version__ = "1.0"\n', encoding="utf-8")
+        result = _detected_project_intelligence_sections(tmp_path)
+        assert "Operational Constraints" in result
+        assert "version.py" in result["Operational Constraints"]
+
+    def test_changelog_adds_operational_constraint(self, tmp_path: Path) -> None:
+        """Should mention CHANGELOG.md in Operational Constraints when it exists."""
+        (tmp_path / "CHANGELOG.md").write_text("# Changelog\n", encoding="utf-8")
+        result = _detected_project_intelligence_sections(tmp_path)
+        assert "Operational Constraints" in result
+        assert "CHANGELOG.md" in result["Operational Constraints"]
+
+    def test_readme_adds_code_location(self, tmp_path: Path) -> None:
+        """Should add a Code Locations entry for README.md when it exists."""
+        (tmp_path / "README.md").write_text("# My Project\n", encoding="utf-8")
+        result = _detected_project_intelligence_sections(tmp_path)
+        assert "Code Locations" in result
+        assert "README.md" in result["Code Locations"]
+
+    def test_docs_dir_adds_documentation_entries(self, tmp_path: Path) -> None:
+        """Should add Code Locations and Agent and AI Conventions entries when docs/ exists."""
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        (docs / "ARCHITECTURE.md").write_text("# Arch\n", encoding="utf-8")
+        result = _detected_project_intelligence_sections(tmp_path)
+        assert "Code Locations" in result
+        assert "docs/" in result["Code Locations"]
+
+    def test_documentation_dir_preferred_over_docs(self, tmp_path: Path) -> None:
+        """Both documentation/ and docs/ should appear in Code Locations when both exist."""
+        (tmp_path / "documentation").mkdir()
+        (tmp_path / "docs").mkdir()
+        result = _detected_project_intelligence_sections(tmp_path)
+        assert "Code Locations" in result
+        code_locs = result["Code Locations"]
+        assert "documentation/" in code_locs
+        assert "docs/" in code_locs
+
+    def test_tests_dir_adds_code_location(self, tmp_path: Path) -> None:
+        """Should add a Code Locations entry for tests/ when that directory exists."""
+        (tmp_path / "tests").mkdir()
+        result = _detected_project_intelligence_sections(tmp_path)
+        assert "Code Locations" in result
+        assert "tests/" in result["Code Locations"]
+
+    def test_empty_project_returns_shared_contracts_and_operational(self, tmp_path: Path) -> None:
+        """Should always return Shared Contracts and Operational Constraints entries."""
+        result = _detected_project_intelligence_sections(tmp_path)
+        assert "Shared Contracts" in result
+        assert "Operational Constraints" in result
+
+
+# ---------------------------------------------------------------------------
+# TestEnrichFromStructureReportEdgeCases — lines 470-471, 475
+# ---------------------------------------------------------------------------
+
+
+class TestEnrichFromStructureReportEdgeCases:
+    """Tests for enrich_from_structure_report() early-exit paths."""
+
+    def test_enrich_returns_early_when_file_missing(self, tmp_path: Path) -> None:
+        """Should return silently when ARCHITECT.md does not exist (FileNotFoundError)."""
+        report = _make_report(tmp_path)
+        enrich_from_structure_report(tmp_path, report)
+        assert not (tmp_path / "ARCHITECT.md").exists()
+
+    def test_enrich_returns_early_when_file_unreadable(self, tmp_path: Path) -> None:
+        """Should return silently when reading ARCHITECT.md raises OSError."""
+        arch_md = tmp_path / "ARCHITECT.md"
+        arch_md.write_text("# ARCHITECT.md\n", encoding="utf-8")
+        report = _make_report(tmp_path)
+        with patch.object(Path, "read_text", side_effect=OSError("permission denied")):
+            enrich_from_structure_report(tmp_path, report)
+        # File content unchanged — function returned before writing
+        assert arch_md.read_text(encoding="utf-8") == "# ARCHITECT.md\n"
+
+    def test_enrich_returns_early_when_content_is_empty(self, tmp_path: Path) -> None:
+        """Should return silently when ARCHITECT.md is empty (parse_sections returns {})."""
+        arch_md = tmp_path / "ARCHITECT.md"
+        arch_md.write_text("", encoding="utf-8")
+        report = _make_report(tmp_path)
+        enrich_from_structure_report(tmp_path, report)
+        assert arch_md.read_text(encoding="utf-8") == ""
+
+
+# ---------------------------------------------------------------------------
+# TestAllComponentsWithSubComponents — line 499
+# ---------------------------------------------------------------------------
+
+
+class TestAllComponentsWithSubComponents:
+    """Tests for _all_components() with nested sub_components."""
+
+    def test_all_components_includes_sub_components(self) -> None:
+        """Should return both parent and child when a component has sub_components."""
+        child = Component(path="src/child/", language="Python")
+        parent = Component(path="src/", language="Python", sub_components=[child])
+        report = StructureReport(
+            repo_type=RepoType.SINGLE_REPO,
+            components=[parent],
+            dependencies=[],
+            shared_resources=[],
+        )
+        result = _all_components(report)
+        assert len(result) == 2
+        assert parent in result
+        assert child in result
+        assert result.index(parent) < result.index(child)
+
+
+# ---------------------------------------------------------------------------
+# TestUpdateStructureSectionLegacy — line 439
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateStructureSectionLegacy:
+    """Tests for update_structure_section() with legacy 'Project Structure' key."""
+
+    def test_update_structure_section_handles_old_project_structure_key(
+        self, tmp_path: Path
+    ) -> None:
+        """Should rename 'Project Structure' to 'Repository Map' and inject new content."""
+        arch_md = tmp_path / "ARCHITECT.md"
+        arch_md.write_text(
+            "# ARCHITECT.md\n\n---\n\n## Project Structure\n\nOld content\n",
+            encoding="utf-8",
+        )
+        update_structure_section(tmp_path, "New structure content")
+        content = read_architect_md(tmp_path)
+        assert content is not None
+        assert "## Repository Map" in content
+        assert "New structure content" in content
+        assert "## Project Structure" not in content
+
+
+# ---------------------------------------------------------------------------
+# TestDetectedProjectIntelligenceSectionsOSError — lines 757-758
+# ---------------------------------------------------------------------------
+
+
+class TestDetectedProjectIntelligenceSectionsOSError:
+    """Tests for _detected_project_intelligence_sections() OSError on docs_dir.iterdir()."""
+
+    def test_docs_dir_iterdir_oserror_returns_empty_docs(self, tmp_path: Path) -> None:
+        """Should not raise and should still add Code Locations entry when iterdir() fails."""
+        docs_dir = tmp_path / "docs"
+        docs_dir.mkdir()
+        with patch.object(Path, "iterdir", side_effect=OSError("permission denied")):
+            result = _detected_project_intelligence_sections(tmp_path)
+        assert "Code Locations" in result
+        assert "docs/" in result["Code Locations"]
+
+
+# ---------------------------------------------------------------------------
+# TestRemoveAutoIntelligenceBlock — line 859
+# ---------------------------------------------------------------------------
+
+
+class TestRemoveAutoIntelligenceBlock:
+    """Tests for _remove_auto_intelligence_block() heading-after-block branch."""
+
+    def test_remove_auto_block_stops_skipping_at_next_subsection(self) -> None:
+        """Should preserve content in a ### subsection that follows the auto block."""
+        body = (
+            "### Auto-Detected Project Intelligence\n"
+            "- item to remove\n"
+            "### Other Subsection\n"
+            "- kept content"
+        )
+        result = _remove_auto_intelligence_block(body)
+        assert "Other Subsection" in result
+        assert "kept content" in result
+        assert "item to remove" not in result
+
+
+# ---------------------------------------------------------------------------
+# TestRebuildArchitectMdBlankCollapse — line 943
+# ---------------------------------------------------------------------------
+
+
+class TestRebuildArchitectMdBlankCollapse:
+    """Tests for _rebuild_architect_md() consecutive blank-line collapse in header."""
+
+    def test_rebuild_collapses_consecutive_blank_lines_in_header(self, tmp_path: Path) -> None:
+        """Should collapse consecutive blank lines in the header area of ARCHITECT.md."""
+        arch_md = tmp_path / "ARCHITECT.md"
+        # Write a file whose header has two consecutive blank lines (triggers line 943)
+        arch_md.write_text(
+            "# ARCHITECT.md\n\n\n> Some description\n\n---\n\n## Repository Map\n\nOld structure\n",
+            encoding="utf-8",
+        )
+        update_structure_section(tmp_path, "Refreshed structure")
+        result = arch_md.read_text(encoding="utf-8")
+        # Consecutive blank lines in header should be collapsed to a single blank line
+        assert "\n\n\n" not in result
+        assert "Refreshed structure" in result
+
+
+# ---------------------------------------------------------------------------
+# TestAppendToSectionTableEndOfFileRealRow — line 1162
+# ---------------------------------------------------------------------------
+
+
+class TestAppendToSectionTableEndOfFileRealRow:
+    """Tests for end-of-file insertion after a real row."""
+
+    def test_append_permanent_decision_at_end_of_file_with_real_row(self, tmp_path: Path) -> None:
+        """Should append new row after an existing real row when section is at end of file."""
+        arch_md = tmp_path / "ARCHITECT.md"
+        arch_md.write_text(
+            "# ARCHITECT.md\n\n"
+            "## Permanent Decisions\n\n"
+            "| Decision | Value | Reason | Added |\n"
+            "|----------|-------|--------|-------|\n"
+            "| Existing | Val | Reason | 2026-01-01 |",
+            encoding="utf-8",
+        )
+        append_permanent_decision(tmp_path, "New Decision", "New Value", "New Reason")
+        content = arch_md.read_text(encoding="utf-8")
+        assert "New Decision" in content
+        assert "Existing" in content

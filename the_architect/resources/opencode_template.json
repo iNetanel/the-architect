@@ -27,6 +27,12 @@
       "description": "Planning agent — decomposes goals into atomic task files.",
       "prompt": "{file:.architect/prompts/architect.md}"
     },
+    "intelligence": {
+      "mode": "primary",
+      "steps": 80,
+      "description": "Project intelligence curator — repairs ARCHITECT.md before planning.",
+      "prompt": "{file:.architect/prompts/intelligence.md}"
+    },
     "reviewer": {
       "mode": "primary",
       "steps": 100,

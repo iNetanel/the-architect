@@ -213,7 +213,7 @@ def gather_project_context(
     """
     parts: list[str] = []
     total_chars = 0
-    max_chars = 8000
+    max_chars = 20000
 
     def add_part(header: str, content: str) -> None:
         nonlocal total_chars
@@ -225,13 +225,31 @@ def gather_project_context(
     # File tree — use os.walk with topdown=True so we can prune skip_dirs
     # in-place before descending into them.  This avoids traversing node_modules,
     # .git, etc. entirely — critical for large projects with 50k+ files.
-    tree_lines = ["File tree:"]
-    skip_dirs = {"__pycache__", ".git", "node_modules", ".venv", ".architect", ".pytest_cache"}
+    tree_lines = ["File tree: bounded; large repos are summarized"]
+    skip_dirs = {
+        "__pycache__",
+        ".git",
+        "node_modules",
+        ".venv",
+        ".architect",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".mypy_cache",
+        "dist",
+        "build",
+        "coverage",
+    }
     resolved_root = project_dir.resolve()
+    max_tree_lines = 260
+    tree_truncated = False
 
     for dirpath_str, dirnames, filenames in os.walk(
         str(project_dir), topdown=True, followlinks=False
     ):
+        if len(tree_lines) >= max_tree_lines:
+            tree_truncated = True
+            break
+
         dirpath = Path(dirpath_str)
 
         # Prune skip_dirs in-place so os.walk never descends into them.
@@ -252,9 +270,17 @@ def gather_project_context(
                     continue
             indent = "  " * (len(rel_dir.parts) - 1)
             tree_lines.append(f"{indent}{rel_dir.name}/")
+            if len(tree_lines) >= max_tree_lines:
+                tree_truncated = True
+                dirnames.clear()
+                break
 
         # Emit sorted file entries
         for filename in sorted(filenames):
+            if len(tree_lines) >= max_tree_lines:
+                tree_truncated = True
+                dirnames.clear()
+                break
             if filename.startswith("architect_eval_"):
                 continue
             path = dirpath / filename
@@ -268,6 +294,9 @@ def gather_project_context(
             rel = path.relative_to(project_dir)
             indent = "  " * (len(rel.parts) - 1)
             tree_lines.append(f"{indent}{rel.name}")
+
+    if tree_truncated:
+        tree_lines.append("... tree truncated; use focused search for deeper files ...")
 
     add_part("## File Tree", "\n".join(tree_lines))
 
@@ -312,22 +341,24 @@ def gather_project_context(
         except OSError as e:
             logger.warning(f"Failed to read PROGRESS.md: {e}")
 
-    # docs/ directory
-    docs_dir = project_dir / "docs"
-    if docs_dir.exists() and docs_dir.is_dir():
-        docs_lines = ["docs/ directory contents:"]
-        for doc_file in sorted(docs_dir.iterdir()):
-            if doc_file.is_file():
-                docs_lines.append(f"- {doc_file.name}")
-                try:
-                    lines = doc_file.read_text(encoding="utf-8").splitlines()[:80]
-                    if lines:
-                        docs_lines.append("  ```")
-                        docs_lines.extend(lines)
-                        docs_lines.append("  ```")
-                except OSError:
-                    pass
-        add_part("## Documentation", "\n".join(docs_lines))
+    # Documentation directories. Support both common names; this is deliberately
+    # shallow so very large docs trees do not dominate the planning prompt.
+    for docs_dir_name in ("documentation", "docs"):
+        docs_dir = project_dir / docs_dir_name
+        if docs_dir.exists() and docs_dir.is_dir():
+            docs_lines = [f"{docs_dir_name}/ directory contents:"]
+            for doc_file in sorted(docs_dir.iterdir())[:12]:
+                if doc_file.is_file():
+                    docs_lines.append(f"- {doc_file.name}")
+                    try:
+                        lines = doc_file.read_text(encoding="utf-8").splitlines()[:80]
+                        if lines:
+                            docs_lines.append("  ```")
+                            docs_lines.extend(lines)
+                            docs_lines.append("  ```")
+                    except OSError:
+                        pass
+            add_part(f"## Documentation ({docs_dir_name}/)", "\n".join(docs_lines))
 
     # tasks/ status — show current task files with a note that they may be
     # leftovers from a previous run (archiving happens at plan-start, so files

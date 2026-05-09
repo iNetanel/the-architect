@@ -151,6 +151,27 @@ _LANGUAGE_SIGNALS: dict[str, str] = {
     "Gemfile": "Ruby",
 }
 
+_COMPONENT_SKIP_DIRS: frozenset[str] = frozenset(
+    {
+        ".git",
+        ".architect",
+        ".cache",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".tox",
+        ".venv",
+        "__pycache__",
+        "build",
+        "coverage",
+        "dist",
+        "htmlcov",
+        "node_modules",
+        "site-packages",
+        "tests",
+    }
+)
+
 # File extensions for C# project detection
 _CSProj_EXTENSIONS = {".csproj", ".vbproj", ".fsproj"}
 
@@ -615,6 +636,112 @@ def _detect_repo_type(project_dir: Path) -> RepoType:
     return RepoType.SINGLE_REPO  # Will be refined to MONOREPO in step 2
 
 
+def _detect_component_signals(component_dir: Path) -> tuple[list[str], str]:
+    """Return signal files and primary language detected in a directory.
+
+    Args:
+        component_dir: Directory to inspect.
+
+    Returns:
+        Tuple of detected signal filenames and language name.
+    """
+    signals: list[str] = []
+    language = ""
+
+    for signal_file, lang in _LANGUAGE_SIGNALS.items():
+        if (component_dir / signal_file).exists():
+            signals.append(signal_file)
+            language = lang
+
+    if _detect_csharp_project(component_dir):
+        signals.append("*.csproj")
+        language = "C#"
+
+    return signals, language
+
+
+def _detect_root_python_package_components(project_dir: Path) -> list[Component]:
+    """Detect import packages owned by a root-level Python project.
+
+    A common single-repo shape has ``pyproject.toml`` at the root and the real
+    source package in a sibling directory such as ``the_architect/`` or ``src/app/``.
+    Without this pass, the root project is detected but the code location that
+    agents need most remains hidden.
+
+    Args:
+        project_dir: Project root.
+
+    Returns:
+        Python package components detected from build config or package markers.
+    """
+    if not (project_dir / "pyproject.toml").exists():
+        return []
+
+    package_paths: list[Path] = []
+
+    try:
+        content = (project_dir / "pyproject.toml").read_text(encoding="utf-8")
+    except OSError:
+        content = ""
+
+    if content:
+        import re
+
+        # Hatchling commonly records packages as: packages = ["the_architect"]
+        for match in re.finditer(r"packages\s*=\s*\[([^\]]+)\]", content, re.DOTALL):
+            for quoted in re.finditer(r"[\"']([^\"']+)[\"']", match.group(1)):
+                candidate = quoted.group(1).strip()
+                if candidate:
+                    package_paths.append(project_dir / candidate)
+
+    # Fallback for setuptools/src-layout projects and simple packages.
+    search_roots = [project_dir]
+    src_dir = project_dir / "src"
+    if src_dir.is_dir():
+        search_roots.insert(0, src_dir)
+
+    for search_root in search_roots:
+        try:
+            entries = sorted(search_root.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if (
+                entry.is_dir()
+                and entry.name not in _COMPONENT_SKIP_DIRS
+                and not entry.name.startswith(".")
+                and not entry.name.startswith("architect_eval_")
+                and (entry / "__init__.py").exists()
+            ):
+                package_paths.append(entry)
+
+    components: list[Component] = []
+    seen: set[str] = set()
+    for package_dir in package_paths:
+        try:
+            if not package_dir.is_dir():
+                continue
+            rel = package_dir.relative_to(project_dir).as_posix() + "/"
+        except ValueError:
+            continue
+        if rel in seen:
+            continue
+        seen.add(rel)
+
+        role = "CLI package" if (package_dir / "cli.py").exists() else "Python package"
+        components.append(
+            Component(
+                path=rel,
+                language="Python",
+                role=role,
+                description="Python import package owned by the root pyproject.toml",
+                signals=["__init__.py", "pyproject.toml package"],
+            )
+        )
+
+    return components
+
+
 def _detect_components(project_dir: Path, repo_type: RepoType) -> list[Component]:
     """Step 2: Detect distinct components.
 
@@ -650,27 +777,35 @@ def _detect_components(project_dir: Path, repo_type: RepoType) -> list[Component
             pass
         return components
 
-    # SINGLE_REPO or UNTRACKED — scan for component signals
+    # SINGLE_REPO or UNTRACKED — scan root and then child component signals.
+    # Root-level manifests are the dominant single-package layout for Python,
+    # Rust, Go, and JavaScript projects; treating only subdirectories as
+    # components hides the actual app in many real repositories.
     try:
+        root_signals, root_language = _detect_component_signals(project_dir)
+        if root_signals:
+            root_component = Component(
+                path="./",
+                language=root_language,
+                signals=root_signals,
+            )
+            _enrich_component(project_dir, root_component)
+            components.append(root_component)
+
+            if root_language == "Python":
+                components.extend(_detect_root_python_package_components(project_dir))
+
         for entry in sorted(project_dir.iterdir()):
             if entry.name.startswith("architect_eval_"):
                 continue
-            if not entry.is_dir() or entry.name.startswith("."):
+            if (
+                not entry.is_dir()
+                or entry.name.startswith(".")
+                or entry.name in _COMPONENT_SKIP_DIRS
+            ):
                 continue
 
-            signals: list[str] = []
-            language = ""
-
-            # Check for signal files in the subdirectory
-            for signal_file, lang in _LANGUAGE_SIGNALS.items():
-                if (entry / signal_file).exists():
-                    signals.append(signal_file)
-                    language = lang
-
-            # Check for C# project files
-            if _detect_csharp_project(entry):
-                signals.append("*.csproj")
-                language = "C#"
+            signals, language = _detect_component_signals(entry)
 
             if signals:
                 comp = Component(
@@ -1386,9 +1521,17 @@ def detect_structure(project_dir: Path) -> StructureReport:
     # Step 2 — also does steps 3, 4, and 6 for each component
     components = _detect_components(project_dir, repo_type)
 
-    # If only one component found and repo is SINGLE_REPO, refine to MONOREPO
-    # only if there are 2+ component signal directories
-    if repo_type == RepoType.SINGLE_REPO and len(components) >= 2:
+    # Refine to MONOREPO only when there are 2+ implementation components.
+    # Root-level package manifests and import package directories are common in
+    # single-package repos and should not make a repo look like a monorepo.
+    monorepo_components = [
+        component
+        for component in components
+        if component.path != "./"
+        and component.role != "Development environment"
+        and "pyproject.toml package" not in component.signals
+    ]
+    if repo_type == RepoType.SINGLE_REPO and len(monorepo_components) >= 2:
         repo_type = RepoType.MONOREPO
 
     # Step 5

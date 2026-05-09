@@ -604,6 +604,41 @@ def _prompt_update_action(update_msg: str, install_hint: str) -> str:
     return result
 
 
+def _check_provider_update_before_model_work(
+    provider: ArchitectProvider,
+    config: ArchitectConfig,
+    headless: bool,
+) -> None:
+    """Warn about provider updates before any model-backed learning or planning.
+
+    This runs immediately after the goal is known. If the provider is outdated,
+    interactive users can stop before walking away; headless users see the
+    warning without blocking automation. A per-config flag prevents duplicate
+    prompts when planning prompts are collected in one phase and executed in
+    another.
+    """
+    if getattr(config, "_provider_update_checked", False):
+        return
+    config._provider_update_checked = True  # type: ignore[attr-defined]
+
+    update_msg = provider.check_update_available()
+    if not update_msg:
+        return
+
+    if not headless:
+        try:
+            hint = provider.install_hint()
+        except Exception:
+            hint = ""
+        action = _prompt_update_action(update_msg=update_msg, install_hint=hint)
+        if action == "exit":
+            console.print("[dim]Aborted by user.[/dim]")
+            raise SystemExit(0)
+    else:
+        console.print(f"\n[bold yellow]⚠  {update_msg}[/bold yellow]")
+    console.print()
+
+
 def _prompt_self_update_action(current_version: str, latest_version: str) -> str:
     """Single-keypress prompt when a newer version of The Architect is available.
 
@@ -1693,6 +1728,11 @@ def run_planning_mode(
     else:
         goal = _prompt_goal()
 
+    # Warn immediately after the goal is known, before scope/model prompts,
+    # learning, or planning. If the user intends to walk away after submitting
+    # a goal, this is the last safe point to block for provider maintenance.
+    _check_provider_update_before_model_work(provider, config, headless)
+
     # ── Scope resolution ───────────────────────────────────────────────
     if scope_text:
         scope = TaskScope(scope_text)
@@ -1783,28 +1823,53 @@ def run_planning_mode(
     # Write/update the structure section in ARCHITECT.md
     write_or_update_architect_md(project, structure_report)
 
-    # Read full ARCHITECT.md content for prompt injection
-    architect_md_content = read_architect_md(project) or ""
-
     provider.ensure_setup(project, config)
 
-    # Proactive update check before planning starts
-    update_msg = provider.check_update_available()
-    if update_msg:
-        if not headless:
-            # Single-keypress prompt — C continue, Q/Esc/Ctrl+C exit.
-            try:
-                hint = provider.install_hint()
-            except Exception:
-                hint = ""
-            action = _prompt_update_action(update_msg=update_msg, install_hint=hint)
-            if action == "exit":
-                console.print("[dim]Aborted by user.[/dim]")
-                raise SystemExit(0)
+    # Log files for pre-planning and planning sessions
+    log_dir = config.log_dir
+    log_dir.mkdir(parents=True, exist_ok=True)
+    intelligence_log = log_dir / "intelligence.log"
+    planning_log = log_dir / "architect.log"
+
+    # Optional model-based memory curation. The deterministic pass above is
+    # always present; this provider-model pass runs only when ARCHITECT.md is
+    # still shallow or inconsistent with repo evidence.
+    from the_architect.core.intelligence import refresh_project_intelligence
+
+    try:
+        if _tui_mode_enabled():
+            from the_architect.tui import WaitLogRenderer, tui_wait_session
+
+            with tui_wait_session(enabled=True, title="learning project…") as _wait:
+                _wait.set_detail("Refreshing ARCHITECT.md before planning")
+                _intelligence_renderer = WaitLogRenderer(session=_wait)
+                asyncio.run(
+                    refresh_project_intelligence(
+                        project_dir=project,
+                        config=config,
+                        provider=provider,
+                        structure_report=structure_report,
+                        model_override=architect_model,
+                        log_path=intelligence_log,
+                        renderer=_intelligence_renderer,
+                    )
+                )
         else:
-            # Headless: surface the warning to stderr/stdout but never prompt.
-            console.print(f"\n[bold yellow]⚠  {update_msg}[/bold yellow]")
-        console.print()
+            asyncio.run(
+                refresh_project_intelligence(
+                    project_dir=project,
+                    config=config,
+                    provider=provider,
+                    structure_report=structure_report,
+                    model_override=architect_model,
+                    log_path=intelligence_log,
+                )
+            )
+    except Exception as exc:
+        logger.warning(f"Project intelligence refresh failed; continuing to planning: {exc!r}")
+
+    # Read full ARCHITECT.md content for prompt injection after all memory refreshes.
+    architect_md_content = read_architect_md(project) or ""
 
     request = PlanningRequest(
         goal=goal,
@@ -1815,11 +1880,6 @@ def run_planning_mode(
         structure_report=structure_prompt,
         architect_md_content=architect_md_content,
     )
-
-    # Log file for the planning session
-    log_dir = config.log_dir
-    log_dir.mkdir(parents=True, exist_ok=True)
-    planning_log = log_dir / "architect.log"
 
     try:
         if _tui_mode_enabled():
@@ -1920,6 +1980,9 @@ def _collect_planning_prompts(
         exec_override: str | None = execution_model_override if execution_model_override else None
         return goal_text, scope_text, architect_model_override, exec_override
 
+    if provider is None:
+        provider = detect_provider("auto")
+
     # ── Pending task guard ─────────────────────────────────────────────
     tasks_dir = project / config.tasks_dir.name
     progress_file = config.progress_file
@@ -1996,6 +2059,7 @@ def _collect_planning_prompts(
                 scope_text = result.scope
                 architect_model_override = result.architect_model or ""
                 execution_model_override = result.execution_agent or ""
+                _check_provider_update_before_model_work(provider, config, headless)
                 config.execution_agent = result.execution_agent or ""
                 config.free_mode = result.free
                 config.persistent = result.persistent
@@ -2058,6 +2122,7 @@ def _collect_planning_prompts(
             if not goal_text:
                 # Back pressed on first screen — stay at goal
                 continue
+            _check_provider_update_before_model_work(provider, config, headless)
             step = "scope"
 
         elif step == "scope":
@@ -2205,14 +2270,14 @@ async def _run_tasks_raw(
             return
 
         console.print(f"[dim]↺ reassessing downstream tasks after {result.prefix}…[/dim]")
-        if _tui_mode_enabled():
+        overlay_app = tui_overlay_app["app"]
+        if overlay_app is not None:
             from the_architect.tui import WaitLogRenderer, tui_wait_session
 
-            _overlay_app = tui_overlay_app["app"]
             with tui_wait_session(
                 enabled=True,
                 title=f"reassessing after {result.prefix}…",
-                overlay_app=_overlay_app,  # type: ignore[arg-type]
+                overlay_app=overlay_app,  # type: ignore[arg-type]
             ) as _wait:
                 _wait.set_detail(
                     f"Task: {result.prefix}\nStatus: {result.status}\n"

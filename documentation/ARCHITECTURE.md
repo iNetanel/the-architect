@@ -51,13 +51,13 @@ It is published to PyPI as `the-architect` and works on any project regardless o
 The Architect automates the entire development lifecycle:
 
 - **Planning** — Decomposes your goal into numbered task files (T01, T02, …) using an AI architect agent. You can describe the goal in plain English, or point to a PRD, SPEC.md, design doc, or any file or directory via `--context`
-- **Project Detection** — Automatically detects your repo type (monorepo, multi-repo, single repo), languages, frameworks, components, dependency graph, project descriptions, key dependencies, test/lint commands, and sub-components — and injects this into the architect's planning prompt and every execution instruction
+- **Project Intelligence** — Automatically detects your repo type (monorepo, multi-repo, single repo), languages, frameworks, components, dependency graph, project descriptions, key dependencies, test/lint commands, docs, CI, and sub-components. A pre-planning intelligence pass repairs `ARCHITECT.md` before the planner runs
 - **Execution** — Runs each task via the active AI CLI provider, streaming output live to the terminal
 - **Smart Retry** — Automatically retries failed tasks with model fallbacks, previous-attempt context injection, and circuit breaker protection
 - **Stuck Detection** — Monitors agent output for "I'm stuck", "can't proceed", and similar patterns; the circuit breaker reacts to no-progress, repeated errors, and token decline signals
 - **Cooldown Handling** — Detects provider rate limits (HTTP 429, "rate limit" in output) and pauses automatically without consuming retry slots
 - **Retrospective Review** — After execution, runs a reviewer agent that examines completed work, runs tests, and creates fix-up tasks (R01, R02, …) if quality issues are found
-- **Persistent Memory** — Maintains `PROGRESS.md`, `tasks/SUMMARY.md`, and `ARCHITECT.md`; ARCHITECT.md stores durable project intelligence while run history stays with each task package
+- **Persistent Memory** — Maintains `tasks/PROGRESS.md`, `tasks/SUMMARY.md`, and `ARCHITECT.md`; ARCHITECT.md stores durable project intelligence while run history stays with each task package
 - **Token Budget** — Optional hourly spend cap prevents runaway API costs
 - **Premature Exit Guard** — When all tasks are already done, refuses to re-enter planning mode without explicit `--plan`, preventing accidental re-Archictecting of an already-complete project
 
@@ -129,11 +129,12 @@ npm install -g @google/gemini-cli
 | Config signal | `opencode.json` | `~/.codex/config.toml` | `CLAUDE.md` + env vars | `~/.gemini/settings.json` + env vars |
 | Model resolution | `opencode models` / config | config + env var | env var / Claude defaults | settings.json + `GEMINI_MODEL` |
 | Free Tier (OpenRouter) | Yes (if OpenRouter configured) | **Never** | **Never** | **Never** |
-| Planning setup | `.architect/architect.json` | Prompt injection | Prompt injection | Prompt injection |
+| Planning/intelligence setup | `.architect/architect.json` | Prompt injection | Prompt injection | Prompt injection |
 
 ### What Works the Same on Both Providers
 
 - Planning (architect agent decomposes goals into tasks)
+- Pre-planning intelligence refresh (`ARCHITECT.md` quality gate + optional model pass)
 - Execution (tasks run unattended)
 - Retry logic (`max_retries`, `retry_model_2/3`, `carry_context`)
 - Circuit breaker (no-progress, same-error, token-decline detection)
@@ -267,7 +268,7 @@ Binary files are skipped silently.
 ### Context File Size Limits
 
 - **Per file**: Truncated at **50,000 characters** if too large (with a note appended showing truncation)
-- **Planner budget**: Capped at **8,000 characters** for the planning prompt (to keep the architect agent's context manageable)
+- **Planner budget**: Capped at **20,000 characters** for bounded project context in the planning prompt
 - **Reviewer budget**: Capped at **12,000 characters** for retrospective (reviewer needs more context to read code)
 
 ### Skip Directories
@@ -299,6 +300,7 @@ During every planning session, The Architect automatically scans the project to 
 
 1. **Injected into the architect's planning prompt** — so the architect knows what languages, frameworks, and components exist before creating tasks
 2. **Written into `ARCHITECT.md`** — the durable Repository Map that is refreshed across sessions
+3. **Promoted into semantic memory sections** — deterministic repo-level facts are added to `ARCHITECT.md` before the planner runs, so the planner starts from repaired project intelligence instead of having to rediscover basics while decomposing the goal
 
 ### What Is Detected
 
@@ -325,6 +327,8 @@ Detected via signal files:
 | `composer.json` | PHP |
 | `Gemfile` | Ruby |
 | `*.csproj`, `*.fsproj` | C# |
+
+Root-level signal files are detected too. A single-package repo with `pyproject.toml`, `package.json`, `Cargo.toml`, or `go.mod` at the project root is treated as a root component instead of being missed. For Python projects, The Architect also detects import package directories from `[tool.hatch.build.targets.wheel].packages`, `src/`, or top-level directories containing `__init__.py`; `tests/` is intentionally excluded from package-component detection.
 
 #### Frameworks
 
@@ -361,6 +365,25 @@ After detecting language and framework, each component is enriched with metadata
 - **Key dependencies** — top 8 from `dependencies` + `devDependencies` (dev tooling filtered out)
 - **Test command** — `npm test` when `"test"` script exists
 - **Lint command** — `npm run lint` when `"lint"` script exists
+
+#### Pre-Planner Project Intelligence Pass
+
+Before the goal planner is invoked, The Architect performs project intelligence refresh. This is not the executor and not the retrospective reviewer; it is Architect-owned pre-planning infrastructure. It does not create task files.
+
+The fast deterministic pass always runs and captures high-value repo facts that are safe to detect without deep recursive source analysis, which keeps it usable for huge repos and multi-repo workspaces:
+
+- Root project metadata from `pyproject.toml` and `package.json`
+- Python build backend and CLI entry points
+- `documentation/` and `docs/` directories
+- `.github/workflows/*` CI files
+- `README.md`, `CHANGELOG.md`, root `version.py`, and `tests/`
+- Provider/user rule files such as `AGENTS.md` and `CLAUDE.md`
+- Packaged prompt/config locations such as `the_architect/resources/prompts/` and `dev/opencode/`
+- Architect runtime storage contracts: `tasks/`, `tasks/PROGRESS.md`, `tasks/SUMMARY.md`, and `.architect/`
+
+After the deterministic pass, The Architect checks `ARCHITECT.md` quality. If durable sections are still shallow or repo evidence is missing from memory, it runs the provider model with the dedicated `intelligence` prompt/agent. That deep pass is allowed to edit only `ARCHITECT.md`; it must not create task files or implementation changes.
+
+The planner still may append durable findings, but initial project-memory quality no longer depends only on prompt compliance during goal planning.
 
 #### Sub-Component Detection
 
@@ -442,17 +465,27 @@ When you run `architect --plan`, The Architect enters interactive planning mode:
 4. **Architect model selection** — Pick from available provider models
 5. **Execution agent selection** — Pick which agent runs the tasks when the active provider supports named agents (OpenCode only)
 
+### Pre-Planning Intelligence
+
+Before task planning starts, The Architect refreshes project memory:
+
+1. **Deterministic scan** — reads manifests, docs, CI files, provider rule files, prompt/config locations, and runtime storage locations without using a model
+2. **Repository Map refresh** — writes the detected structure into `ARCHITECT.md`
+3. **Semantic memory enrichment** — fills generated blocks for stack, code locations, verification, agent conventions, storage, and constraints
+4. **Quality gate** — checks whether `ARCHITECT.md` is still missing important durable knowledge
+5. **Deep intelligence pass** — if the quality gate fails, runs the selected architect model with `resources/prompts/intelligence.md`; this pass may edit only `ARCHITECT.md` and must not create task files or implementation changes
+
+On a first run, the deep intelligence pass usually runs because `ARCHITECT.md` is new. On later runs, it is skipped when memory is already good enough.
+
 ### What The Architect Does During Planning
 
-1. **Detects project structure** — runs the full detection pipeline (Section 4)
-2. **Reads existing `ARCHITECT.md`** — for durable project intelligence (repo map, stack, contracts, decisions, constraints, lessons)
-3. **Reads `PROGRESS.md`** — extracts completed tasks and permanent decisions only (active state is excluded to prevent the architect from confusing "continue old plan" with "start new plan")
-4. **Gathers context** — reads `--context` files and directories if provided
-5. **Detects docs/** — reads file names and first 80 lines of each doc in `docs/` directory
-6. **Runs the provider CLI with the architect role** — OpenCode uses `opencode run --agent architect` with `OPENCODE_CONFIG` set to `.architect/architect.json`. Codex CLI, Claude Code, and Gemini CLI inject the architect prompt directly into the instruction and run non-interactively via their own CLI format.
-7. **Rescues stray task files** — if the architect wrote task files outside `tasks/`, moves them to the canonical location
-8. **Updates `ARCHITECT.md`** — rewrites the Repository Map section, preserves all other sections
-9. **Writes `PROGRESS.md`** and `tasks/INSTRUCTIONS.md`
+1. **Reads refreshed `ARCHITECT.md`** — for durable project intelligence (repo map, stack, contracts, decisions, constraints, lessons)
+2. **Reads `tasks/PROGRESS.md`** — extracts completed tasks and permanent decisions only (active state is excluded to prevent the architect from confusing "continue old plan" with "start new plan")
+3. **Gathers context** — reads `--context` files and directories if provided
+4. **Detects docs** — reads file names and first 80 lines of each doc in `documentation/` and `docs/`
+5. **Runs the provider CLI with the architect role** — OpenCode uses `opencode run --agent architect` with `OPENCODE_CONFIG` set to `.architect/architect.json`. Codex CLI, Claude Code, and Gemini CLI inject the architect prompt directly into the instruction and run non-interactively via their own CLI format.
+6. **Rescues stray task files** — if the architect wrote task files outside `tasks/`, moves them to the canonical location
+7. **Writes `tasks/PROGRESS.md`** and `tasks/INSTRUCTIONS.md`
 
 ### Planning Retries
 
@@ -464,11 +497,12 @@ If all 3 attempts fail, planning exits with an error.
 
 | Agent | Model source |
 |-------|-------------|
+| **Intelligence** | Same selected architect model → provider default |
 | **Architect** | User's interactive selection → provider default |
 | **Reviewer** | Same model as architect → provider default |
 | **Execution** | User's active provider default execution model or agent (provider-specific resolution rules apply) |
 
-The architect and reviewer both perform high-reasoning work (planning and critique), so they use the same model. The execution agent is separate — it's the workhorse that runs tasks, managed by the user's opencode config.
+The intelligence, architect, and reviewer passes perform high-reasoning work (repo learning, planning, and critique), so they use the selected architect model. The execution agent is separate — it's the workhorse that runs tasks, managed by the user's provider config.
 
 ### Planning Instruction Priority Order
 
@@ -477,7 +511,7 @@ The architect prompt is structured with context in priority order:
 1. **ARCHITECT.md** — durable project intelligence (highest priority)
 2. **Project Structure Report** — auto-detected repo type, languages, frameworks, components
 3. **Additional Context Files** — user-provided via `--context`
-4. **Project Context** — file tree, PROGRESS.md history (completed tasks + decisions only), docs, tasks status
+4. **Project Context** — bounded file tree, `tasks/PROGRESS.md` history (completed tasks + decisions only), docs, tasks status
 5. **User's Goal** — the actual request
 
 ### Scope Guide
@@ -550,7 +584,7 @@ OPENCODE_CONFIG env var → OPENCODE_CONFIG_DIR env var →
 project_root/opencode.json → ~/.config/opencode/opencode.json
 ```
 
-During planning, `OPENCODE_CONFIG` is set to `.architect/architect.json` so the architect agent is available. During execution, `OPENCODE_CONFIG` is **not set** — OpenCode uses your own config untouched.
+During pre-planning intelligence and planning, `OPENCODE_CONFIG` is set to `.architect/architect.json` so the `intelligence` and `architect` agents are available. During execution, `OPENCODE_CONFIG` is **not set** — OpenCode uses your own config untouched.
 
 **Claude Code** config resolution order:
 
@@ -1183,7 +1217,7 @@ The reviewer is a **supervisor and advisor — not a planner**. It:
 ### Reviewer Context Budget
 
 The reviewer receives more context than the planner:
-- **12,000 character budget** (vs 8,000 for planner) because the reviewer needs to read code
+- **12,000 character budget** for retrospective source context; planner project context uses a separate bounded 20,000-character budget
 - Full `PROGRESS.md` content (including failed state, not just historical summary)
 - All task file names and headings
 - File tree (filtered, no __pycache__, .git, etc.)
@@ -1459,7 +1493,7 @@ Create `architect.toml` in your project root:
 [architect]
 # ── Directories ────────────────────────────────────────────────────────────────
 tasks_dir = "tasks"                  # Directory containing task files
-progress_file = "PROGRESS.md"        # Path to progress tracker
+progress_file = "tasks/PROGRESS.md"  # Path to progress tracker
 log_dir = ".architect/logs"          # Directory for log files
 
 # ── Retry Settings ────────────────────────────────────────────────────────────
@@ -1519,7 +1553,7 @@ token_budget_per_hour = 0           # Max tokens/rolling hour (0 = disabled)
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `tasks_dir` | Path | `tasks` | Directory containing task files |
-| `progress_file` | Path | `PROGRESS.md` | Path to progress tracker |
+| `progress_file` | Path | `tasks/PROGRESS.md` | Path to progress tracker |
 | `log_dir` | Path | `.architect/logs` | Directory for log files |
 | `max_retries` | int | `3` | Maximum retry attempts per task |
 | `retry_pause` | int | `30` | Seconds to wait between retries |
@@ -1640,7 +1674,7 @@ The architect model sometimes writes task files into a subdirectory mentioned in
 
 ## 27. PROGRESS.md
 
-`PROGRESS.md` is The Architect's persistent memory between runs. It tracks which tasks are complete and what to run next.
+`tasks/PROGRESS.md` is The Architect's persistent memory between tasks in the current run. It tracks which tasks are complete and what to run next.
 
 ### Format
 
@@ -1704,7 +1738,7 @@ Both must be present and correctly formatted. The Architect **always** writes PR
 
 | File | Owner | Notes |
 |------|-------|-------|
-| `PROGRESS.md` | The Architect | Always written by The Architect |
+| `tasks/PROGRESS.md` | The Architect | Always written by The Architect |
 | `tasks/INSTRUCTIONS.md` | The Architect | Auto-generated, never by the architect agent |
 | `ARCHITECT.md` | The Architect + append-only durable sections | Repository Map rewritten; other durable sections append-only |
 | `AGENTS.md` | The User | The Architect reads it but never writes it |
@@ -1864,7 +1898,7 @@ The following information exists in the system but is not yet surfaced in `tasks
 
 ## 29. ARCHITECT.md — Durable Project Intelligence
 
-`ARCHITECT.md` is The Architect's durable project brain. It stores stable project intelligence that future unrelated tasks need: repo responsibilities, tech stack, architecture, key flows, shared contracts, code locations, verification commands, style standards, agent conventions, data/storage, environment rules, operational constraints, permanent decisions, lessons, and best practices. It is **read at the start of every planning session and every task execution**, and updated by the planner, build agent, and reviewer only with durable knowledge.
+`ARCHITECT.md` is The Architect's durable project brain. It stores stable project intelligence that future unrelated tasks need: repo responsibilities, tech stack, architecture, key flows, shared contracts, code locations, verification commands, style standards, agent conventions, data/storage, environment rules, operational constraints, permanent decisions, lessons, and best practices. It is **refreshed before planning**, read at the start of every planning session and every task execution, and updated by the intelligence curator, planner, build agent, and reviewer only with durable knowledge.
 
 Run history does not belong in `ARCHITECT.md`. Detailed package history belongs in `tasks/SUMMARY.md` and archived task packages.
 
@@ -1874,19 +1908,19 @@ The file is organized into durable sections. The Repository Map is tool-managed;
 
 | Section | Managed By | Update Frequency |
 |---------|-----------|-----------------|
-| **Project Overview** | Append-only / curated | Product purpose and major capabilities |
+| **Project Overview** | Generated + curated | Product purpose and major capabilities |
 | **Repository Map** | The Architect | Rewritten fresh on every `--plan` |
-| **Tech Stack** | Append-only / curated | Durable stack notes by repo/component |
-| **Architecture** | Append-only / curated | Major systems and ownership boundaries |
-| **Key Flows** | Append-only / curated | Important runtime flows |
-| **Shared Contracts** | Append-only / curated | APIs, schemas, events, config keys, stage/agent names |
-| **Code Locations** | Append-only / curated | Canonical files/dirs for focused exploration |
-| **Build, Test, and Verification** | Append-only / curated | Commands and verification expectations |
-| **Style and Code Standards** | Append-only / curated | Coding/style guidance for agents |
-| **Agent and AI Conventions** | Append-only / curated | Agent configs, model routing, tool metadata |
-| **Data and Storage** | Append-only / curated | DBs, buckets, collections, persistence conventions |
-| **Environment and Secrets** | Append-only / curated | Env files, required variables, secret rules |
-| **Operational Constraints** | Append-only / curated | Ports, services, dangerous commands, runtime limits |
+| **Tech Stack** | Generated + curated | Durable stack notes by repo/component |
+| **Architecture** | Generated + curated | Major systems and ownership boundaries |
+| **Key Flows** | Generated + curated | Important runtime flows |
+| **Shared Contracts** | Generated + curated | APIs, schemas, events, config keys, stage/agent names |
+| **Code Locations** | Generated + curated | Canonical files/dirs for focused exploration |
+| **Build, Test, and Verification** | Generated + curated | Commands and verification expectations |
+| **Style and Code Standards** | Generated + curated | Coding/style guidance for agents |
+| **Agent and AI Conventions** | Generated + curated | Agent configs, model routing, tool metadata |
+| **Data and Storage** | Generated + curated | DBs, buckets, collections, persistence conventions |
+| **Environment and Secrets** | Generated + curated | Env files, required variables, secret rules |
+| **Operational Constraints** | Generated + curated | Ports, services, dangerous commands, runtime limits |
 | **Permanent Decisions** | Append-only | New entries added during planning and execution |
 | **Known Constraints** | Append-only | New entries added during execution and retrospective |
 | **Lessons Learned** | Append-only | Discovered during execution and retrospective |
@@ -1907,11 +1941,15 @@ Written fresh on every `--plan`. Contains:
 
 ### How ARCHITECT.md Flows Through The System
 
+**Pre-planning intelligence phase:**
+1. The deterministic scanner creates or refreshes `ARCHITECT.md` and rewrites generated blocks
+2. The quality gate checks whether durable memory is still shallow or inconsistent with repo evidence
+3. When needed, the `intelligence` prompt/agent runs with the selected architect model and may edit only `ARCHITECT.md`
+
 **Planning phase:**
-1. ARCHITECT.md content is injected into the architect agent's planning prompt (highest priority context)
+1. Refreshed ARCHITECT.md content is injected into the architect agent's planning prompt (highest priority context)
 2. The architect agent is instructed to update ARCHITECT.md only with durable project intelligence discovered during planning
-3. The Repository Map section is rewritten fresh
-4. Run history is not appended to ARCHITECT.md; it is written to `tasks/SUMMARY.md` after execution
+3. Run history is not appended to ARCHITECT.md; it is written to `tasks/SUMMARY.md` after execution
 
 **Execution phase:**
 1. ARCHITECT.md content is injected into every build agent's execution instruction
@@ -2068,6 +2106,7 @@ your-project/
 ├── tasks/                    # Task files (created by architect)
 │   ├── T01_init.md
 │   ├── T02_feature.md
+│   ├── PROGRESS.md          # Task state tracker
 │   ├── INSTRUCTIONS.md       # Project context (auto-generated)
 │   ├── SUMMARY.md            # Final run summary (auto-generated)
 │   └── archive/              # Previous run archives
@@ -2076,9 +2115,10 @@ your-project/
 │           ├── INSTRUCTIONS.md  # Plan context from previous run
 │           └── SUMMARY.md       # Final summary from previous run
 ├── .architect/
-│   ├── architect.json        # The Architect's planning config (architect + reviewer agents)
+│   ├── architect.json        # The Architect's planning config (intelligence + architect + reviewer agents)
 │   ├── prompts/             # Agent prompts (written from resources)
 │   │   ├── architect.md
+│   │   ├── intelligence.md
 │   │   ├── reviewer.md
 │   │   └── execution-protocol.md
 │   ├── logs/                # Task execution logs
@@ -2091,7 +2131,6 @@ your-project/
 │   ├── runner.lock          # Lock file (prevents concurrent runs)
 │   ├── monitor_stop.flag    # Graceful stop flag (Ctrl+C)
 │   └── monitor_kill.flag    # Immediate kill flag
-├── PROGRESS.md              # Task state tracker
 ├── ARCHITECT.md             # Durable project intelligence
 └── architect.toml           # Optional configuration
 ```
@@ -2117,8 +2156,9 @@ the_architect/              # Python package (published to PyPI as "the-architec
 │   ├── monitor_state.py         # Monitor state writer (feeds dashboard)
 │   ├── opencode_config.py       # Backward-compat shim (delegates to opencode_provider.py)
 │   ├── opencode_provider.py     # OpenCode CLI provider implementation
+│   ├── intelligence.py          # Pre-planning ARCHITECT.md quality gate + model refresh
 │   ├── planner.py               # Planning via provider architect agent
-│   ├── progress.py              # PROGRESS.md read/write + status helpers
+│   ├── progress.py              # tasks/PROGRESS.md read/write + status helpers
 │   ├── provider.py              # ArchitectProvider protocol + detect_provider()
 │   ├── retrospective.py         # Retrospective reviewer runner
 │   ├── runner.py                # Task execution engine (stream_provider, run_task, run_all)
@@ -2127,9 +2167,10 @@ the_architect/              # Python package (published to PyPI as "the-architec
 │   ├── tasks.py                 # Task discovery and state
 │   └── tmux.py                  # tmux session management + dashboard launcher
 └── resources/
-    ├── opencode_template.json  # OpenCode planning config (architect + reviewer agents)
+    ├── opencode_template.json  # OpenCode planning config (intelligence + architect + reviewer agents)
     └── prompts/
         ├── architect.md        # Architect agent prompt (used by all providers)
+        ├── intelligence.md     # Pre-planning project intelligence prompt
         ├── reviewer.md         # Retrospective reviewer agent prompt (used by all providers)
         └── execution-protocol.md  # Execution protocol (injected at runtime)
 ```

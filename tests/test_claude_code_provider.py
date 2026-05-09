@@ -219,6 +219,17 @@ class TestClaudeCodeProviderListAgents:
                 result = provider.list_agents(tmp_path)
                 assert result == ["build"]
 
+    def test_list_agents_excludes_intelligence_agent(self, provider, tmp_path):
+        """Test that 'intelligence' internal agent is excluded from list_agents() results."""
+        with patch.object(cc.subprocess, "run", side_effect=cc.subprocess.SubprocessError()):
+            with patch.object(
+                cc, "_read_claude_md_agents", return_value=["intelligence", "build", "backend"]
+            ):
+                result = provider.list_agents(tmp_path)
+                assert "intelligence" not in result
+                assert "build" in result
+                assert "backend" in result
+
 
 class TestClaudeCodeProviderGetResolvedModel:
     """Tests for ClaudeCodeProvider.get_resolved_model()."""
@@ -332,6 +343,11 @@ class TestClaudeCodeProviderEnsureSetup:
         result = provider.ensure_setup(str(tmp_path), Mock())
         assert isinstance(result, Path)
         assert result.exists()
+
+    def test_write_architect_prompts_includes_intelligence_md(self, provider, tmp_path):
+        """Test that intelligence.md is written to .architect/prompts/."""
+        provider._write_architect_prompts(tmp_path)
+        assert (tmp_path / ".architect" / "prompts" / "intelligence.md").exists()
 
 
 class TestReadClaudeMdAgents:
@@ -943,3 +959,202 @@ class TestPickDefaultModelFallback:
         result = cc._pick_default_model(models)
         # Should return the last candidate (fallback path)
         assert result == "claude-code-4"
+
+
+# ---------------------------------------------------------------------------
+# TestParseOutputLineMissingBranches — covers lines 528, 533-537, 568, 571-573,
+#   595-598, 629, 677
+# ---------------------------------------------------------------------------
+
+
+class TestParseOutputLineMissingBranches:
+    """Targeted tests for parse_output_line branches not yet exercised."""
+
+    def test_empty_line_returns_none(self, provider):
+        """Whitespace-only line returns None (line 528)."""
+        assert provider.parse_output_line("   ") is None
+        assert provider.parse_output_line("") is None
+
+    def test_non_json_line_returns_plain_text(self, provider):
+        """Non-JSON text falls back to plain-text event (lines 533-537)."""
+        result = provider.parse_output_line("plain text output from agent")
+        assert result is not None
+        assert result.event_type == "text"
+        assert "plain text output from agent" in result.display_lines
+
+    def test_non_json_rate_limit_text(self, provider):
+        """Non-JSON rate-limit text sets rate_limit flag (lines 533-537)."""
+        result = provider.parse_output_line("rate limit exceeded, please wait")
+        assert result is not None
+        assert result.rate_limit is True
+
+    def test_assistant_non_dict_content_part_skipped(self, provider):
+        """Non-dict content part inside assistant message is skipped (line 568)."""
+        line = json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        "this is a string not a dict",
+                        {"type": "text", "text": "hello from agent"},
+                    ]
+                },
+            }
+        )
+        result = provider.parse_output_line(line)
+        assert result is not None
+        assert "hello from agent" in result.display_lines
+
+    def test_assistant_text_content_displayed(self, provider):
+        """Text content part inside assistant event is displayed (lines 571-573)."""
+        line = json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [{"type": "text", "text": "line one\nline two"}]
+                },
+            }
+        )
+        result = provider.parse_output_line(line)
+        assert result is not None
+        assert "line one" in result.display_lines
+        assert "line two" in result.display_lines
+
+    def test_tool_use_content_fallback_key(self, provider):
+        """Tool-use content with no standard key falls back to first value (lines 595-598)."""
+        line = json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "custom_tool",
+                            "input": {"nonstandard_key": "nonstandard_value"},
+                        }
+                    ]
+                },
+            }
+        )
+        result = provider.parse_output_line(line)
+        assert result is not None
+        assert any("nonstandard_value" in ln for ln in result.display_lines)
+
+    def test_result_event_api_error_status_429(self, provider):
+        """api_error_status 429 sets rate_limit (line 629)."""
+        line = json.dumps({"type": "result", "api_error_status": 429})
+        result = provider.parse_output_line(line)
+        assert result is not None
+        assert result.rate_limit is True
+
+    def test_result_event_api_error_status_529(self, provider):
+        """api_error_status 529 also sets rate_limit (line 629)."""
+        line = json.dumps({"type": "result", "api_error_status": 529})
+        result = provider.parse_output_line(line)
+        assert result is not None
+        assert result.rate_limit is True
+
+    def test_tool_result_event_is_silent(self, provider):
+        """tool_result event returns empty display_lines silently (line 677)."""
+        line = json.dumps({"type": "tool_result", "content": "some tool output"})
+        result = provider.parse_output_line(line)
+        assert result is not None
+        assert result.display_lines == []
+
+    def test_user_event_is_silent(self, provider):
+        """user event returns empty display_lines silently (line 677)."""
+        line = json.dumps({"type": "user", "message": "injected tool results"})
+        result = provider.parse_output_line(line)
+        assert result is not None
+        assert result.display_lines == []
+
+
+# ---------------------------------------------------------------------------
+# TestSupportsFreeTierClaudeCode — line 717
+# ---------------------------------------------------------------------------
+
+
+class TestSupportsFreeTierClaudeCode:
+    """ClaudeCodeProvider.supports_free_tier always returns False."""
+
+    def test_supports_free_tier_returns_false(self, provider):
+        """Claude Code never supports OpenRouter free tier (line 717)."""
+        assert provider.supports_free_tier() is False
+
+
+# ---------------------------------------------------------------------------
+# TestCheckUpdateAvailableClaudeCode — lines 726-767
+# ---------------------------------------------------------------------------
+
+
+class TestCheckUpdateAvailableClaudeCode:
+    """Tests for ClaudeCodeProvider.check_update_available()."""
+
+    def test_returns_empty_when_not_installed(self, provider):
+        """Early return when claude is not installed (line 730)."""
+        with patch.object(provider, "is_installed", return_value=False):
+            assert provider.check_update_available() == ""
+
+    def test_returns_empty_when_version_unknown(self, provider):
+        """Early return when get_version returns 'unknown' (line 734)."""
+        with patch.object(provider, "is_installed", return_value=True):
+            with patch.object(provider, "get_version", return_value="unknown"):
+                assert provider.check_update_available() == ""
+
+    def test_returns_empty_when_version_empty(self, provider):
+        """Early return when get_version returns empty string (line 734)."""
+        with patch.object(provider, "is_installed", return_value=True):
+            with patch.object(provider, "get_version", return_value=""):
+                assert provider.check_update_available() == ""
+
+    def test_returns_empty_when_no_semver_in_version(self, provider):
+        """Early return when installed version has no semver match (line 738)."""
+        with patch.object(provider, "is_installed", return_value=True):
+            with patch.object(provider, "get_version", return_value="nightly"):
+                assert provider.check_update_available() == ""
+
+    def test_returns_empty_on_network_error(self, provider):
+        """Returns empty string on urllib failure (line 753)."""
+        with patch.object(provider, "is_installed", return_value=True):
+            with patch.object(provider, "get_version", return_value="1.0.0"):
+                with patch("urllib.request.urlopen", side_effect=OSError("network error")):
+                    assert provider.check_update_available() == ""
+
+    def test_returns_update_message_when_newer_version_available(self, provider):
+        """Returns update message when installed < latest (lines 761-765)."""
+        mock_resp = Mock()
+        mock_resp.__enter__ = Mock(return_value=mock_resp)
+        mock_resp.__exit__ = Mock(return_value=False)
+        mock_resp.read.return_value = json.dumps({"version": "2.0.0"}).encode("utf-8")
+
+        with patch.object(provider, "is_installed", return_value=True):
+            with patch.object(provider, "get_version", return_value="1.0.0"):
+                with patch("urllib.request.urlopen", return_value=mock_resp):
+                    result = provider.check_update_available()
+                    assert "1.0.0" in result
+                    assert "2.0.0" in result
+                    assert "claude update" in result
+
+    def test_returns_empty_when_already_up_to_date(self, provider):
+        """Returns empty string when already on the latest version (line 767)."""
+        mock_resp = Mock()
+        mock_resp.__enter__ = Mock(return_value=mock_resp)
+        mock_resp.__exit__ = Mock(return_value=False)
+        mock_resp.read.return_value = json.dumps({"version": "1.0.0"}).encode("utf-8")
+
+        with patch.object(provider, "is_installed", return_value=True):
+            with patch.object(provider, "get_version", return_value="1.0.0"):
+                with patch("urllib.request.urlopen", return_value=mock_resp):
+                    assert provider.check_update_available() == ""
+
+    def test_returns_empty_when_latest_version_missing(self, provider):
+        """Returns empty string when registry response has no version field (line 751)."""
+        mock_resp = Mock()
+        mock_resp.__enter__ = Mock(return_value=mock_resp)
+        mock_resp.__exit__ = Mock(return_value=False)
+        mock_resp.read.return_value = json.dumps({}).encode("utf-8")
+
+        with patch.object(provider, "is_installed", return_value=True):
+            with patch.object(provider, "get_version", return_value="1.0.0"):
+                with patch("urllib.request.urlopen", return_value=mock_resp):
+                    assert provider.check_update_available() == ""

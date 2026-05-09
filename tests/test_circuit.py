@@ -1279,10 +1279,10 @@ class TestAttemptReplan:
 
         with (
             patch(
-                "the_architect.core.opencode_config.ensure_opencode_setup",
+                "the_architect.core.opencode_provider.OpenCodeProvider.ensure_setup",
             ),
             patch(
-                "the_architect.core.runner.stream_opencode",
+                "the_architect.core.runner.stream_provider",
                 new_callable=AsyncMock,
                 return_value=mock_stream_result,
             ),

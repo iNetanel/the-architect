@@ -18,12 +18,14 @@ from the_architect.core.structure import (
     _check_python_framework,
     _check_python_path_deps,
     _check_rust_framework,
+    _detect_component_signals,
     _detect_components,
     _detect_csharp_project,
     _detect_dependencies,
     _detect_framework,
     _detect_language,
     _detect_repo_type,
+    _detect_root_python_package_components,
     _detect_sub_components,
     _enrich_component,
     _enrich_from_package_json,
@@ -1017,6 +1019,38 @@ class TestDetectComponents:
         components = _detect_components(tmp_path, RepoType.SINGLE_REPO)
         assert len(components) == 2
 
+    def test_root_pyproject_is_detected_as_component(self, tmp_path: Path) -> None:
+        """Root-level Python projects should not be invisible to memory generation."""
+        (tmp_path / ".git").mkdir()
+        _write_file(
+            tmp_path / "pyproject.toml",
+            "\n".join(
+                [
+                    "[project]",
+                    'name = "example-cli"',
+                    'description = "Example CLI"',
+                    'dependencies = ["click", "pydantic", "pytest", "ruff"]',
+                    "[tool.hatch.build.targets.wheel]",
+                    'packages = ["example_pkg"]',
+                ]
+            ),
+        )
+        _write_file(tmp_path / "example_pkg" / "__init__.py", "")
+        _write_file(tmp_path / "example_pkg" / "cli.py", "")
+        _write_file(tmp_path / "tests" / "__init__.py", "")
+
+        components = _detect_components(tmp_path, RepoType.SINGLE_REPO)
+
+        paths = [component.path for component in components]
+        assert "./" in paths
+        assert "example_pkg/" in paths
+        assert "tests/" not in paths
+        root = next(component for component in components if component.path == "./")
+        assert root.language == "Python"
+        assert root.test_command == "pytest tests/ -v --tb=short"
+        package = next(component for component in components if component.path == "example_pkg/")
+        assert package.role == "CLI package"
+
     def test_single_repo_with_csharp(self, tmp_path: Path) -> None:
         (tmp_path / ".git").mkdir()
         _write_file(tmp_path / "app" / "MyApp.csproj", "<Project/>")
@@ -1043,6 +1077,83 @@ class TestDetectComponents:
         with patch("pathlib.Path.iterdir", side_effect=OSError("nope")):
             components = _detect_components(tmp_path, RepoType.SINGLE_REPO)
             assert components == []
+
+
+# ---------------------------------------------------------------------------
+# _detect_root_python_package_components
+# ---------------------------------------------------------------------------
+
+
+class TestDetectRootPythonPackageComponents:
+    """Tests for _detect_root_python_package_components() edge cases."""
+
+    def test_returns_empty_when_no_pyproject_toml(self, tmp_path: Path) -> None:
+        result = _detect_root_python_package_components(tmp_path)
+        assert result == []
+
+    def test_returns_empty_on_oserror_reading_pyproject(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_text("[project]\n")
+        with patch.object(Path, "read_text", side_effect=OSError("nope")):
+            result = _detect_root_python_package_components(tmp_path)
+        assert result == []
+
+    def test_detects_package_from_src_layout(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_text("[project]\n")
+        _write_file(tmp_path / "src" / "myapp" / "__init__.py", "")
+        result = _detect_root_python_package_components(tmp_path)
+        paths = [c.path for c in result]
+        assert "src/myapp/" in paths
+
+    def test_deduplicates_when_hatchling_config_and_fallback_both_find_package(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.hatch.build.targets.wheel]\npackages = ["mypkg"]\n'
+        )
+        _write_file(tmp_path / "mypkg" / "__init__.py", "")
+        result = _detect_root_python_package_components(tmp_path)
+        paths = [c.path for c in result]
+        assert paths.count("mypkg/") == 1
+
+    def test_skips_non_directory_paths_from_hatchling_config(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.hatch.build.targets.wheel]\npackages = ["ghostpkg"]\n'
+        )
+        result = _detect_root_python_package_components(tmp_path)
+        paths = [c.path for c in result]
+        assert "ghostpkg/" not in paths
+
+    def test_cli_package_role_assigned_when_cli_py_exists(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.hatch.build.targets.wheel]\npackages = ["mypkg"]\n'
+        )
+        _write_file(tmp_path / "mypkg" / "__init__.py", "")
+        _write_file(tmp_path / "mypkg" / "cli.py", "")
+        result = _detect_root_python_package_components(tmp_path)
+        pkg = next((c for c in result if c.path == "mypkg/"), None)
+        assert pkg is not None
+        assert pkg.role == "CLI package"
+
+    def test_python_package_role_when_no_cli_py(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_text("[project]\n")
+        _write_file(tmp_path / "mypkg" / "__init__.py", "")
+        result = _detect_root_python_package_components(tmp_path)
+        pkg = next((c for c in result if c.path == "mypkg/"), None)
+        assert pkg is not None
+        assert pkg.role == "Python package"
+
+    def test_skips_skip_dirs(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_text("[project]\n")
+        _write_file(tmp_path / "tests" / "__init__.py", "")
+        result = _detect_root_python_package_components(tmp_path)
+        paths = [c.path for c in result]
+        assert "tests/" not in paths
+
+    def test_oserror_during_iterdir_is_skipped(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_text("[project]\n")
+        with patch("pathlib.Path.iterdir", side_effect=OSError("nope")):
+            result = _detect_root_python_package_components(tmp_path)
+        assert result == []
 
 
 # ---------------------------------------------------------------------------
@@ -1901,3 +2012,225 @@ class TestFormatComponentPrompt:
         text = lines[0]
         # Should only show first 5 deps
         assert "a, b, c, d, e" in text
+
+
+# ---------------------------------------------------------------------------
+# _detect_component_signals
+# ---------------------------------------------------------------------------
+
+
+class TestDetectComponentSignals:
+    """Tests for _detect_component_signals()."""
+
+    def test_empty_dir_returns_no_signals(self, tmp_path: Path) -> None:
+        signals, language = _detect_component_signals(tmp_path)
+        assert signals == []
+        assert language == ""
+
+    def test_detects_python_from_pyproject_toml(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_text("[project]\n")
+        signals, language = _detect_component_signals(tmp_path)
+        assert "pyproject.toml" in signals
+        assert language == "Python"
+
+    def test_detects_javascript_from_package_json(self, tmp_path: Path) -> None:
+        (tmp_path / "package.json").write_text("{}")
+        signals, language = _detect_component_signals(tmp_path)
+        assert "package.json" in signals
+        assert language == "JavaScript/TypeScript"
+
+    def test_detects_csharp_from_csproj(self, tmp_path: Path) -> None:
+        (tmp_path / "app.csproj").write_text("<Project/>")
+        signals, language = _detect_component_signals(tmp_path)
+        assert "*.csproj" in signals
+        assert language == "C#"
+
+    def test_detects_rust_from_cargo_toml(self, tmp_path: Path) -> None:
+        (tmp_path / "Cargo.toml").write_text("[package]\nname = 'myapp'\n")
+        signals, language = _detect_component_signals(tmp_path)
+        assert "Cargo.toml" in signals
+        assert language == "Rust"
+
+
+# ---------------------------------------------------------------------------
+# _infer_role_from_subs via _enrich_component (line 860)
+# ---------------------------------------------------------------------------
+
+
+class TestInferRoleFromSubsViaEnrichComponent:
+    """Test the line-860 branch in _enrich_component() that calls _infer_role_from_subs()."""
+
+    def test_enrich_component_infers_role_from_sub_components(self, tmp_path: Path) -> None:
+        # Set up a SINGLE_REPO: .git at root, mystery/ has a signal file so
+        # _enrich_component() is called, but its path name ("mystery") matches
+        # no _infer_role() pattern — leaving role="" until sub-component
+        # detection fires _infer_role_from_subs() at line 860.
+        (tmp_path / ".git").mkdir()
+        mystery_dir = tmp_path / "mystery"
+        mystery_dir.mkdir()
+        (mystery_dir / "pyproject.toml").write_text("[project]\n")
+        _write_file(mystery_dir / "frontend" / "package.json", "{}")
+
+        report = detect_structure(tmp_path)
+
+        mystery = next((c for c in report.components if c.path == "mystery/"), None)
+        assert mystery is not None
+        assert mystery.role != ""
+
+
+# ---------------------------------------------------------------------------
+# TestArchitectEvalFiltering — covers lines 771, 800, 881, 1108
+# ---------------------------------------------------------------------------
+
+
+class TestArchitectEvalFiltering:
+    """architect_eval_* entries are skipped in all scanning loops."""
+
+    def test_detect_components_multi_repo_skips_architect_eval(self, tmp_path: Path) -> None:
+        """Line 771: architect_eval_* dir is skipped in MULTI_REPO detection."""
+        # Create a real sub-repo and an architect_eval_ dir alongside it
+        sub_repo = tmp_path / "real_service"
+        sub_repo.mkdir()
+        (sub_repo / ".git").mkdir()
+        eval_dir = tmp_path / "architect_eval_temp"
+        eval_dir.mkdir()
+        (eval_dir / ".git").mkdir()
+
+        components = _detect_components(tmp_path, RepoType.MULTI_REPO)
+        paths = [c.path for c in components]
+        assert any("real_service" in p for p in paths)
+        assert not any("architect_eval" in p for p in paths)
+
+    def test_detect_components_single_repo_skips_architect_eval(self, tmp_path: Path) -> None:
+        """Line 800: architect_eval_* dir is skipped in SINGLE_REPO detection."""
+        (tmp_path / "pyproject.toml").write_text("[project]\nname = 'app'\n")
+        eval_dir = tmp_path / "architect_eval_scratch"
+        eval_dir.mkdir()
+        (eval_dir / "package.json").write_text("{}")
+
+        components = _detect_components(tmp_path, RepoType.SINGLE_REPO)
+        paths = [c.path for c in components]
+        assert not any("architect_eval" in p for p in paths)
+
+    def test_detect_sub_components_skips_architect_eval(self, tmp_path: Path) -> None:
+        """Line 881: architect_eval_* dir is skipped in _detect_sub_components."""
+        real_sub = tmp_path / "backend"
+        real_sub.mkdir()
+        (real_sub / "pyproject.toml").write_text("[project]\n")
+        eval_sub = tmp_path / "architect_eval_work"
+        eval_sub.mkdir()
+        (eval_sub / "pyproject.toml").write_text("[project]\n")
+
+        subs = _detect_sub_components(tmp_path)
+        paths = [c.path for c in subs]
+        assert any("backend" in p for p in paths)
+        assert not any("architect_eval" in p for p in paths)
+
+    def test_detect_dependencies_skips_architect_eval_for_shared_dirs(
+        self, tmp_path: Path
+    ) -> None:
+        """Line 1108: architect_eval_* dir is skipped in shared-dir scan."""
+        shared_dir = tmp_path / "shared"
+        shared_dir.mkdir()
+        eval_shared = tmp_path / "architect_eval_shared"
+        eval_shared.mkdir()
+
+        comp = Component(path="./")
+        deps, shared_resources = _detect_dependencies(tmp_path, [comp])
+        # The real "shared" dir should be detected
+        assert any("shared" in r for r in shared_resources)
+        # architect_eval_ should NOT appear
+        assert not any("architect_eval" in r for r in shared_resources)
+
+
+# ---------------------------------------------------------------------------
+# TestDockerComposeParserMissingBranches — covers lines 1143-1187, 1291-1292
+# ---------------------------------------------------------------------------
+
+
+class TestDockerComposeParserMissingBranches:
+    """Tests for docker-compose parsing branches not yet exercised."""
+
+    def test_parse_docker_compose_regex_dict_style_dep_unknown_service(self) -> None:
+        """Dict-style depends_on with unrecognized service sets has_shared (lines 1291-1292)."""
+        content = (
+            "services:\n"
+            "  frontend:\n"
+            "    depends_on:\n"
+            "        backend:\n"  # dict-style (8-space indent key)
+            "          condition: service_healthy\n"
+        )
+        frontend = Component(path="frontend/")
+        # backend is NOT in component_paths — so target_path will be None
+        component_paths = {"frontend": frontend}
+
+        deps, has_shared = _parse_docker_compose_regex(content, component_paths)
+        assert has_shared is True
+        assert deps == []
+
+    def test_parse_docker_compose_yaml_mock_exception(self, tmp_path: Path) -> None:
+        """yaml.safe_load raising Exception returns early (lines 1143, 1147-1148)."""
+        import sys
+
+        compose_file = tmp_path / "docker-compose.yml"
+        compose_file.write_text("services:\n  web:\n")
+
+        import types
+
+        mock_yaml = types.ModuleType("yaml")
+        mock_yaml.safe_load = Mock(side_effect=RuntimeError("parse failed"))  # type: ignore[attr-defined]
+
+        original = sys.modules.get("yaml")
+        sys.modules["yaml"] = mock_yaml
+        try:
+            deps, has_shared = _parse_docker_compose(compose_file, {})
+        finally:
+            if original is None:
+                sys.modules.pop("yaml", None)
+            else:
+                sys.modules["yaml"] = original
+
+        assert deps == []
+        assert has_shared is False
+
+    def test_parse_docker_compose_yaml_mock_valid_data(self, tmp_path: Path) -> None:
+        """yaml.safe_load returning valid services dict hits full parsing path (lines 1150-1187)."""
+        import sys
+        import types
+
+        compose_file = tmp_path / "docker-compose.yml"
+        compose_file.write_text("# real content ignored when yaml is mocked\n")
+
+        frontend = Component(path="frontend/")
+        backend = Component(path="backend/")
+        component_paths = {"frontend": frontend, "backend": backend}
+
+        mock_data = {
+            "services": {
+                "frontend": {
+                    "depends_on": ["backend"],  # list form
+                },
+                "unknown_svc": {
+                    "depends_on": {"shared_db": {"condition": "service_healthy"}},  # dict form
+                },
+                "noconfig": None,  # service_config not a dict
+            }
+        }
+
+        mock_yaml = types.ModuleType("yaml")
+        mock_yaml.safe_load = Mock(return_value=mock_data)  # type: ignore[attr-defined]
+
+        original = sys.modules.get("yaml")
+        sys.modules["yaml"] = mock_yaml
+        try:
+            deps, has_shared = _parse_docker_compose(compose_file, component_paths)
+        finally:
+            if original is None:
+                sys.modules.pop("yaml", None)
+            else:
+                sys.modules["yaml"] = original
+
+        # frontend → backend dependency should be found
+        assert any(d.source == "frontend/" and d.target == "backend/" for d in deps)
+        # has_shared is True because unknown_svc is not in component_paths
+        assert has_shared is True

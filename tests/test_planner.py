@@ -1114,6 +1114,103 @@ class TestRunPlannerAdditional:
                 await run_planner(request, config)
 
 
+class TestGatherProjectContextTreeTruncation:
+    """Tests for tree-truncation logic and documentation/ directory in gather_project_context()."""
+
+    def test_gather_project_context_truncates_large_tree(self, tmp_path: Path) -> None:
+        """300 flat files trigger the file-level truncation guard (lines 280-283) and line 299."""
+        for i in range(300):
+            (tmp_path / f"file_{i:04d}.txt").write_text("x", encoding="utf-8")
+
+        result = gather_project_context(tmp_path)
+
+        assert "tree truncated" in result
+        # The tree must have stopped before listing all 300 files
+        assert not all(f"file_{i:04d}.txt" in result for i in range(300))
+
+    def test_gather_project_context_truncation_note_appended(self, tmp_path: Path) -> None:
+        """Exact truncation note string appears in result when tree limit is exceeded."""
+        for i in range(300):
+            (tmp_path / f"file_{i:04d}.txt").write_text("x", encoding="utf-8")
+
+        result = gather_project_context(tmp_path)
+
+        assert "... tree truncated" in result
+
+    def test_gather_project_context_truncates_at_directory_line(self, tmp_path: Path) -> None:
+        """Directory-level truncation fires after a dir line reaches the limit.
+
+        258 root files → len=259 after the file loop; visiting the subdir adds its dir
+        line → len=260, which triggers the guard at lines 273-276.
+        """
+        for i in range(258):
+            (tmp_path / f"file_{i:04d}.txt").write_text("x", encoding="utf-8")
+        subdir = tmp_path / "zzz_subdir"
+        subdir.mkdir()
+        (subdir / "inside.txt").write_text("inside", encoding="utf-8")
+
+        result = gather_project_context(tmp_path)
+
+        assert "tree truncated" in result
+
+    def test_gather_project_context_outer_loop_truncation(self, tmp_path: Path) -> None:
+        """Outer os.walk check fires when a sibling directory is visited after the limit.
+
+        aaa_subdir1 with 259 files: dir line (len=2) + 258 files → len=260, then
+        the 259th file check fires (lines 280-283) and breaks.  bbb_subdir2 is the
+        next os.walk entry → len=260 >= 260 → outer-loop guard fires (lines 249-251).
+        """
+        subdir1 = tmp_path / "aaa_subdir1"
+        subdir1.mkdir()
+        for i in range(259):
+            (subdir1 / f"file_{i:04d}.txt").write_text("x", encoding="utf-8")
+        subdir2 = tmp_path / "bbb_subdir2"
+        subdir2.mkdir()
+        (subdir2 / "extra.txt").write_text("extra", encoding="utf-8")
+
+        result = gather_project_context(tmp_path)
+
+        assert "tree truncated" in result
+
+    def test_gather_includes_documentation_directory(self, tmp_path: Path) -> None:
+        """documentation/ directory contents appear in the context."""
+        doc_dir = tmp_path / "documentation"
+        doc_dir.mkdir()
+        (doc_dir / "PRACTICES.md").write_text("# Practices\nFollow these rules", encoding="utf-8")
+
+        result = gather_project_context(tmp_path)
+
+        assert "documentation/" in result
+
+    def test_gather_includes_both_docs_and_documentation(self, tmp_path: Path) -> None:
+        """Both docs/ and documentation/ sections appear when both directories exist."""
+        docs_dir = tmp_path / "docs"
+        docs_dir.mkdir()
+        (docs_dir / "API.md").write_text("# API", encoding="utf-8")
+
+        doc_dir = tmp_path / "documentation"
+        doc_dir.mkdir()
+        (doc_dir / "PRACTICES.md").write_text("# Practices", encoding="utf-8")
+
+        result = gather_project_context(tmp_path)
+
+        assert "documentation/" in result
+        assert "docs/" in result
+
+    def test_gather_project_context_respects_char_budget(self, tmp_path: Path) -> None:
+        """add_part() skips a section when the max_chars budget would be exceeded (line 221).
+
+        An AGENTS.md larger than max_chars (20000) must be dropped; the output
+        must stay well below 25000 chars despite the oversized input.
+        """
+        agents_md = tmp_path / "AGENTS.md"
+        agents_md.write_text("# Rules\n" + "rule " * 5000, encoding="utf-8")  # ~25008 chars
+
+        result = gather_project_context(tmp_path)
+
+        assert len(result) < 25000
+
+
 class TestRunPlannerProviderError:
     """Tests for provider error detection in run_planner()."""
 

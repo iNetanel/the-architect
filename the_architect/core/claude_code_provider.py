@@ -51,7 +51,15 @@ _FALLBACK_CLAUDE_MODELS: list[str] = [
 ]
 
 # Internal agents that should never appear in the execution dropdown
-_INTERNAL_AGENTS = {"architect", "reviewer", "compaction", "summary", "title", "plan"}
+_INTERNAL_AGENTS = {
+    "architect",
+    "intelligence",
+    "reviewer",
+    "compaction",
+    "summary",
+    "title",
+    "plan",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -373,7 +381,7 @@ class ClaudeCodeProvider:
         return project_dir / ".architect" / "prompts"
 
     def _write_architect_prompts(self, project_dir: Path) -> None:
-        """Write architect.md, reviewer.md, and execution-protocol.md to .architect/prompts/."""
+        """Write packaged Architect prompts to .architect/prompts/."""
         import importlib.resources as resources
 
         prompts_dir = project_dir / ".architect" / "prompts"
@@ -381,7 +389,12 @@ class ClaudeCodeProvider:
 
         package_prompts = resources.files("the_architect.resources.prompts")
 
-        for filename in ("architect.md", "reviewer.md", "execution-protocol.md"):
+        for filename in (
+            "architect.md",
+            "intelligence.md",
+            "reviewer.md",
+            "execution-protocol.md",
+        ):
             source = package_prompts / filename
             target = prompts_dir / filename
             content = source.read_text(encoding="utf-8")

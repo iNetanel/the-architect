@@ -11,16 +11,29 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ## [Unreleased]
 
-### Changed
-
-- PROGRESS tracking now lives in `tasks/PROGRESS.md` so each goal package keeps its shared state alongside `INSTRUCTIONS.md` and task files (build 10237)
-
 <!--
 Every completed task appends a bullet here and bumps __build__ in /version.py.
 When cutting a release, rename [Unreleased] to the version and add a fresh
 empty [Unreleased] above it. Use Keep a Changelog section headings:
 Added / Changed / Deprecated / Removed / Fixed / Security.
 -->
+
+## [1.2.3] (build 10259) — 2026-05-09
+
+### Added
+
+- Added a stronger pre-planning learning stage that builds and repairs `ARCHITECT.md` before task planning, using fast repo detection plus an optional model-backed intelligence pass when project memory is still shallow.
+
+### Changed
+
+- Planning now has better first-run and large-repo awareness, including root package manifests, Python source packages, docs, CI workflows, provider rule files, prompt locations, and Architect runtime storage.
+- Current run state now lives in `tasks/PROGRESS.md`, keeping each goal's task state beside its instructions, task files, summary, and archive.
+
+### Fixed
+
+- Provider update warnings now appear immediately after the goal is submitted, before scope/model prompts or model-backed learning/planning, so users can safely walk away after setup.
+- Reassessment output is visible again during TUI execution runs, so downstream task checks no longer look like a blank wait screen.
+- Single-package projects are no longer misidentified as only secondary dev config directories when their main manifest lives at the repository root.
 
 ## [1.2.2] (build 10236) — 2026-05-06
 

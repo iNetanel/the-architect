@@ -209,7 +209,15 @@ class OpenCodeProvider:
         """Return primary agent names available in the user's OpenCode setup."""
         import re
 
-        _INTERNAL_AGENTS = {"architect", "reviewer", "compaction", "summary", "title", "plan"}
+        _INTERNAL_AGENTS = {
+            "architect",
+            "intelligence",
+            "reviewer",
+            "compaction",
+            "summary",
+            "title",
+            "plan",
+        }
 
         def _filter_primary(agents: dict[str, dict[str, Any]]) -> list[str]:
             return sorted(
@@ -465,7 +473,7 @@ class OpenCodeProvider:
         return architect_cfg
 
     def _write_architect_prompts(self, project_dir: Path) -> None:
-        """Write architect.md, reviewer.md, and execution-protocol.md to .architect/prompts/."""
+        """Write packaged Architect prompts to .architect/prompts/."""
         import importlib.resources as resources
 
         prompts_dir = project_dir / ".architect" / "prompts"
@@ -473,7 +481,12 @@ class OpenCodeProvider:
 
         package_prompts = resources.files("the_architect.resources.prompts")
 
-        for filename in ("architect.md", "reviewer.md", "execution-protocol.md"):
+        for filename in (
+            "architect.md",
+            "intelligence.md",
+            "reviewer.md",
+            "execution-protocol.md",
+        ):
             source = package_prompts / filename
             target = prompts_dir / filename
             content = source.read_text(encoding="utf-8")

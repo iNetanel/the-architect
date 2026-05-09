@@ -475,6 +475,13 @@ def enrich_from_structure_report(project_dir: Path, report: StructureReport) -> 
         return
 
     generated = _generated_intelligence_sections(report)
+    project_facts = _detected_project_intelligence_sections(project_dir)
+    for section_name, block in project_facts.items():
+        if section_name in generated:
+            generated[section_name] = f"{generated[section_name]}\n{block}"
+        else:
+            generated[section_name] = block
+
     for section_name, block in generated.items():
         existing = sections.get(section_name, _STANDARD_SECTION_DEFAULTS.get(section_name, ""))
         sections[section_name] = _upsert_auto_intelligence_block(existing, block)
@@ -589,6 +596,255 @@ def _generated_intelligence_sections(report: StructureReport) -> dict[str, str]:
     }
 
 
+def _read_toml(path: Path) -> dict[str, object]:
+    """Read a TOML file with safe defaults.
+
+    Args:
+        path: TOML file path.
+
+    Returns:
+        Parsed TOML data, or an empty dict on read/parse failure.
+    """
+    if not path.exists():
+        return {}
+
+    try:
+        import tomllib
+
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+
+
+def _read_json(path: Path) -> dict[str, object]:
+    """Read a JSON object with safe defaults."""
+    if not path.exists():
+        return {}
+
+    try:
+        import json
+
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _as_dict(value: object) -> dict[str, object]:
+    """Return value as a dict when possible."""
+    return value if isinstance(value, dict) else {}
+
+
+def _as_list(value: object) -> list[object]:
+    """Return value as a list when possible."""
+    return value if isinstance(value, list) else []
+
+
+def _script_lines_from_pyproject(project_dir: Path) -> list[str]:
+    """Detect Python entry point contracts from root pyproject.toml."""
+    pyproject = _read_toml(project_dir / "pyproject.toml")
+    project = _as_dict(pyproject.get("project"))
+    scripts = _as_dict(project.get("scripts"))
+    lines = []
+    for name, target in sorted(scripts.items()):
+        if isinstance(target, str):
+            lines.append(f"- CLI entry point `{name}` resolves to `{target}`.")
+    return lines
+
+
+def _verification_lines(project_dir: Path) -> list[str]:
+    """Detect repo-level verification commands from common config files."""
+    lines: list[str] = []
+    pyproject_path = project_dir / "pyproject.toml"
+    pyproject_content = ""
+    if pyproject_path.exists():
+        try:
+            pyproject_content = pyproject_path.read_text(encoding="utf-8").lower()
+        except OSError:
+            pyproject_content = ""
+
+    if pyproject_content:
+        if "pytest" in pyproject_content:
+            lines.append("- Python tests: `pytest tests/ -v --tb=short`.")
+        if "ruff" in pyproject_content:
+            lines.append("- Python lint/format: `ruff check .` and `ruff format --check .`.")
+        if "mypy" in pyproject_content:
+            lines.append(
+                "- Python typecheck: `mypy the_architect/` when this package path exists; "
+                "otherwise inspect pyproject for the typed package path."
+            )
+
+    pkg = _read_json(project_dir / "package.json")
+    scripts = _as_dict(pkg.get("scripts"))
+    if scripts:
+        if "test" in scripts:
+            lines.append("- JavaScript tests: `npm test`.")
+        if "lint" in scripts:
+            lines.append("- JavaScript lint: `npm run lint`.")
+        if "typecheck" in scripts:
+            lines.append("- JavaScript typecheck: `npm run typecheck`.")
+
+    workflows_dir = project_dir / ".github" / "workflows"
+    if workflows_dir.is_dir():
+        try:
+            workflows = sorted(
+                p.name
+                for p in workflows_dir.iterdir()
+                if p.is_file() and p.suffix.lower() in {".yml", ".yaml"}
+            )
+        except OSError:
+            workflows = []
+        if workflows:
+            lines.append(
+                f"- CI workflows: {', '.join(f'`.github/workflows/{name}`' for name in workflows)}."
+            )
+
+    return lines
+
+
+def _detected_project_intelligence_sections(project_dir: Path) -> dict[str, str]:
+    """Detect durable project intelligence outside component manifests.
+
+    This is the deterministic pre-planner memory pass. It intentionally avoids
+    deep recursive source inspection so it remains safe for huge monorepos while
+    still capturing high-value root contracts, docs, prompts, CI, and runtime
+    storage locations.
+    """
+    sections: dict[str, list[str]] = {
+        "Project Overview": [],
+        "Tech Stack": [],
+        "Key Flows": [],
+        "Shared Contracts": [],
+        "Code Locations": [],
+        "Build, Test, and Verification": [],
+        "Style and Code Standards": [],
+        "Agent and AI Conventions": [],
+        "Data and Storage": [],
+        "Environment and Secrets": [],
+        "Operational Constraints": [],
+    }
+
+    pyproject = _read_toml(project_dir / "pyproject.toml")
+    project = _as_dict(pyproject.get("project"))
+    if project:
+        name = project.get("name")
+        description = project.get("description")
+        if isinstance(name, str):
+            overview = f"- Root Python project: `{name}`"
+            if isinstance(description, str) and description:
+                overview += f" - {description}"
+            overview += "."
+            sections["Project Overview"].append(overview)
+
+        build_system = _as_dict(pyproject.get("build-system"))
+        backend = build_system.get("build-backend")
+        if isinstance(backend, str):
+            sections["Tech Stack"].append(f"- Python build backend: `{backend}`.")
+
+        scripts = _script_lines_from_pyproject(project_dir)
+        sections["Key Flows"].extend(scripts)
+        sections["Shared Contracts"].extend(scripts)
+
+    for docs_dir_name in ("documentation", "docs"):
+        docs_dir = project_dir / docs_dir_name
+        if docs_dir.is_dir():
+            try:
+                docs = sorted(
+                    p.name
+                    for p in docs_dir.iterdir()
+                    if p.is_file() and p.suffix.lower() in {".md", ".rst", ".txt"}
+                )[:12]
+            except OSError:
+                docs = []
+            suffix = f": {', '.join(f'`{docs_dir_name}/{name}`' for name in docs)}" if docs else ""
+            sections["Code Locations"].append(
+                f"- `{docs_dir_name}/` - project documentation and durable technical "
+                f"references{suffix}."
+            )
+            sections["Agent and AI Conventions"].append(
+                f"- Check `{docs_dir_name}/` for canonical project practices before broad changes."
+            )
+
+    if (project_dir / "README.md").exists():
+        sections["Code Locations"].append(
+            "- `README.md` - user-facing overview and CLI/reference documentation."
+        )
+    if (project_dir / "CHANGELOG.md").exists():
+        sections["Operational Constraints"].append(
+            "- `CHANGELOG.md` records user-visible changes; update it when project "
+            "rules require release notes."
+        )
+    if (project_dir / "version.py").exists():
+        sections["Operational Constraints"].append(
+            "- Root `version.py` exists; inspect it for project-specific version/build "
+            "rules before release or task completion work."
+        )
+
+    for rules_name in ("AGENTS.md", "CLAUDE.md"):
+        if (project_dir / rules_name).exists():
+            sections["Agent and AI Conventions"].append(
+                f"- `{rules_name}` is a provider/user rule file; read and follow it, "
+                "but do not treat it as generated project memory."
+            )
+
+    prompts_dir = project_dir / "the_architect" / "resources" / "prompts"
+    if prompts_dir.is_dir():
+        sections["Agent and AI Conventions"].append(
+            "- `the_architect/resources/prompts/` contains packaged Architect prompts; "
+            "prompt changes affect planner/reviewer/executor behavior and need extra review."
+        )
+        sections["Code Locations"].append(
+            "- `the_architect/resources/prompts/` - packaged prompts injected into provider runs."
+        )
+
+    dev_opencode = project_dir / "dev" / "opencode"
+    if dev_opencode.is_dir():
+        sections["Agent and AI Conventions"].append(
+            "- `dev/opencode/` contains this repo's OpenCode development config and "
+            "agent prompt files."
+        )
+
+    if (project_dir / "tests").is_dir():
+        sections["Code Locations"].append(
+            "- `tests/` - automated test suite; mirror source module names when adding coverage."
+        )
+
+    sections["Build, Test, and Verification"].extend(_verification_lines(project_dir))
+
+    if (project_dir / "tasks").exists():
+        sections["Data and Storage"].append(
+            "- `tasks/` stores Architect task packages and `tasks/PROGRESS.md` for "
+            "current run state."
+        )
+    if (project_dir / ".architect").exists():
+        sections["Data and Storage"].append(
+            "- `.architect/` stores Architect runtime state such as logs, locks, "
+            "circuit state, prompts, and monitor data."
+        )
+    else:
+        sections["Data and Storage"].append(
+            "- The Architect creates `.architect/` at runtime for logs, locks, "
+            "circuit state, prompts, and monitor data."
+        )
+
+    if (project_dir / ".env").exists() or (project_dir / ".env.example").exists():
+        sections["Environment and Secrets"].append(
+            "- Environment files are present; never commit secrets and prefer documented "
+            "sample values."
+        )
+
+    # Generic but durable for every project The Architect manages.
+    sections["Shared Contracts"].append(
+        "- `ARCHITECT.md` stores durable project intelligence; current run state belongs "
+        "in `tasks/PROGRESS.md` and package history in `tasks/SUMMARY.md`."
+    )
+    sections["Operational Constraints"].append(
+        "- Keep generated task state in `tasks/`; do not mix run history into `ARCHITECT.md`."
+    )
+
+    return {name: "\n".join(lines) for name, lines in sections.items() if lines}
+
+
 def _remove_auto_intelligence_block(body: str) -> str:
     """Remove the generated intelligence block from a section body."""
     lines = body.splitlines()
@@ -672,6 +928,22 @@ def _rebuild_architect_md(sections: dict[str, str], original_content: str) -> st
         header_lines.append(line)
 
     # Strip trailing blank lines from header
+    while header_lines and not header_lines[-1].strip():
+        header_lines.pop()
+
+    # The rebuilder owns section separators. Older/agent-written files may have
+    # accumulated horizontal rules in the header; keeping them would duplicate
+    # separators before the first section forever.
+    header_lines = [line for line in header_lines if line.strip() != "---"]
+    collapsed_header: list[str] = []
+    previous_blank = False
+    for line in header_lines:
+        is_blank = not line.strip()
+        if is_blank and previous_blank:
+            continue
+        collapsed_header.append(line)
+        previous_blank = is_blank
+    header_lines = collapsed_header
     while header_lines and not header_lines[-1].strip():
         header_lines.pop()
 

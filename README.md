@@ -34,6 +34,7 @@ It wraps your agentic AI coding tool and adds everything it lacks out of the box
 | No audit trail of what changed | Build counter tracks every agent operation |
 | Agent hallucinates completion | Multi-signal completion detection |
 | You re-explain the project every time | Project structure auto-detected and injected |
+| Repo knowledge starts shallow | Pre-planning intelligence learns and repairs `ARCHITECT.md` |
 | One shot — no quality gate | Retrospective reviewer creates fix-up tasks |
 | Developer plans every task manually | AI planner decomposes the goal autonomously |
 
@@ -123,24 +124,26 @@ That is it. The Architect plans, executes, retries, reviews, and reports — una
   +-------------------------------------------------------------+
   |                       THE ARCHITECT                         |
   |                                                             |
-  |  1. PLAN       Decomposes goal into numbered task files     |
-  |                Detects repo type, languages, frameworks     |
+  |  1. LEARN      Detects repo structure and refreshes         |
+  |                ARCHITECT.md before planning                 |
+  |                                                             |
+  |  2. PLAN       Decomposes goal into numbered task files     |
   |                Injects persistent project intelligence      |
   |                                                             |
-  |  2. EXECUTE    Runs each task via your AI coding tool       |
+  |  3. EXECUTE    Runs each task via your AI coding tool       |
   |                Streams output live to terminal              |
   |                Tracks completion with 4 corroborating       |
   |                signals — no hallucinated completions        |
   |                                                             |
-  |  3. RECOVER    Circuit breaker catches stuck agents         |
+  |  4. RECOVER    Circuit breaker catches stuck agents         |
   |                Retries with model fallbacks                 |
   |                Auto-replans genuinely failing tasks         |
   |                                                             |
-  |  4. REVIEW     Retrospective agent reads the actual code    |
+  |  5. REVIEW     Retrospective agent reads the actual code    |
   |                Runs your test suite                         |
   |                Creates fix-up tasks if issues found         |
   |                                                             |
-  |  5. REMEMBER   ARCHITECT.md stores durable project          |
+  |  6. REMEMBER   ARCHITECT.md stores durable project          |
   |                intelligence across sessions                 |
   |                Every run builds on the last                 |
   |                                                             |
@@ -191,6 +194,7 @@ Everything below is what you get on top of your AI coding CLI — none of it exi
 | Task creation | You write task files manually | Goal → numbered task files, automatically |
 | Scope control | Fixed | `simple` / `standard` / `complex` — controls task granularity |
 | Project awareness | None | Repo type, languages, frameworks, components, dependency graph auto-detected |
+| Pre-planning memory | None | Fast deterministic scan plus model-based `intelligence` pass when `ARCHITECT.md` is shallow |
 | Context injection | Paste manually | `--context PRD.md` or `--context design/` — any file or directory injected into planning |
 | Memory across sessions | None | `ARCHITECT.md` stores durable project intelligence |
 
@@ -575,11 +579,12 @@ your-project/
 │   └── archive/            # Previous runs preserved here
 ├── .architect/
 │   ├── logs/                 # Full execution transcripts per task
+│   ├── prompts/              # Architect-owned planner/reviewer/intelligence prompts
+│   ├── architect.json        # Architect-owned provider config for planning roles
 │   ├── circuit.json          # Circuit breaker state (persists across restarts)
 │   ├── monitor_state.json    # Live dashboard state
 │   └── runner.lock           # Prevents concurrent runs
 ├── ARCHITECT.md              # Durable project intelligence (curated project brain)
-├── PROGRESS.md               # Current task state
 └── architect.toml            # Your configuration (optional)
 ```
 

@@ -537,12 +537,15 @@ class TestClickCommands:
     def test_monitor_command(self, tmp_path: Path) -> None:
         """Should run ``architect monitor`` without crashing.
 
-        tmux may or may not be available in the environment — both paths
-        are acceptable here.  The contract is simply that the command
-        exits cleanly.
+        Patch tmux session helpers so the command never calls os.execvp
+        (which would replace the pytest process and hang the suite).
         """
         runner = CliRunner()
-        result = runner.invoke(main, ["monitor", "-p", str(tmp_path)])
+        with (
+            patch("the_architect.core.tmux.session_exists", return_value=False),
+            patch("the_architect.core.tmux.list_architect_sessions", return_value=[]),
+        ):
+            result = runner.invoke(main, ["monitor", "-p", str(tmp_path)])
         # The command must not have raised an uncaught exception.
         assert result.exception is None or isinstance(result.exception, SystemExit)
 

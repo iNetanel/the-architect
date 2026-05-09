@@ -11,6 +11,7 @@ from click.testing import CliRunner
 from the_architect.cli import main
 from the_architect.config import ArchitectConfig
 from the_architect.core.provider import ProviderNotFoundError
+from the_architect.core.retrospective import RetrospectiveResult
 from the_architect.core.runner import TaskResult, TokenUsage
 from the_architect.core.tasks import Task, TaskStatus
 
@@ -38,6 +39,11 @@ def _fake_reassessment_runner(result: object) -> object:
         return result
 
     return _run
+
+
+async def _fake_run_retrospective(*args: object, **kwargs: object) -> RetrospectiveResult:
+    """Return a fake retrospective result with no issues found, without real I/O."""
+    return RetrospectiveResult()
 
 
 # ---------------------------------------------------------------------------
@@ -688,6 +694,7 @@ class TestRunMain:
             patch("the_architect.cli.discover_tasks", return_value=[mock_task]),
             patch("the_architect.cli._filter_and_set_status", return_value=[mock_task]),
             patch("the_architect.cli._run_tasks_raw", side_effect=_fake_run_tasks) as mock_run,
+            patch("the_architect.cli.run_retrospective", side_effect=_fake_run_retrospective),
             patch("the_architect.cli.write_success_md"),
             patch("the_architect.cli.print_success_summary"),
             patch("the_architect.cli.detect_provider") as mock_detect_provider,
@@ -726,6 +733,7 @@ class TestRunMain:
             patch("the_architect.cli.discover_tasks", return_value=[mock_task]),
             patch("the_architect.cli._filter_and_set_status", return_value=[mock_task]),
             patch("the_architect.cli._run_tasks_raw", side_effect=_fake_run_tasks),
+            patch("the_architect.cli.run_retrospective", side_effect=_fake_run_retrospective),
             patch("the_architect.cli.write_success_md"),
             patch("the_architect.cli.print_success_summary"),
             patch("the_architect.cli.detect_provider") as mock_detect_provider,
@@ -2792,6 +2800,105 @@ class TestRunTasksRawCallbacks:
         assert success is True
         mock_reassess.assert_not_called()
 
+    def test_run_tasks_raw_reassessment_uses_overlay_app_without_tui_env(
+        self, tmp_path: Path
+    ) -> None:
+        """Reassessment should stream into the live overlay app, not depend on ARCHITECT_TUI."""
+        from the_architect.cli import _run_tasks_raw
+
+        mock_task = Task(
+            name="T01_test",
+            prefix="T01",
+            number=1,
+            path=tmp_path / "T01_test.md",
+            title="Test task",
+            status=TaskStatus.PENDING,
+        )
+        config = ArchitectConfig()
+        mock_result = TaskResult(
+            prefix="T01",
+            title="Test task",
+            status="failed",
+            duration_seconds=5.0,
+            tokens=TokenUsage(),
+            outcome_summary="Task failed before completion.",
+        )
+        mock_provider = MagicMock()
+        mock_overlay_app = MagicMock()
+        mock_reassessment = MagicMock()
+        mock_reassessment.tasks_updated = []
+        wait_session = MagicMock()
+        wait_session._overlay_app = mock_overlay_app
+
+        async def _fake_run_all(*args: object, **kwargs: object) -> bool:
+            on_task_failed = kwargs.get("on_task_failed")
+            if on_task_failed:
+                on_task_failed(mock_result)
+            return False
+
+        async def _fake_reassess(*args: object, **kwargs: object) -> object:
+            return object()
+
+        mock_reassess = MagicMock(side_effect=_fake_reassess)
+
+        class _FakeExecutionSession:
+            def __init__(self) -> None:
+                self.app = mock_overlay_app
+                self.renderer = MagicMock()
+
+            def update_progress_tasks(self, tasks: list[dict[str, str]]) -> None:
+                return
+
+            def update_settings(self, settings: dict[str, str]) -> None:
+                return
+
+            def update_details(self, **fields: str) -> None:
+                return
+
+            def push_event(self, event: str, data: dict[str, object] | None = None) -> None:
+                return
+
+        class _FakeExecutionContext:
+            def __enter__(self) -> _FakeExecutionSession:
+                return _FakeExecutionSession()
+
+            def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+                return False
+
+        class _FakeWaitContext:
+            def __enter__(self) -> MagicMock:
+                return wait_session
+
+            def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+                return False
+
+        with (
+            patch("the_architect.cli._ansi_supported", return_value=True),
+            patch("the_architect.cli.run_all", side_effect=_fake_run_all),
+            patch("the_architect.cli.run_task_reassessment", new=mock_reassess),
+            patch(
+                "the_architect.cli._run_reassessment_in_thread",
+                side_effect=_fake_reassessment_runner(mock_reassessment),
+            ),
+            patch("the_architect.tui.tui_execution_session", return_value=_FakeExecutionContext()),
+            patch(
+                "the_architect.tui.tui_wait_session", return_value=_FakeWaitContext()
+            ) as wait_ctx,
+            patch("the_architect.tui.WaitLogRenderer") as wait_renderer_cls,
+            patch.dict("os.environ", {}, clear=False),
+        ):
+            import asyncio
+
+            success, results, duration = asyncio.run(
+                _run_tasks_raw(tmp_path, config, [mock_task], provider=mock_provider, use_tui=True)
+            )
+
+        assert success is False
+        wait_ctx.assert_called_once()
+        assert wait_ctx.call_args.kwargs["overlay_app"] is mock_overlay_app
+        wait_renderer_cls.assert_called_once_with(session=wait_session)
+        mock_reassess.assert_called_once()
+
     def test_run_tasks_raw_on_attempt_start_retry(self, tmp_path: Path) -> None:
         """Should call on_attempt_start with retry number."""
         from the_architect.cli import _run_tasks_raw
@@ -3334,8 +3441,8 @@ class TestConfigCommandDisplay:
 class TestRunMainDeeper:
     """More tests for _run_main deeper branches."""
 
-    def test_run_main_no_provider_calls_opencode(self, tmp_path: Path) -> None:
-        """Should default to OpenCode when no provider passed."""
+    def test_run_main_no_provider_runs_tasks(self, tmp_path: Path) -> None:
+        """Should succeed and run tasks even when no provider is passed."""
         from the_architect.cli import _run_main
 
         mock_task = Task(
@@ -3356,13 +3463,11 @@ class TestRunMainDeeper:
         with (
             patch("the_architect.cli.discover_tasks", return_value=[mock_task]),
             patch("the_architect.cli._filter_and_set_status", return_value=[mock_task]),
-            patch("the_architect.cli._run_tasks_raw", side_effect=_fake_run_tasks),
+            patch("the_architect.cli._run_tasks_raw", side_effect=_fake_run_tasks) as mock_run,
             patch("the_architect.cli.write_success_md"),
             patch("the_architect.cli.print_success_summary"),
-            patch("the_architect.core.opencode_provider.OpenCodeProvider") as mock_oc,
         ):
-            mock_oc.return_value.ensure_setup.return_value = None
-            with pytest.raises(SystemExit) as exc_info:  # noqa: F841
+            with pytest.raises(SystemExit) as exc_info:
                 _run_main(
                     project=tmp_path,
                     plan=False,
@@ -3370,7 +3475,9 @@ class TestRunMainDeeper:
                     _pre_loaded_config=config,
                     provider=None,
                 )
-            mock_oc.return_value.ensure_setup.assert_called()
+            # provider=None skips ensure_setup; tasks are still executed
+            assert exc_info.value.code == 0
+            mock_run.assert_called_once()
 
     def test_run_main_summary_generation_error(self, tmp_path: Path) -> None:
         """Should handle error during summary generation gracefully."""
@@ -3696,6 +3803,45 @@ class TestRunPlanningModeDeeper:
                 provider=mock_provider,
             )
             mock_provider.ensure_setup.assert_called()
+
+    def test_run_planning_mode_update_prompt_happens_before_learning(self, tmp_path: Path) -> None:
+        """Provider update warnings should appear before model-based learning starts."""
+        from the_architect.cli import run_planning_mode
+
+        config = ArchitectConfig()
+        mock_provider = MagicMock()
+        mock_provider.display_name = "TestProvider"
+        mock_provider.get_resolved_model.return_value = "resolved-model"
+        mock_provider.check_update_available.return_value = "Update available"
+        mock_provider.install_hint.return_value = "install hint"
+
+        with (
+            patch("the_architect.cli._tui_mode_enabled", return_value=False),
+            patch("the_architect.cli._prompt_update_action", return_value="exit"),
+            patch("the_architect.cli._prompt_scope") as mock_prompt_scope,
+            patch("the_architect.cli.run_planner") as mock_run_planner,
+            patch("the_architect.core.intelligence.refresh_project_intelligence") as mock_refresh,
+            patch("the_architect.core.structure.detect_structure", return_value=MagicMock()),
+            patch(
+                "the_architect.core.structure.format_structure_for_prompt", return_value="structure"
+            ),
+            patch("the_architect.core.architect_md.write_or_update_architect_md"),
+            patch("the_architect.core.architect_md.read_architect_md", return_value=""),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                run_planning_mode(
+                    project=tmp_path,
+                    config=config,
+                    headless=False,
+                    goal_text="Test",
+                    provider=mock_provider,
+                )
+
+        assert exc_info.value.code == 0
+        mock_provider.ensure_setup.assert_not_called()
+        mock_prompt_scope.assert_not_called()
+        mock_refresh.assert_not_called()
+        mock_run_planner.assert_not_called()
 
     def test_run_planning_mode_pending_tasks_headless(self, tmp_path: Path) -> None:
         """Should warn and continue in headless mode with pending tasks."""
@@ -5306,7 +5452,10 @@ class TestMonitorCommandBranches:
         """Should exit with error when tmux not available."""
         (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
 
-        with patch("the_architect.core.tmux.is_tmux_available", return_value=False):
+        with (
+            patch("the_architect.cli._tui_mode_enabled", return_value=False),
+            patch("the_architect.core.tmux.is_tmux_available", return_value=False),
+        ):
             runner = CliRunner()
             result = runner.invoke(main, ["monitor", "-p", str(tmp_path)])
             assert result.exit_code == 1
@@ -5317,6 +5466,7 @@ class TestMonitorCommandBranches:
         (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
 
         with (
+            patch("the_architect.cli._tui_mode_enabled", return_value=False),
             patch("the_architect.core.tmux.is_tmux_available", return_value=True),
             patch("the_architect.core.tmux.session_exists", return_value=True),
             patch("the_architect.core.tmux.attach_session"),
@@ -5330,6 +5480,7 @@ class TestMonitorCommandBranches:
         (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
 
         with (
+            patch("the_architect.cli._tui_mode_enabled", return_value=False),
             patch("the_architect.core.tmux.is_tmux_available", return_value=True),
             patch("the_architect.core.tmux.session_exists", return_value=False),
             patch("the_architect.core.tmux.list_architect_sessions", return_value=[]),
@@ -5343,6 +5494,7 @@ class TestMonitorCommandBranches:
         (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
 
         with (
+            patch("the_architect.cli._tui_mode_enabled", return_value=False),
             patch("the_architect.core.tmux.is_tmux_available", return_value=True),
             patch("the_architect.core.tmux.session_exists", return_value=False),
             patch(
@@ -5359,6 +5511,7 @@ class TestMonitorCommandBranches:
         (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
 
         with (
+            patch("the_architect.cli._tui_mode_enabled", return_value=False),
             patch("the_architect.core.tmux.is_tmux_available", return_value=True),
             patch("the_architect.core.tmux.session_exists", return_value=False),
             patch(
@@ -5423,6 +5576,7 @@ class TestRunMainNoConfig:
             patch("the_architect.cli.discover_tasks", return_value=[mock_task]),
             patch("the_architect.cli._filter_and_set_status", return_value=[mock_task]),
             patch("the_architect.cli._run_tasks_raw", side_effect=_fake_run_tasks),
+            patch("the_architect.cli.run_retrospective", side_effect=_fake_run_retrospective),
             patch("the_architect.cli.write_success_md"),
             patch("the_architect.cli.print_success_summary"),
             patch("the_architect.cli._read_goal_from_instructions", return_value=""),
@@ -5461,12 +5615,24 @@ class TestRunMainNoConfig:
         mock_provider = MagicMock()
         mock_provider.display_name = "OpenCode"
         mock_provider.get_resolved_model.return_value = "model"
+        mock_provider.supports_free_tier.return_value = True
+
+        mock_rotator = MagicMock()
+        mock_rotator.total_count = 1
+        mock_rotator.current_model = "test/free-model"
+
+        async def _fake_fetch(*args: object, **kwargs: object) -> None:
+            pass
+
+        mock_rotator.fetch_free_models = _fake_fetch
 
         with (
             patch("the_architect.cli.load_config", return_value=config),
             patch("the_architect.cli.discover_tasks", return_value=[mock_task]),
             patch("the_architect.cli._filter_and_set_status", return_value=[mock_task]),
             patch("the_architect.cli._run_tasks_raw", side_effect=_fake_run_tasks),
+            patch("the_architect.cli.run_retrospective", side_effect=_fake_run_retrospective),
+            patch("the_architect.core.free_models.FreeModelRotator", return_value=mock_rotator),
             patch("the_architect.cli.write_success_md"),
             patch("the_architect.cli.print_success_summary"),
             patch("the_architect.cli._read_goal_from_instructions", return_value=""),
@@ -5490,8 +5656,9 @@ class TestMainNoTaskDir:
         """Should show no tasks directory message."""
         (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
 
-        runner = CliRunner()
-        result = runner.invoke(main, ["list", "-p", str(tmp_path)])
+        with patch("the_architect.cli._tui_mode_enabled", return_value=False):
+            runner = CliRunner()
+            result = runner.invoke(main, ["list", "-p", str(tmp_path)])
         assert "No tasks directory" in result.output
 
     def test_main_list_empty_tasks_dir(self, tmp_path: Path) -> None:
@@ -5500,6 +5667,131 @@ class TestMainNoTaskDir:
         tasks_dir.mkdir()
         (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
 
-        runner = CliRunner()
-        result = runner.invoke(main, ["list", "-p", str(tmp_path)])
+        with patch("the_architect.cli._tui_mode_enabled", return_value=False):
+            runner = CliRunner()
+            result = runner.invoke(main, ["list", "-p", str(tmp_path)])
         assert "No tasks found" in result.output
+
+
+# ---------------------------------------------------------------------------
+# _check_provider_update_before_model_work Tests
+# ---------------------------------------------------------------------------
+
+
+class TestCheckProviderUpdateBeforeModelWork:
+    """Tests for _check_provider_update_before_model_work()."""
+
+    def _make_provider(self, update_msg: str = "", install_hint: str = "") -> MagicMock:
+        provider = MagicMock()
+        provider.check_update_available.return_value = update_msg
+        provider.install_hint.return_value = install_hint
+        return provider
+
+    def test_no_update_returns_immediately(self) -> None:
+        """When no update is available, function returns without prompting."""
+        from the_architect.cli import _check_provider_update_before_model_work
+
+        provider = self._make_provider(update_msg="")
+        config = ArchitectConfig()
+
+        with patch("the_architect.cli._prompt_update_action") as mock_prompt:
+            _check_provider_update_before_model_work(provider, config, headless=False)
+
+        provider.check_update_available.assert_called_once()
+        mock_prompt.assert_not_called()
+
+    def test_already_checked_skips_second_call(self) -> None:
+        """When _provider_update_checked is True, check_update_available is not called."""
+        from the_architect.cli import _check_provider_update_before_model_work
+
+        provider = self._make_provider(update_msg="1.2.3 available")
+        config = ArchitectConfig()
+        config._provider_update_checked = True  # type: ignore[attr-defined]
+
+        _check_provider_update_before_model_work(provider, config, headless=False)
+
+        provider.check_update_available.assert_not_called()
+
+    def test_headless_with_update_prints_warning(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """In headless mode with an update available, prints warning without prompting."""
+        from the_architect.cli import _check_provider_update_before_model_work
+
+        provider = self._make_provider(update_msg="Provider 2.0 available")
+        config = ArchitectConfig()
+
+        with patch("the_architect.cli._prompt_update_action") as mock_prompt:
+            # Should NOT raise SystemExit
+            _check_provider_update_before_model_work(provider, config, headless=True)
+
+        mock_prompt.assert_not_called()
+        provider.check_update_available.assert_called_once()
+
+    def test_headless_sets_checked_flag(self) -> None:
+        """After call completes, _provider_update_checked is True."""
+        from the_architect.cli import _check_provider_update_before_model_work
+
+        provider = self._make_provider(update_msg="2.0 available")
+        config = ArchitectConfig()
+
+        _check_provider_update_before_model_work(provider, config, headless=True)
+
+        assert getattr(config, "_provider_update_checked", None) is True
+
+    def test_interactive_exit_action_raises_system_exit(self) -> None:
+        """When action='exit' is returned, SystemExit(0) is raised."""
+        from the_architect.cli import _check_provider_update_before_model_work
+
+        provider = self._make_provider(update_msg="2.0 available", install_hint="pip install x")
+        config = ArchitectConfig()
+
+        with patch(
+            "the_architect.cli._prompt_update_action", return_value="exit"
+        ) as mock_prompt:
+            with pytest.raises(SystemExit) as exc_info:
+                _check_provider_update_before_model_work(provider, config, headless=False)
+
+        assert exc_info.value.code == 0
+        mock_prompt.assert_called_once()
+
+    def test_interactive_continue_action_does_not_exit(self) -> None:
+        """When action='continue' is returned, no SystemExit is raised."""
+        from the_architect.cli import _check_provider_update_before_model_work
+
+        provider = self._make_provider(update_msg="2.0 available", install_hint="pip install x")
+        config = ArchitectConfig()
+
+        with patch("the_architect.cli._prompt_update_action", return_value="continue"):
+            # Should not raise
+            _check_provider_update_before_model_work(provider, config, headless=False)
+
+    def test_interactive_install_hint_fetched_and_passed(self) -> None:
+        """install_hint() return value is passed to _prompt_update_action."""
+        from the_architect.cli import _check_provider_update_before_model_work
+
+        provider = self._make_provider(update_msg="2.0 available", install_hint="brew install x")
+        config = ArchitectConfig()
+
+        with patch(
+            "the_architect.cli._prompt_update_action", return_value="continue"
+        ) as mock_prompt:
+            _check_provider_update_before_model_work(provider, config, headless=False)
+
+        provider.install_hint.assert_called_once()
+        mock_prompt.assert_called_once_with(
+            update_msg="2.0 available", install_hint="brew install x"
+        )
+
+    def test_interactive_install_hint_exception_handled(self) -> None:
+        """When install_hint() raises, _prompt_update_action is called with hint=''."""
+        from the_architect.cli import _check_provider_update_before_model_work
+
+        provider = self._make_provider(update_msg="2.0 available")
+        provider.install_hint.side_effect = RuntimeError("network error")
+        config = ArchitectConfig()
+
+        with patch(
+            "the_architect.cli._prompt_update_action", return_value="continue"
+        ) as mock_prompt:
+            _check_provider_update_before_model_work(provider, config, headless=False)
+
+        mock_prompt.assert_called_once_with(update_msg="2.0 available", install_hint="")
