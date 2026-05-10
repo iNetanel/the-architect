@@ -213,6 +213,16 @@ def _filter_and_set_status(tasks: list[Task], progress_file: Path) -> list[Task]
     return result
 
 
+def _infinite_loop_should_continue_after_exit(
+    config: ArchitectConfig,
+    exc: SystemExit,
+) -> bool:
+    """Return True when a normal ``SystemExit`` should become the next loop iteration."""
+    if not bool(getattr(config, "_infinite_loop_enabled", False)):
+        return False
+    return exc.code is None or exc.code == 0
+
+
 def _task_is_terminal(task: Task) -> bool:
     """Return True if a task's in-memory status is terminal (no more work).
 
@@ -2110,6 +2120,8 @@ def _collect_planning_prompts(
         (signals ``run_planning_mode`` to skip the prompt without overriding
         ``config.execution_agent``).
     """
+    config._infinite_loop_enabled = False  # type: ignore[attr-defined]
+
     if headless:
         # Return None for execution_model when no override was given so that
         # run_planning_mode skips the prompt without clobbering the config.
@@ -2207,6 +2219,7 @@ def _collect_planning_prompts(
                 config.persistent = result.persistent
                 config.integrity = result.integrity
                 config.force_reassessment = result.force_reassessment
+                config._infinite_loop_enabled = result.infinite_loop  # type: ignore[attr-defined]
                 config.token_budget_per_hour = result.token_budget_per_hour
                 if result.provider_name:
                     config.provider = result.provider_name
@@ -2710,6 +2723,7 @@ async def _run_tasks_raw(
                 "Persistent mode": _enabled(config.persistent),
                 "Integrity defense": _enabled(config.integrity),
                 "Force reassessment": _enabled(config.force_reassessment),
+                "Infinite Loop": _enabled(bool(getattr(config, "_infinite_loop_enabled", False))),
                 "Retrospective rounds": str(config.retrospective_rounds),
                 "Max retries": str(config.max_retries),
                 "Retry pause": f"{config.retry_pause}s",
@@ -3752,25 +3766,64 @@ def main(
                     },
                 )
 
-            _run_main(
-                project=resolved_project,
-                plan=plan_local["v"],
-                standalone=standalone,
-                from_task=from_task,
-                only_task=only_task,
-                persistent=persistent,
-                free_mode=free_mode,
-                no_monitor=no_monitor,
-                headless=headless,
-                goal_text=goal_text or "",
-                scope_text=scope_text or "",
-                context_paths=context_paths,
-                architect_model=architect_model,
-                execution_model=execution_model_resolved,
-                _pre_loaded_config=config,
-                provider=_active_provider,
-                use_tui=use_tui,
-            )
+            loop_iteration = 1
+            while True:
+                infinite_loop_enabled = bool(getattr(config, "_infinite_loop_enabled", False))
+                try:
+                    _run_main(
+                        project=resolved_project,
+                        plan=plan_local["v"],
+                        standalone=standalone,
+                        from_task=from_task,
+                        only_task=only_task,
+                        persistent=persistent,
+                        free_mode=free_mode,
+                        no_monitor=no_monitor,
+                        headless=headless,
+                        goal_text=goal_text or "",
+                        scope_text=scope_text or "",
+                        context_paths=context_paths,
+                        architect_model=architect_model,
+                        execution_model=execution_model_resolved,
+                        _pre_loaded_config=config,
+                        provider=_active_provider,
+                        use_tui=use_tui,
+                        _return_on_success=infinite_loop_enabled,
+                        _suppress_success_screen=infinite_loop_enabled,
+                    )
+                except SystemExit as exc:
+                    if not _infinite_loop_should_continue_after_exit(config, exc):
+                        raise
+
+                infinite_loop_enabled = bool(getattr(config, "_infinite_loop_enabled", False))
+                if not infinite_loop_enabled:
+                    return
+
+                try:
+                    from the_architect.tui.runner import active_runner
+
+                    _runner = active_runner()
+                    if _runner is not None and _runner.app.shutdown_started:
+                        raise SystemExit(0)
+                    if _runner is not None:
+                        _runner.app.push_event_line(
+                            "infinite_loop_rerun",
+                            {"iteration": loop_iteration + 1},
+                        )
+                        _runner.app.push_output_line(
+                            f"Infinite Loop: starting iteration {loop_iteration + 1}"
+                        )
+                except SystemExit:
+                    raise
+                except Exception as exc:
+                    logger.debug(f"Infinite Loop status update failed: {exc!r}")
+
+                console.print(
+                    f"[yellow]Infinite Loop[/yellow]  "
+                    f"[dim]starting iteration {loop_iteration + 1}[/dim]"
+                )
+                loop_iteration += 1
+                plan_local["v"] = True
 
         # Mutable wrapper so _tui_flow (nested closure) can update
         # ``plan`` — the outer ``plan`` name is bound by click options.
@@ -3849,6 +3902,8 @@ def _run_main(
     _pre_loaded_config: ArchitectConfig | None = None,
     provider: ArchitectProvider | None = None,
     use_tui: bool = False,
+    _return_on_success: bool = False,
+    _suppress_success_screen: bool = False,
 ) -> None:
     """Main flow: planning, execution, and retrospective review.
 
@@ -4111,6 +4166,7 @@ def _run_main(
                 execution_model = pre_run.execution_agent or ""
                 config.execution_agent = execution_model
                 config.force_reassessment = pre_run.force_reassessment
+                config._infinite_loop_enabled = pre_run.infinite_loop  # type: ignore[attr-defined]
                 # The tabbed pending-task screen already collected the model,
                 # agent, and mode choices. Replan should go straight into the
                 # planner from here, not fall through to legacy prompt screens.
@@ -4502,7 +4558,10 @@ def _run_main(
         # TUI path: show the animated success screen instead of the plain
         # terminal summary.  The screen blocks until the user presses Enter,
         # Q, or Escape, then the ArchitectAppRunner exits cleanly.
-        if use_tui:
+        suppress_success_screen = _suppress_success_screen or bool(
+            getattr(config, "_infinite_loop_enabled", False)
+        )
+        if use_tui and not suppress_success_screen:
             try:
                 from the_architect.tui.runner import active_runner
 
@@ -4525,7 +4584,7 @@ def _run_main(
                     success_path,
                     retrospective_rounds=retro_rounds,
                 )
-        else:
+        elif not suppress_success_screen:
             # Plain terminal summary (non-TUI / headless path).
             print_success_summary(
                 all_results,
@@ -4558,6 +4617,9 @@ def _run_main(
         # Summary generation must not crash the process — log and continue.
         logger.error(f"Error generating final summary: {exc!r}")
         console.print(f"\n[red]Error generating final summary: {exc}[/red]")
+
+    if success and (_return_on_success or bool(getattr(config, "_infinite_loop_enabled", False))):
+        return
 
     raise SystemExit(0 if success else 1)
 

@@ -27,7 +27,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.message import Message
-from textual.screen import Screen
+from textual.screen import ModalScreen, Screen
 from textual.widget import Widget
 from textual.widgets import (
     Checkbox,
@@ -43,7 +43,7 @@ from textual.widgets import (
     TextArea,
 )
 
-from the_architect.tui.widgets import BlankOffCheckbox, BlankOffRadioButton
+from the_architect.tui.widgets import BlankOffCheckbox, BlankOffRadioButton, MatrixButton
 
 if TYPE_CHECKING:
     from the_architect.config import ArchitectConfig
@@ -118,8 +118,123 @@ class PreRunValues(BaseModel):
     persistent: bool = False
     integrity: bool = True
     force_reassessment: bool = True
+    infinite_loop: bool = False
     token_budget_per_hour: int = 0
     action: str = "plan"
+
+
+class InfiniteLoopConfirmScreen(ModalScreen[bool]):
+    """Confirmation modal shown before starting an Infinite Loop run."""
+
+    DEFAULT_CSS = """
+    InfiniteLoopConfirmScreen {
+        align: center middle;
+    }
+
+    #infinite_loop_body {
+        width: 64;
+        height: auto;
+        padding: 1 2;
+        border: round $panel;
+        background: $panel 20%;
+    }
+
+    #infinite_loop_title {
+        color: $warning;
+        text-style: bold;
+    }
+
+    #infinite_loop_warning {
+        color: $text;
+        padding: 1 0;
+    }
+
+    #infinite_loop_buttons {
+        width: 100%;
+        height: auto;
+        padding: 0 0 1 0;
+    }
+
+    InfiniteLoopConfirmScreen MatrixButton {
+        width: 100%;
+        margin: 0;
+    }
+
+    #infinite_loop_footer {
+        color: $text-muted;
+    }
+    """
+
+    BINDINGS = [
+        Binding("i", "confirm_infinite_loop", "I understand"),
+        Binding("I", "confirm_infinite_loop", "I understand"),
+        Binding("c", "cancel_infinite_loop", "Cancel"),
+        Binding("C", "cancel_infinite_loop", "Cancel"),
+        Binding("escape", "cancel_infinite_loop", "Cancel", priority=True),
+        Binding("ctrl+c", "cancel_infinite_loop", "Cancel", priority=True),
+        Binding("up", "focus_previous", "Previous", show=False),
+        Binding("down", "focus_next", "Next", show=False),
+        Binding("enter", "activate_focused", "Select", show=False),
+    ]
+
+    def compose(self) -> ComposeResult:
+        """Compose the centered warning card."""
+        with Vertical(id="infinite_loop_body"):
+            yield Static("Confirm Infinite Loop", id="infinite_loop_title")
+            yield Static(
+                "This goal will automatically rerun indefinitely after each successful "
+                "completion.\n\nThis may consume significant time and resources.\n\n"
+                "You can stop it at any time by stopping the run, disabling the option, "
+                "or closing the session.",
+                id="infinite_loop_warning",
+            )
+            with Vertical(id="infinite_loop_buttons"):
+                yield MatrixButton(
+                    "I understand, start infinite loop",
+                    key="I",
+                    id="btn_infinite_confirm",
+                )
+                yield MatrixButton("Cancel", key="C", id="btn_infinite_cancel")
+            yield Static(
+                "Enter selects the focused option. Esc cancels.", id="infinite_loop_footer"
+            )
+
+    def on_mount(self) -> None:
+        """Focus the safer Cancel option by default."""
+        try:
+            self.query_one("#btn_infinite_cancel", MatrixButton).focus()
+        except Exception:
+            pass
+
+    def action_focus_previous(self) -> None:
+        """Move focus to the previous button."""
+        self.focus_previous()
+
+    def action_focus_next(self) -> None:
+        """Move focus to the next button."""
+        self.focus_next()
+
+    def action_activate_focused(self) -> None:
+        """Activate the focused MatrixButton with Enter."""
+        focused = self.focused
+        if isinstance(focused, MatrixButton):
+            focused.action_press()
+
+    def on_matrix_button_pressed(self, event: MatrixButton.Pressed) -> None:
+        """Route button presses to the modal result."""
+        self.action_choose(event.button.id == "btn_infinite_confirm")
+
+    def action_choose(self, confirmed: bool) -> None:
+        """Dismiss with the user's confirmation choice."""
+        self.dismiss(confirmed)
+
+    def action_confirm_infinite_loop(self) -> None:
+        """Confirm and start the Infinite Loop chain."""
+        self.action_choose(True)
+
+    def action_cancel_infinite_loop(self) -> None:
+        """Cancel the Infinite Loop request."""
+        self.action_choose(False)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -157,9 +272,8 @@ class PreRunScreen(Screen[PreRunValues]):
         # the Goal TextArea for word-level cursor movement.
         Binding("right", "next_tab", "Next tab", show=False, priority=True),
         Binding("left", "prev_tab", "Previous tab", show=False, priority=True),
-        # Vertical arrows move between sections / options on the active
-        # page. priority=True keeps RadioSet and ListView from consuming
-        # the keys for in-widget navigation.
+        # Vertical arrows move focus/highlight only. Selection is explicit:
+        # Space or mouse click for options; Enter still submits the form.
         Binding("up", "focus_previous", "Previous field", show=False, priority=True),
         Binding("down", "focus_next", "Next field", show=False, priority=True),
         Binding("tab", "next_tab", "Next tab", show=False),
@@ -315,6 +429,9 @@ class PreRunScreen(Screen[PreRunValues]):
 
         # Warning message for footer
         self._warning_text = ""
+        self._infinite_loop_confirmed = False
+        self._infinite_loop_confirmation_active = False
+        self._infinite_loop_submit_after_confirm = False
 
     # ── Composition ──────────────────────────────────────────────────
 
@@ -465,6 +582,15 @@ class PreRunScreen(Screen[PreRunValues]):
                     )
                     yield Static(
                         "when disabled, reassess only failed/downstream-impact tasks",
+                        classes="tab_hint",
+                    )
+                    yield BlankOffCheckbox(
+                        "Infinite Loop  (rerun this goal forever)",
+                        id="chk_infinite_loop",
+                        value=False,
+                    )
+                    yield Static(
+                        "requires confirmation; preserved only for this execution chain",
                         classes="tab_hint",
                     )
                     yield Label("Token budget/hour (0 = unlimited):")
@@ -848,6 +974,7 @@ class PreRunScreen(Screen[PreRunValues]):
                 "chk_persistent",
                 "chk_integrity",
                 "chk_force_reassessment",
+                "chk_infinite_loop",
                 "inp_budget",
                 "goal_text",
             }:
@@ -884,7 +1011,7 @@ class PreRunScreen(Screen[PreRunValues]):
 
         if 0 <= current_index < len(stops):
             current_stop = stops[current_index]
-            if self._move_composite_selection(current_stop, forward=forward):
+            if self._move_composite_cursor(current_stop, forward=forward):
                 return True
 
         target_index = current_index + (1 if forward else -1)
@@ -902,27 +1029,30 @@ class PreRunScreen(Screen[PreRunValues]):
         except Exception:
             return False
 
-    def _move_composite_selection(self, widget: Widget, *, forward: bool) -> bool:
-        """Move selection inside a RadioSet/ListView before leaving the section."""
+    def _move_composite_cursor(self, widget: Widget, *, forward: bool) -> bool:
+        """Move hover/cursor inside a RadioSet/ListView without committing selection."""
         if isinstance(widget, RadioSet):
             buttons: list[Any] = [
                 button for button in widget.query("RadioButton") if button.display
             ]
             if not buttons:
                 return False
-            pressed = widget.pressed_button
-            try:
-                current = buttons.index(pressed) if pressed in buttons else 0
-            except ValueError:
-                current = 0
+            current = getattr(widget, "_selected", None)
+            if not isinstance(current, int) or current < 0 or current >= len(buttons):
+                pressed = widget.pressed_button
+                try:
+                    current = buttons.index(pressed) if pressed in buttons else 0
+                except ValueError:
+                    current = 0
             target = current + (1 if forward else -1)
             if target < 0 or target >= len(buttons):
                 return False
             try:
-                buttons[target].value = True
+                if forward:
+                    widget.action_next_button()
+                else:
+                    widget.action_previous_button()
                 widget.focus()
-                if widget.id == "action_set":
-                    self._update_replan_controls_visibility()
                 return True
             except Exception:
                 return False
@@ -936,7 +1066,10 @@ class PreRunScreen(Screen[PreRunValues]):
             if target < 0 or target >= item_count:
                 return False
             try:
-                widget.index = target
+                if forward:
+                    widget.action_cursor_down()
+                else:
+                    widget.action_cursor_up()
                 widget.focus()
                 return True
             except Exception:
@@ -1086,26 +1219,19 @@ class PreRunScreen(Screen[PreRunValues]):
                 pass
 
         # Architect model
-        architect_model: str | None = None
-        try:
-            lv = self.query_one("#model_list", ListView)
-            idx = lv.index if lv.index is not None else 0
-            if idx > 0 and idx - 1 < len(self._models):
-                architect_model = self._models[idx - 1]
-        except Exception:
-            pass
+        architect_model = (
+            self._values.architect_model if self._values.architect_model in self._models else None
+        )
 
         # Execution agent
         execution_agent: str | None = None
         provider = self._get_active_provider()
         if provider is not None and provider.supports_agents():
-            try:
-                lv = self.query_one("#agent_list", ListView)
-                idx = lv.index if lv.index is not None else 0
-                if idx > 0 and idx - 1 < len(self._agents):
-                    execution_agent = self._agents[idx - 1]
-            except Exception:
-                pass
+            execution_agent = (
+                self._values.execution_agent
+                if self._values.execution_agent in self._agents
+                else None
+            )
 
         # Mode settings
         free = False
@@ -1134,6 +1260,12 @@ class PreRunScreen(Screen[PreRunValues]):
         except Exception:
             pass
 
+        infinite_loop = False
+        try:
+            infinite_loop = bool(self.query_one("#chk_infinite_loop", Checkbox).value)
+        except Exception:
+            pass
+
         budget = 0
         try:
             raw = self.query_one("#inp_budget", Input).value or "0"
@@ -1152,6 +1284,7 @@ class PreRunScreen(Screen[PreRunValues]):
             persistent=persistent,
             integrity=integrity,
             force_reassessment=force_reassessment,
+            infinite_loop=infinite_loop,
             token_budget_per_hour=budget,
             action=action,
         )
@@ -1170,7 +1303,40 @@ class PreRunScreen(Screen[PreRunValues]):
             return
 
         values = self._collect_values()
+        if values.infinite_loop and not self._infinite_loop_confirmed:
+            self._show_infinite_loop_confirmation(submit_after_confirm=True)
+            return
         self.dismiss(values)
+
+    def _show_infinite_loop_confirmation(self, *, submit_after_confirm: bool) -> None:
+        """Open the Infinite Loop confirmation modal once for the current request."""
+        if self._infinite_loop_confirmation_active:
+            return
+        self._infinite_loop_confirmation_active = True
+        self._infinite_loop_submit_after_confirm = submit_after_confirm
+        self.app.push_screen(InfiniteLoopConfirmScreen(), self._handle_infinite_loop_confirmation)
+
+    def _handle_infinite_loop_confirmation(self, confirmed: bool | None) -> None:
+        """Continue submit after Infinite Loop warning, or disable it on cancel."""
+        try:
+            chk = self.query_one("#chk_infinite_loop", Checkbox)
+        except Exception as exc:
+            logger.debug(f"PreRunScreen: infinite loop checkbox lookup failed: {exc!r}")
+            return
+
+        self._infinite_loop_confirmation_active = False
+        submit_after_confirm = self._infinite_loop_submit_after_confirm
+        self._infinite_loop_submit_after_confirm = False
+
+        if confirmed is True:
+            self._infinite_loop_confirmed = True
+            if submit_after_confirm:
+                self.dismiss(self._collect_values())
+            return
+
+        chk.value = False
+        self._infinite_loop_confirmed = False
+        self._show_footer_warning("Infinite Loop cancelled and disabled.")
 
     def action_pause_menu(self) -> None:
         """Open the pause menu (same as ExecutionScreen)."""
@@ -1203,6 +1369,34 @@ class PreRunScreen(Screen[PreRunValues]):
         elif event.radio_set.id == "action_set":
             self._update_replan_controls_visibility()
 
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        """Commit model/agent choices only when the user explicitly selects a row."""
+        list_id = event.list_view.id or ""
+        if list_id == "model_list":
+            self._values.architect_model = (
+                self._models[event.index - 1]
+                if event.index > 0 and event.index - 1 < len(self._models)
+                else None
+            )
+        elif list_id == "agent_list":
+            self._values.execution_agent = (
+                self._agents[event.index - 1]
+                if event.index > 0 and event.index - 1 < len(self._agents)
+                else None
+            )
+        else:
+            return
+        self._update_tab_labels()
+        self._update_footer()
+
+    def on_key(self, event: Any) -> None:
+        """Use Space to commit focused ListView rows without affecting text input."""
+        if event.key != "space" or not isinstance(self.focused, ListView):
+            return
+        self.focused.action_select_cursor()
+        event.prevent_default()
+        event.stop()
+
     def _selected_action(self) -> str:
         """Return the existing-task action selected on the Goal tab."""
         if not self._pending_tasks:
@@ -1217,6 +1411,14 @@ class PreRunScreen(Screen[PreRunValues]):
 
     def on_checkbox_changed(self) -> None:
         """Update footer when checkboxes change."""
+        try:
+            infinite_loop_checked = bool(self.query_one("#chk_infinite_loop", Checkbox).value)
+            if infinite_loop_checked and not self._infinite_loop_confirmed:
+                self._show_infinite_loop_confirmation(submit_after_confirm=False)
+            elif not infinite_loop_checked:
+                self._infinite_loop_confirmed = False
+        except Exception:
+            pass
         self._update_tab_labels()
         self._update_footer()
 
@@ -1372,6 +1574,7 @@ def run_pre_run_tabbed(
 
 
 __all__ = [
+    "InfiniteLoopConfirmScreen",
     "PreRunScreen",
     "PreRunValues",
     "run_pre_run_tabbed",

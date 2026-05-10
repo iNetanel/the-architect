@@ -149,7 +149,7 @@ class SplashScreen(Screen[None]):
 
     #splash_body {
         width: 48;
-        height: 13;
+        height: 14;
         padding: 1 2;
         border: round $panel;
         background: $panel 20%;
@@ -173,6 +173,7 @@ class SplashScreen(Screen[None]):
         width: 100%;
         color: $text-muted;
         text-align: center;
+        margin: 1 0 0 0;
         padding: 0;
     }
     """.replace("__MATRIX_RAIN_ROWS__", str(MatrixRain.ROWS))

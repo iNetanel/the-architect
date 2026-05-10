@@ -12,11 +12,12 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from textual.widgets import Footer, ListView, RadioSet, Static, TabbedContent, TextArea
+from textual.widgets import Checkbox, Footer, ListView, RadioSet, Static, TabbedContent, TextArea
 
 from the_architect.core.provider import ArchitectProvider
 from the_architect.tui.screens.pre_run_tabbed import (
     GoalTextArea,
+    InfiniteLoopConfirmScreen,
     PreRunScreen,
     PreRunValues,
 )
@@ -73,6 +74,7 @@ class TestPreRunValues:
         assert v.persistent is False
         assert v.integrity is True
         assert v.force_reassessment is True
+        assert v.infinite_loop is False
         assert v.token_budget_per_hour == 0
         assert v.action == "plan"
 
@@ -89,6 +91,7 @@ class TestPreRunValues:
             persistent=True,
             integrity=False,
             force_reassessment=False,
+            infinite_loop=True,
             token_budget_per_hour=5000,
             action="replan",
         )
@@ -102,6 +105,7 @@ class TestPreRunValues:
         assert v.persistent is True
         assert v.integrity is False
         assert v.force_reassessment is False
+        assert v.infinite_loop is True
         assert v.token_budget_per_hour == 5000
         assert v.action == "replan"
 
@@ -118,6 +122,7 @@ class TestPreRunValues:
             persistent=False,
             integrity=True,
             force_reassessment=False,
+            infinite_loop=True,
             token_budget_per_hour=1234,
         )
         dump = original.model_dump()
@@ -286,6 +291,101 @@ class TestPreRunScreen:
         await _run_complete()
         assert isinstance(result, PreRunValues)
         assert result.goal == "Build the feature"
+        assert result.infinite_loop is False
+
+    @pytest.mark.asyncio
+    async def test_infinite_loop_checkbox_defaults_off_for_new_goal(self) -> None:
+        """New goals never inherit Infinite Loop as enabled."""
+        from textual.app import App
+
+        screen = PreRunScreen(
+            providers=[_mock_provider("opencode")],
+            config=_mock_config(),
+            project_dir=Path("/tmp/test_project"),
+        )
+
+        class LoopDefaultApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(screen, lambda value: None)
+
+        async with LoopDefaultApp().run_test() as pilot:
+            await pilot.pause()
+            assert screen.query_one("#chk_infinite_loop", Checkbox).value is False
+            screen.action_cancel()
+            await pilot.pause()
+
+    @pytest.mark.asyncio
+    async def test_infinite_loop_requires_confirmation_and_cancel_disables_it(self) -> None:
+        """Submitting with Infinite Loop opens the warning and cancel keeps the form open."""
+        from textual.app import App
+
+        screen = PreRunScreen(
+            providers=[_mock_provider("opencode")],
+            config=_mock_config(),
+            project_dir=Path("/tmp/test_project"),
+        )
+        result: Any = "<not-dismissed>"
+
+        class LoopCancelApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(screen, self._cb)
+
+            def _cb(self, value: Any) -> None:
+                nonlocal result
+                result = value
+
+        async with LoopCancelApp().run_test() as pilot:
+            await pilot.pause()
+            screen.query_one("#goal_text", TextArea).text = "Build the feature"
+            screen.query_one("#chk_infinite_loop", Checkbox).value = True
+            screen.action_submit()
+            await pilot.pause()
+            assert isinstance(screen.app.screen, InfiniteLoopConfirmScreen)
+            screen.app.screen.action_choose(False)
+            await pilot.pause()
+            assert result == "<not-dismissed>"
+            assert screen.query_one("#chk_infinite_loop", Checkbox).value is False
+            screen.query_one("#chk_infinite_loop", Checkbox).value = True
+            await pilot.pause()
+            assert isinstance(screen.app.screen, InfiniteLoopConfirmScreen)
+            screen.app.screen.action_choose(False)
+            await pilot.pause()
+            assert screen.query_one("#chk_infinite_loop", Checkbox).value is False
+            screen.action_cancel()
+            await pilot.pause()
+
+    @pytest.mark.asyncio
+    async def test_infinite_loop_confirmation_submits_enabled_value(self) -> None:
+        """Confirming the warning submits with Infinite Loop preserved for the chain."""
+        from textual.app import App
+
+        screen = PreRunScreen(
+            providers=[_mock_provider("opencode")],
+            config=_mock_config(),
+            project_dir=Path("/tmp/test_project"),
+        )
+        result: Any = "<not-dismissed>"
+
+        class LoopConfirmApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(screen, self._cb)
+
+            def _cb(self, value: Any) -> None:
+                nonlocal result
+                result = value
+
+        async with LoopConfirmApp().run_test() as pilot:
+            await pilot.pause()
+            screen.query_one("#goal_text", TextArea).text = "Build the feature"
+            screen.query_one("#chk_infinite_loop", Checkbox).value = True
+            screen.action_submit()
+            await pilot.pause()
+            assert isinstance(screen.app.screen, InfiniteLoopConfirmScreen)
+            screen.app.screen.action_choose(True)
+            await pilot.pause()
+
+        assert isinstance(result, PreRunValues)
+        assert result.infinite_loop is True
 
     @pytest.mark.asyncio
     async def test_existing_tasks_execute_can_submit_without_goal(self) -> None:
@@ -875,14 +975,23 @@ class TestPreRunScreen:
             await pilot.pause()
             assert getattr(screen.focused, "id", None) == "scope_set"
 
-            # down from scope_set first moves through the scope choices.
+            # down from scope_set first moves the radio cursor only; it must not
+            # change the selected scope until the user presses Space/clicks.
             rs = screen.query_one("#scope_set", RadioSet)
             screen.action_focus_next()
             await pilot.pause()
             assert rs.pressed_button is not None
-            assert rs.pressed_button.id == "rb_complex"
+            assert rs.pressed_button.id == "rb_standard"
+            assert getattr(screen.focused, "id", None) == "scope_set"
 
-            # Another down from the last scope choice moves to goal_text.
+            # Continue down to the end of the radio cursor range, then leave
+            # the Scope section for goal_text without changing the selection.
+            screen.action_focus_next()
+            await pilot.pause()
+            assert rs.pressed_button is not None
+            assert rs.pressed_button.id == "rb_standard"
+            assert getattr(screen.focused, "id", None) == "scope_set"
+
             screen.action_focus_next()
             await pilot.pause()
             assert getattr(screen.focused, "id", None) == "goal_text"
@@ -918,10 +1027,16 @@ class TestPreRunScreen:
             screen.action_focus_next()
             await pilot.pause()
             assert model_list.index == 1
+            assert screen._collect_values().architect_model is None
 
             screen.action_focus_next()
             await pilot.pause()
             assert model_list.index == 2
+            assert screen._collect_values().architect_model is None
+
+            await pilot.press("space")
+            await pilot.pause()
+            assert screen._collect_values().architect_model == "model-b"
 
             # At the last model row, down leaves the model list for the agent list.
             screen.action_focus_next()
@@ -932,8 +1047,8 @@ class TestPreRunScreen:
             await pilot.pause()
 
     @pytest.mark.asyncio
-    async def test_existing_run_action_arrows_select_replan_before_goal_fields(self) -> None:
-        """Existing-task action arrows switch Execute/Replan before moving sections."""
+    async def test_existing_run_action_arrows_hover_replan_until_space_selects(self) -> None:
+        """Existing-task action arrows hover choices; Space commits Replan."""
         from textual.app import App
         from textual.widgets import RadioSet
 
@@ -969,10 +1084,14 @@ class TestPreRunScreen:
             screen.action_focus_next()
             await pilot.pause()
             assert action_set.pressed_button is not None
+            assert action_set.pressed_button.id == "rb_action_execute"
+            assert screen.query_one("#goal_text", TextArea).display is False
+
+            await pilot.press("space")
+            await pilot.pause()
+            assert action_set.pressed_button is not None
             assert action_set.pressed_button.id == "rb_action_replan"
             assert screen.query_one("#goal_text", TextArea).display is True
-            await pilot.pause()
-            assert getattr(screen.focused, "id", None) == "goal_text"
 
             screen.action_cancel()
             await pilot.pause()
@@ -1067,6 +1186,10 @@ class TestPreRunScreen:
             screen.action_focus_next()
             await pilot.pause()
             assert getattr(screen.focused, "id", None) == "chk_force_reassessment"
+
+            screen.action_focus_next()
+            await pilot.pause()
+            assert getattr(screen.focused, "id", None) == "chk_infinite_loop"
 
             screen.action_cancel()
             await pilot.pause()

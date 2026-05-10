@@ -18,6 +18,20 @@ empty [Unreleased] above it. Use Keep a Changelog section headings:
 Added / Changed / Deprecated / Removed / Fixed / Security.
 -->
 
+### Added
+
+- Added an Infinite Loop option in the TUI Options tab that warns before enabling and automatically reruns the same goal with identical settings after successful completion until stopped (build 10269).
+
+### Fixed
+
+- Infinite Loop now requires confirmation every time it is re-enabled after a canceled warning, preventing an unconfirmed loop from starting on a later submit (build 10270).
+- Infinite Loop now suppresses the completion summary and continues rerunning when enabled from the pending-task resume screen, not only when enabled before initial planning (build 10271).
+- Options-tab up/down navigation now includes the Infinite Loop control instead of skipping from Force Reassessment to the token budget field (build 10272).
+- Pre-run keyboard navigation now moves focus/highlight without changing scope, provider, action, model, or agent selections; Space or mouse click is required to commit those choices (build 10274).
+- Startup splash now keeps a one-row gap between the Matrix rain animation and the "Starting up…" subtitle (build 10276).
+- Infinite Loop now treats normal nested completion exits as loop-continuation signals, preventing the TUI host from closing before the next automatic iteration starts (build 10278).
+- Startup splash body height now accounts for the added subtitle gap so "Starting up…" remains visible (build 10279).
+
 ## [1.2.3] (build 10268) — 2026-05-09
 
 ### Added

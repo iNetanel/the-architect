@@ -54,6 +54,21 @@ async def _fake_run_retrospective(*args: object, **kwargs: object) -> Retrospect
 class TestMoreHelperFunctions:
     """Tests for additional helper functions in CLI."""
 
+    def test_infinite_loop_continues_after_normal_system_exit(self) -> None:
+        """A normal nested exit should not terminate an active Infinite Loop chain."""
+        from the_architect.cli import _infinite_loop_should_continue_after_exit
+
+        config = ArchitectConfig()
+        config._infinite_loop_enabled = True  # type: ignore[attr-defined]
+
+        assert _infinite_loop_should_continue_after_exit(config, SystemExit(0)) is True
+        assert _infinite_loop_should_continue_after_exit(config, SystemExit(None)) is True
+        assert _infinite_loop_should_continue_after_exit(config, SystemExit(1)) is False
+        assert _infinite_loop_should_continue_after_exit(config, SystemExit("error")) is False
+
+        config._infinite_loop_enabled = False  # type: ignore[attr-defined]
+        assert _infinite_loop_should_continue_after_exit(config, SystemExit(0)) is False
+
     def test_truncate_goal_for_display_limits_long_goal(self) -> None:
         """Long goals should not overwhelm planning/execution surfaces."""
         from the_architect.cli import _truncate_goal_for_display
@@ -709,6 +724,105 @@ class TestRunMain:
                 )
             assert exc_info.value.code == 0
             mock_run.assert_called_once()
+
+    def test_run_main_can_return_after_success_for_infinite_loop(self, tmp_path: Path) -> None:
+        """Infinite Loop driver can regain control after a successful iteration."""
+        from the_architect.cli import _run_main
+
+        mock_task = Task(
+            name="T01_test",
+            prefix="T01",
+            number=1,
+            path=tmp_path / "T01_test.md",
+            title="Test task",
+            status=TaskStatus.PENDING,
+        )
+        config = ArchitectConfig()
+        config._infinite_loop_enabled = True  # type: ignore[attr-defined]
+
+        async def _fake_run_tasks(
+            *args: object, **kwargs: object
+        ) -> tuple[bool, list[TaskResult], float]:
+            return (True, [], 1.0)
+
+        with (
+            patch("the_architect.cli.discover_tasks", return_value=[mock_task]),
+            patch("the_architect.cli._filter_and_set_status", return_value=[mock_task]),
+            patch("the_architect.cli._run_tasks_raw", side_effect=_fake_run_tasks) as mock_run,
+            patch("the_architect.cli.run_retrospective", side_effect=_fake_run_retrospective),
+            patch("the_architect.cli.write_success_md"),
+            patch("the_architect.cli.print_success_summary") as mock_summary,
+            patch("the_architect.cli.detect_provider") as mock_detect_provider,
+        ):
+            mock_detect_provider.return_value.ensure_setup.return_value = None
+            _run_main(
+                project=tmp_path,
+                plan=False,
+                headless=True,
+                _pre_loaded_config=config,
+                _return_on_success=True,
+                _suppress_success_screen=True,
+            )
+
+        mock_run.assert_called_once()
+        mock_summary.assert_not_called()
+
+    def test_run_main_returns_when_resume_screen_enables_infinite_loop(
+        self, tmp_path: Path
+    ) -> None:
+        """Infinite Loop selected on the pending-task screen suppresses summary and returns."""
+        from the_architect.cli import _run_main
+        from the_architect.tui.screens.pre_run_tabbed import PreRunValues
+
+        mock_task = Task(
+            name="T01_test",
+            prefix="T01",
+            number=1,
+            path=tmp_path / "T01_test.md",
+            title="Test task",
+            status=TaskStatus.PENDING,
+        )
+        config = ArchitectConfig()
+        provider = MagicMock()
+        provider.name = "opencode"
+        provider.display_name = "OpenCode"
+        provider.ensure_setup.return_value = None
+        provider.get_resolved_model.return_value = "test-model"
+
+        async def _fake_run_tasks(
+            *args: object, **kwargs: object
+        ) -> tuple[bool, list[TaskResult], float]:
+            return (True, [], 1.0)
+
+        with (
+            patch("the_architect.cli.discover_tasks", return_value=[mock_task]),
+            patch("the_architect.cli._filter_and_set_status", return_value=[mock_task]),
+            patch("the_architect.cli.detect_available_providers", return_value=[provider]),
+            patch(
+                "the_architect.tui.screens.pre_run_tabbed.run_pre_run_tabbed",
+                return_value=PreRunValues(
+                    action="execute",
+                    infinite_loop=True,
+                    force_reassessment=True,
+                ),
+            ),
+            patch("the_architect.cli._run_tasks_raw", side_effect=_fake_run_tasks) as mock_run,
+            patch("the_architect.cli.run_retrospective", side_effect=_fake_run_retrospective),
+            patch("the_architect.cli.write_success_md"),
+            patch("the_architect.cli.print_success_summary") as mock_summary,
+        ):
+            _run_main(
+                project=tmp_path,
+                plan=False,
+                headless=False,
+                _pre_loaded_config=config,
+                provider=provider,
+                use_tui=True,
+            )
+
+        assert config._infinite_loop_enabled is True  # type: ignore[attr-defined]
+        mock_run.assert_called_once()
+        mock_summary.assert_not_called()
 
     def test_run_main_with_preloaded_config(self, tmp_path: Path) -> None:
         """Should use pre-loaded config when provided."""

@@ -35,7 +35,7 @@
 # for every file operation it performs. This is the intended workflow.
 
 __version__ = "1.2.3"
-__build__ = 10268
+__build__ = 10280
 __author__ = "Netanel Eliav"
 __email__ = "inetanel@me.com"
 __repo__ = "https://github.com/inetanel/the-architect"
