@@ -31,7 +31,7 @@ It wraps your agentic AI coding tool and adds everything it lacks out of the box
 | Agent loses context between sessions | Persistent memory via `ARCHITECT.md` |
 | No recovery when agent gets stuck | Circuit breaker + smart retry + model fallback |
 | You babysit every run | Fully unattended — fire and forget |
-| No audit trail of what changed | Build counter tracks every agent operation |
+| No audit trail of what changed | Build counter tracks every completed task/change |
 | Agent hallucinates completion | Multi-signal completion detection |
 | You re-explain the project every time | Project structure auto-detected and injected |
 | Repo knowledge starts shallow | Pre-planning intelligence learns and repairs `ARCHITECT.md` |
@@ -241,13 +241,13 @@ Everything below is what you get on top of your AI coding CLI — none of it exi
 
 | | Raw CLI | With The Architect |
 |---|---|---|
-| UI | Raw terminal scroll | Full-screen Textual TUI with Output / Events / Details tabs |
+| UI | Raw terminal scroll | Full-screen Textual TUI with Live / Progress / Diagnostics / Settings tabs |
 | Live monitoring | None | tmux split-pane dashboard (non-TUI fallback) |
 | Run summary | None | `tasks/SUMMARY.md` — tasks, attempts, models, tokens, duration, retrospective rounds |
 | Task history | None | Every run archived to `tasks/archive/YYYY-MM-DD_HHMMSS/` |
 | Logs | Wherever the CLI writes | Per-task logs in `.architect/logs/`, per-attempt, per-reassessment |
 | Circuit state | None | `architect circuit` — view and reset per-task circuit breaker state |
-| Build tracking | None | `__build__` counter increments on every agent operation — full effort traceability |
+| Build tracking | None | `__build__` counter increments on every completed task/change — full effort traceability |
 
 #### Safety
 
@@ -292,7 +292,7 @@ architect --from T03
 # Run a single task only
 architect --only T05
 
-# Persistent mode (30 retries, 2 retrospective rounds)
+# Persistent mode (30 retries, 3 retrospective rounds)
 architect --persistent
 
 # Free tier — rotate free OpenRouter models on rate limit (OpenCode only)
@@ -367,7 +367,7 @@ All planning flags can be set via environment variables — useful for CI and he
 | `ARCHITECT_GOAL` | `--goal` | `"add dark mode"` |
 | `ARCHITECT_SCOPE` | `--scope` | `standard` |
 | `ARCHITECT_CONTEXT` | `--context` | `/path/to/spec.md` |
-| `ARCHITECT_PROVIDER` | `--provider` | `codex`, `gemini-cli` |
+| `ARCHITECT_PROVIDER` | Provider preference | `codex`, `gemini-cli` |
 | `ARCHITECT_ARCHITECT_MODEL` | `--architect-model` | `openrouter/anthropic/claude-opus-4.5` |
 | `ARCHITECT_EXECUTION_MODEL` | `--execution-model` | `openrouter/google/gemini-2.5-pro` |
 
@@ -449,7 +449,7 @@ token_budget_per_hour = 0            # 0 = unlimited
 | `retry_prompt_mode` | `focused` | `focused` or `same` |
 | `retrospective_rounds` | `1` | Review rounds after execution (0 = off) |
 | `free_mode` | `false` | Rotate free OpenRouter models |
-| `persistent` | `false` | 30 retries, 2 retrospective rounds |
+| `persistent` | `false` | 30 retries, 3 retrospective rounds |
 | `integrity` | `true` | Snapshot existing files before edits (`architect_eval_*`) |
 | `force_reassessment` | `true` | Reassess pending tasks after every task; when false, only failed/downstream-impact tasks trigger reassessment |
 | `standalone_mode` | `""` | Bypass provider config, use this model for all operations |
@@ -492,7 +492,7 @@ architect > run.log 2>&1         # piped / redirected stdout
 
 ### Surviving SSH disconnect
 
-When the TUI is the default, The Architect no longer spawns its own tmux session. If you need the run to survive a closed terminal or SSH disconnect, wrap it in your own tmux/screen:
+When the TUI is the default, The Architect uses a single-pane tmux wrapper when tmux is available, so the run can survive detach/reattach without the classic split dashboard competing with the TUI. You can also wrap it in your own tmux/screen if you prefer to manage the session yourself:
 
 ```bash
 tmux new -s arch 'architect'
@@ -601,7 +601,7 @@ v1.0.0 (build 10042)
  ----    -----------
   |           |
   |           +-- Global build counter
-  |               Increments with every agent operation
+  |               Increments with every completed task/change
   |               (reads, writes, renames, test runs)
   |               Never resets across versions
   |               Always at least 5 digits

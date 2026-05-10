@@ -671,6 +671,33 @@ class TestBuildPlanningInstructionAdditional:
         assert "PROJECT STRUCTURE REPORT" in instruction
         assert "Single repo, Python package" in instruction
 
+    def test_build_instruction_restarts_numbering_after_archive_history(
+        self, tmp_path: Path
+    ) -> None:
+        """Previous plan history must not make new plans continue old numbering."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "PROGRESS.md").write_text(
+            "# Progress\n\n| T01 | Old task | Done | today |\n",
+            encoding="utf-8",
+        )
+        (tasks_dir / "archive").mkdir()
+        request = PlanningRequest(
+            goal="Test goal",
+            scope=TaskScope.SIMPLE,
+            project_dir=tmp_path,
+        )
+
+        instruction = build_planning_instruction(
+            request, "Completed tasks from previous plans: T01"
+        )
+
+        assert "First task file:" in instruction
+        assert "/T01_<descriptive_name>.md" in instruction
+        assert "Historical T/R numbers" in instruction
+        assert "Do NOT continue numbering from previous plan history" in instruction
+        assert "Do NOT reuse numbers shown" not in instruction
+
 
 class TestWriteInstructionsMd:
     """Tests for _write_instructions_md() (lines 714-717)."""

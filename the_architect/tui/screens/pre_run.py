@@ -32,7 +32,6 @@ from textual.widgets import (
     ListItem,
     ListView,
     Static,
-    TextArea,
 )
 
 if TYPE_CHECKING:
@@ -160,97 +159,6 @@ def run_provider_selection(
     if result is None:
         raise SystemExit(0)
     return int(result)
-
-
-# ══════════════════════════════════════════════════════════════════════
-# Goal
-# ══════════════════════════════════════════════════════════════════════
-
-
-class GoalScreen(Screen[str]):
-    """Textual screen for capturing the user's planning goal."""
-
-    DEFAULT_CSS = """
-    GoalScreen {
-        align: center middle;
-    }
-
-    #goal_body {
-        width: 82;
-        height: auto;
-        padding: 1 2;
-        border: round $panel;
-        background: $panel 20%;
-    }
-
-    #goal_title { color: $accent; text-style: bold; }
-    #goal_hint { color: $text-muted; padding: 0 0 1 0; }
-
-    TextArea { height: 10; border: round $panel; }
-
-    #goal_instructions { color: $text-muted; padding: 1 0 0 0; }
-    """
-
-    BINDINGS = [
-        # TextArea captures Enter for newlines, so submit is Ctrl+Enter
-        # or Ctrl+S. priority so the binding runs before the widget.
-        Binding("ctrl+enter", "submit", "Submit", priority=True),
-        Binding("ctrl+s", "submit", "Submit", priority=True),
-        Binding("backspace", "go_back", "Back"),
-        Binding("escape", "cancel", "Cancel", priority=True),
-        Binding("ctrl+c", "cancel", "Cancel", priority=True),
-    ]
-
-    def compose(self) -> ComposeResult:
-        yield Header()
-        with Vertical(id="goal_body"):
-            yield Static("What do you want to build?", id="goal_title")
-            yield Static(
-                "Describe the feature, component, or goal in plain English.",
-                id="goal_hint",
-            )
-            yield TextArea(id="goal_text", soft_wrap=True)
-            yield Static(
-                "[dim]Type goal · Ctrl+Enter / Ctrl+S submit · Esc cancel[/dim]",
-                id="goal_instructions",
-                markup=True,
-            )
-        yield Footer()
-
-    def action_submit(self) -> None:
-        try:
-            text = self.query_one("#goal_text", TextArea).text.strip()
-        except Exception:
-            text = ""
-        if not text:
-            return
-        self.dismiss(text)
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-    def action_go_back(self) -> None:
-        """Navigate back to the previous pre-run screen."""
-        self.dismiss(BACK_SENTINEL)  # type: ignore[arg-type]
-
-
-def run_goal_screen() -> str | object:
-    """Boot the Architect app, show the goal screen, return the text.
-
-    Raises ``SystemExit(0)`` on cancel or ``SystemExit(1)`` on empty input.
-    Returns ``BACK_SENTINEL`` on back.
-    """
-    from the_architect.tui.app import run_single_screen
-
-    result = run_single_screen(GoalScreen())
-    if result is BACK_SENTINEL:
-        return BACK_SENTINEL
-    if result is None:
-        raise SystemExit(0)
-    text = str(result).strip()
-    if not text:
-        raise SystemExit(1)
-    return text
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -764,7 +672,6 @@ def run_pending_tasks_screen(pending: list[str]) -> bool:
 
 __all__ = [
     "BACK_SENTINEL",
-    "GoalScreen",
     "PendingTasksScreen",
     "ProviderOption",
     "ProviderSelectionScreen",
@@ -772,7 +679,6 @@ __all__ = [
     "StringListPickerScreen",
     "UpdateActionScreen",
     "run_agent_picker",
-    "run_goal_screen",
     "run_model_picker",
     "run_pending_tasks_screen",
     "run_provider_selection",

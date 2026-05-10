@@ -35,7 +35,7 @@ architect --version
 ## The Build Number — Read This First
 
 The Architect uses a **global build counter** in the project-root `version.py` that tracks
-every agent operation across all sessions. It is not just a release counter — it is a
+every completed task/change across all sessions. It is not just a release counter — it is a
 continuous record of cumulative effort and change history.
 
 **Every PR must increment `__build__` in `version.py` (at the repo root — NOT

@@ -148,7 +148,7 @@ class ResumeScreen(Screen[dict[str, bool | int | str]]):
                     value=bool(self._config.free_mode),
                 )
             yield BlankOffCheckbox(
-                "Persistent  (30 retries, 2 retrospective rounds)",
+                "Persistent  (30 retries, 3 retrospective rounds)",
                 id="chk_persistent",
                 value=bool(self._config.persistent),
             )

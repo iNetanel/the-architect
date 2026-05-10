@@ -68,6 +68,14 @@ class TestMoreHelperFunctions:
 
         config._infinite_loop_enabled = False  # type: ignore[attr-defined]
         assert _infinite_loop_should_continue_after_exit(config, SystemExit(0)) is False
+        assert (
+            _infinite_loop_should_continue_after_exit(
+                config,
+                SystemExit(0),
+                chain_enabled=True,
+            )
+            is True
+        )
 
     def test_truncate_goal_for_display_limits_long_goal(self) -> None:
         """Long goals should not overwhelm planning/execution surfaces."""
@@ -91,7 +99,7 @@ class TestMoreHelperFunctions:
         _apply_persistent_mode(config)
 
         assert config.max_retries == 30
-        assert config.retrospective_rounds == 2
+        assert config.retrospective_rounds == 3
 
     def test_apply_persistent_mode_from_flag(self) -> None:
         """Persistent flag should enable and apply persistent runtime settings."""
@@ -103,7 +111,108 @@ class TestMoreHelperFunctions:
 
         assert config.persistent is True
         assert config.max_retries == 30
+        assert config.retrospective_rounds == 3
+
+    def test_apply_infinite_loop_mode_minimum_without_persistent(self) -> None:
+        """Infinite Loop should get a second validation round without Persistent Mode."""
+        from the_architect.cli import _apply_infinite_loop_mode
+
+        config = ArchitectConfig(retrospective_rounds=1)
+        config._infinite_loop_enabled = True  # type: ignore[attr-defined]
+
+        _apply_infinite_loop_mode(config)
+
+        assert config.persistent is False
+        assert config.max_retries != 30
         assert config.retrospective_rounds == 2
+
+    def test_unsafe_retrospective_tasks_detects_destructive_git(self, tmp_path: Path) -> None:
+        """Reviewer-created R-tasks must not execute destructive git recovery."""
+        from the_architect.cli import _unsafe_retrospective_tasks
+
+        task_path = tmp_path / "R01_bad.md"
+        task_path.write_text("# R01\n\nRun `git checkout HEAD -- file.py`.\n", encoding="utf-8")
+        task = Task(
+            name="R01_bad",
+            prefix="R01",
+            number=1,
+            path=task_path,
+            title="Bad recovery",
+            status=TaskStatus.PENDING,
+        )
+
+        assert _unsafe_retrospective_tasks([task]) == ["R01_bad.md"]
+
+    def test_resolve_infinite_loop_goal_reads_goal_summary(self, tmp_path: Path) -> None:
+        """Provider-written Goal Summary instructions should preserve loop goal."""
+        from the_architect.cli import _resolve_infinite_loop_goal
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "INSTRUCTIONS.md").write_text(
+            "# Instructions\n\n"
+            "## Goal Summary\nRepeat the stored loop goal\n\n"
+            "## Plan\nRun tasks\n",
+            encoding="utf-8",
+        )
+        config = ArchitectConfig()
+
+        result = _resolve_infinite_loop_goal("", config, tasks_dir)
+
+        assert result == "Repeat the stored loop goal"
+        assert config._infinite_loop_goal == "Repeat the stored loop goal"  # type: ignore[attr-defined]
+
+    def test_validate_cycle_requires_recovery_for_failed_original_task(
+        self, tmp_path: Path
+    ) -> None:
+        """A failed T-task needs at least one successful recovery task before pass."""
+        from the_architect.cli import _validate_cycle
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01_test.md").write_text("# T01 Test\n", encoding="utf-8")
+        progress_file = tasks_dir / "PROGRESS.md"
+        progress_file.write_text(
+            "# Progress\n\n"
+            "| Task | Title | Status | Completed |\n"
+            "|------|-------|--------|-----------|\n"
+            "| T01 | Test | Failed | failed |\n",
+            encoding="utf-8",
+        )
+
+        result = _validate_cycle(tasks_dir, progress_file)
+
+        assert result.passed is False
+        assert "no successful recovery" in result.reason
+
+    def test_write_cycle_validation_to_progress_records_failure(self, tmp_path: Path) -> None:
+        """Validation failure details should be available to future reviews."""
+        from the_architect.cli import CycleValidationResult, _write_cycle_validation_to_progress
+
+        progress_file = tmp_path / "PROGRESS.md"
+        progress_file.write_text(
+            "# Progress\n\n"
+            "## Task Outcomes\n\n"
+            "| Task | Outcome | Files | Verification | Impact on Next Tasks |\n"
+            "|------|---------|-------|--------------|----------------------|\n"
+            "\n---\n\n"
+            "## Lessons Learned\n",
+            encoding="utf-8",
+        )
+        result = CycleValidationResult(
+            passed=False,
+            reason="Pending work remains after retrospective validation.",
+            unresolved_tasks=("T01 Test (Pending)",),
+        )
+
+        _write_cycle_validation_to_progress(progress_file, result, 2)
+
+        content = progress_file.read_text(encoding="utf-8")
+        assert "## Cycle Validation" in content
+        assert "**Round:** 2" in content
+        assert "**Status:** Failed" in content
+        assert "Pending work remains" in content
+        assert "T01 Test (Pending)" in content
 
     def test_ansi_supported_no_tty(self) -> None:
         """Should return False when stdout is not a TTY."""
@@ -1757,6 +1866,94 @@ class TestRunMainExecution:
                 )
             assert exc_info.value.code == 0
 
+    def test_run_main_validation_failure_triggers_next_retrospective_round(
+        self, tmp_path: Path
+    ) -> None:
+        """A failed validation gate should feed a second retrospective round."""
+        from the_architect.cli import _run_main
+        from the_architect.core.retrospective import RetrospectiveRequest, RetrospectiveResult
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01_test.md").write_text("# T01 Test\n", encoding="utf-8")
+        progress_file = tasks_dir / "PROGRESS.md"
+        progress_file.write_text(
+            "# Progress\n\n"
+            "| Task | Title | Status | Completed |\n"
+            "|------|-------|--------|-----------|\n"
+            "| T01 | Test | Pending | — |\n",
+            encoding="utf-8",
+        )
+        config = ArchitectConfig().resolve(tmp_path)
+        config.retrospective_rounds = 2
+        feedback_seen: list[str] = []
+        run_calls = 0
+
+        async def _fake_run_tasks(
+            *args: object, **kwargs: object
+        ) -> tuple[bool, list[TaskResult], float]:
+            nonlocal run_calls
+            run_calls += 1
+            if run_calls == 1:
+                progress_file.write_text(
+                    "# Progress\n\n"
+                    "| Task | Title | Status | Completed |\n"
+                    "|------|-------|--------|-----------|\n"
+                    "| T01 | Test | Failed | failed |\n",
+                    encoding="utf-8",
+                )
+                return (False, [], 1.0)
+            progress_file.write_text(
+                "# Progress\n\n"
+                "| Task | Title | Status | Completed |\n"
+                "|------|-------|--------|-----------|\n"
+                "| T01 | Test | Failed | failed |\n"
+                "| R01 | Fix | Done | today |\n",
+                encoding="utf-8",
+            )
+            return (True, [], 1.0)
+
+        async def _fake_retrospective(
+            request: RetrospectiveRequest, *args: object, **kwargs: object
+        ) -> RetrospectiveResult:
+            feedback_seen.append(request.validation_feedback)
+            if request.round_number == 1:
+                return RetrospectiveResult(summary="No issues", issues_found=0)
+            (tasks_dir / "R01_fix.md").write_text("# R01 Fix\n", encoding="utf-8")
+            progress_file.write_text(
+                "# Progress\n\n"
+                "| Task | Title | Status | Completed |\n"
+                "|------|-------|--------|-----------|\n"
+                "| T01 | Test | Failed | failed |\n"
+                "| R01 | Fix | Pending | — |\n",
+                encoding="utf-8",
+            )
+            return RetrospectiveResult(
+                tasks_created=["R01"],
+                summary="Recovery planned",
+                issues_found=1,
+                fixes_planned=1,
+            )
+
+        with (
+            patch("the_architect.cli._run_tasks_raw", side_effect=_fake_run_tasks),
+            patch("the_architect.cli.run_retrospective", new=_fake_retrospective),
+            patch("the_architect.cli.write_success_md"),
+            patch("the_architect.cli.print_success_summary"),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                _run_main(
+                    project=tmp_path,
+                    plan=False,
+                    headless=True,
+                    _pre_loaded_config=config,
+                )
+
+        assert exc_info.value.code == 0
+        assert run_calls == 2
+        assert feedback_seen[0] == ""
+        assert "Original tasks failed" in feedback_seen[1]
+
     def test_run_main_persistent_mode(self, tmp_path: Path) -> None:
         """Should configure persistent mode with increased retries."""
         from the_architect.cli import _run_main
@@ -1797,7 +1994,7 @@ class TestRunMainExecution:
             assert exc_info.value.code == 0
             assert config.persistent is True
             assert config.max_retries == 30
-            assert config.retrospective_rounds == 2
+            assert config.retrospective_rounds == 3
 
     def test_run_main_config_persistent_applies_runtime_settings(self, tmp_path: Path) -> None:
         """Config-file persistent mode should affect execution settings."""
@@ -1851,7 +2048,7 @@ class TestRunMainExecution:
         assert seen_configs
         assert seen_configs[0].persistent is True
         assert seen_configs[0].max_retries == 30
-        assert seen_configs[0].retrospective_rounds == 2
+        assert seen_configs[0].retrospective_rounds == 3
 
     def test_run_main_all_selected_done(self, tmp_path: Path) -> None:
         """Should print message when all selected tasks are already done."""
@@ -2494,8 +2691,7 @@ class TestRunMainRetrospective:
                     headless=True,
                     _pre_loaded_config=config,
                 )
-            # Should still exit 0 since main execution succeeded
-            assert exc_info.value.code == 0
+            assert exc_info.value.code == 1
 
 
 class TestRetryCommandMore:

@@ -88,9 +88,10 @@ class ArchitectConfig(BaseModel):
         description=(
             "Number of retrospective review rounds to run after execution. "
             "Each round runs the reviewer agent, which may create fix-up tasks (R-prefixed) "
-            "that are then executed before the next round. Set to 0 to disable. "
-            "Default is 1, giving: Execution → Retrospective → Execution → Done. "
-            "Use --persistent for 2 rounds with higher retry limits."
+            "that are then executed before a deterministic validation gate decides whether "
+            "another retrospective round is needed. Set to 0 to disable. "
+            "Default is 1, giving: Execution → Retrospective → Validation → Done. "
+            "Use --persistent for 3 rounds with higher retry limits."
         ),
     )
 
@@ -132,7 +133,7 @@ class ArchitectConfig(BaseModel):
         default=False,
         description=(
             "When True, enables persistent mode: max_retries is set to 30 "
-            "and retrospective_rounds is set to 2. Designed for long-running "
+            "and retrospective_rounds is set to 3. Designed for long-running "
             "autonomous sessions where you want The Architect to keep trying "
             "until the work is genuinely complete."
         ),

@@ -16,6 +16,7 @@ import sys
 import time
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -71,6 +72,18 @@ from the_architect.tui.screens.pre_run import BACK_SENTINEL
 console = PaddedConsole()
 
 GOAL_DISPLAY_LIMIT = 400
+_PERSISTENT_MAX_RETRIES = 30
+_PERSISTENT_RETROSPECTIVE_ROUNDS = 3
+_INFINITE_LOOP_RETROSPECTIVE_ROUNDS = 2
+
+
+@dataclass(frozen=True)
+class CycleValidationResult:
+    """Deterministic validation result for a completed execution/review cycle."""
+
+    passed: bool
+    reason: str = ""
+    unresolved_tasks: tuple[str, ...] = ()
 
 
 def _truncate_goal_for_display(goal: str, limit: int = GOAL_DISPLAY_LIMIT) -> str:
@@ -158,10 +171,6 @@ def _provider_has_any_models() -> bool:
 _opencode_has_any_models = _provider_has_any_models
 
 
-_PERSISTENT_MAX_RETRIES = 30
-_PERSISTENT_RETROSPECTIVE_ROUNDS = 2
-
-
 def _apply_persistent_mode(config: ArchitectConfig, enabled: bool | None = None) -> None:
     """Apply persistent-mode derived settings to a runtime config."""
     if enabled is not None:
@@ -170,6 +179,24 @@ def _apply_persistent_mode(config: ArchitectConfig, enabled: bool | None = None)
     if config.persistent:
         config.max_retries = _PERSISTENT_MAX_RETRIES
         config.retrospective_rounds = _PERSISTENT_RETROSPECTIVE_ROUNDS
+
+
+def _infinite_loop_active(config: ArchitectConfig) -> bool:
+    """Return whether this config is inside an active Infinite Loop chain."""
+    return bool(
+        getattr(config, "_infinite_loop_enabled", False)
+        or getattr(config, "_infinite_loop_chain_enabled", False)
+    )
+
+
+def _apply_infinite_loop_mode(config: ArchitectConfig) -> None:
+    """Apply Infinite Loop runtime settings without enabling Persistent Mode."""
+    if not _infinite_loop_active(config) or config.persistent:
+        return
+    config.retrospective_rounds = max(
+        config.retrospective_rounds,
+        _INFINITE_LOOP_RETROSPECTIVE_ROUNDS,
+    )
 
 
 def _filter_and_set_status(tasks: list[Task], progress_file: Path) -> list[Task]:
@@ -216,9 +243,12 @@ def _filter_and_set_status(tasks: list[Task], progress_file: Path) -> list[Task]
 def _infinite_loop_should_continue_after_exit(
     config: ArchitectConfig,
     exc: SystemExit,
+    *,
+    chain_enabled: bool | None = None,
 ) -> bool:
     """Return True when a normal ``SystemExit`` should become the next loop iteration."""
-    if not bool(getattr(config, "_infinite_loop_enabled", False)):
+    active = _infinite_loop_active(config) or bool(chain_enabled)
+    if not active:
         return False
     return exc.code is None or exc.code == 0
 
@@ -248,6 +278,153 @@ def _task_needs_work(task: Task) -> bool:
     needs to run".  Equivalent to ``not _task_is_terminal(task)``.
     """
     return not _task_is_terminal(task)
+
+
+def _resolve_infinite_loop_goal(
+    current_goal: str,
+    config: ArchitectConfig,
+    tasks_dir: Path,
+) -> str:
+    """Return the goal to reuse for the next Infinite Loop planning pass."""
+    if current_goal.strip():
+        goal = current_goal.strip()
+    else:
+        stored_goal = str(getattr(config, "_infinite_loop_goal", "") or "").strip()
+        goal = stored_goal or _read_goal_from_instructions(tasks_dir).strip()
+
+    if goal:
+        config._infinite_loop_goal = goal  # type: ignore[attr-defined]
+    return goal
+
+
+def _validate_cycle(tasks_dir: Path, progress_file: Path) -> CycleValidationResult:
+    """Validate that the current execution/retrospective cycle is fully clean."""
+    if not progress_file.exists():
+        logger.debug("Skipping cycle validation because PROGRESS.md does not exist")
+        return CycleValidationResult(True)
+
+    discovered = discover_tasks(tasks_dir)
+    if not discovered:
+        return CycleValidationResult(False, "No task files were found after execution.")
+
+    pending: list[str] = []
+    failed_recovery: list[str] = []
+    failed_original: list[str] = []
+    done_recovery = False
+
+    for task in discovered:
+        status = task_status(progress_file, task.prefix)
+        display = f"{task.prefix} {task.title or task.name} ({status or 'Missing'})"
+        if task.prefix.startswith("R") and status == "Done":
+            done_recovery = True
+        if status in (None, "Pending", "Running"):
+            pending.append(display)
+        elif task.prefix.startswith("R") and status in ("Failed", "Blocked"):
+            failed_recovery.append(display)
+        elif task.prefix.startswith("T") and status in ("Failed", "Blocked"):
+            failed_original.append(display)
+
+    if pending:
+        return CycleValidationResult(
+            False,
+            "Pending work remains after retrospective validation.",
+            tuple(pending),
+        )
+    if failed_recovery:
+        return CycleValidationResult(
+            False,
+            "Recovery tasks failed or were blocked during retrospective validation.",
+            tuple(failed_recovery),
+        )
+    if failed_original and not done_recovery:
+        return CycleValidationResult(
+            False,
+            "Original tasks failed or were blocked, and no successful recovery task was completed.",
+            tuple(failed_original),
+        )
+    return CycleValidationResult(True)
+
+
+def _format_cycle_validation_feedback(result: CycleValidationResult) -> str:
+    """Return a reviewer-readable explanation of a failed cycle validation."""
+    if result.passed:
+        return ""
+    lines = [result.reason or "Cycle validation failed."]
+    if result.unresolved_tasks:
+        lines.append("")
+        lines.append("Unresolved tasks:")
+        lines.extend(f"- {task}" for task in result.unresolved_tasks)
+    return "\n".join(lines)
+
+
+def _write_cycle_validation_to_progress(
+    progress_file: Path,
+    result: CycleValidationResult,
+    round_number: int,
+) -> None:
+    """Persist deterministic cycle validation details into PROGRESS.md."""
+    if not progress_file.exists():
+        return
+    try:
+        content = progress_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return
+
+    status = "Passed" if result.passed else "Failed"
+    lines = [
+        "## Cycle Validation",
+        "",
+        f"**Round:** {round_number}",
+        f"**Status:** {status}",
+    ]
+    if result.reason:
+        lines.append(f"**Reason:** {result.reason}")
+    if result.unresolved_tasks:
+        lines.append("")
+        lines.append("### Unresolved Tasks")
+        lines.extend(f"- {task}" for task in result.unresolved_tasks)
+    section = "\n".join(lines).rstrip() + "\n"
+
+    pattern = re.compile(r"\n## Cycle Validation\s*\n.*?(?=\n---|\n## |\Z)", re.DOTALL)
+    if pattern.search(content):
+        updated = pattern.sub("\n" + section, content, count=1)
+    else:
+        insert_before = "\n---\n\n## Lessons Learned"
+        if insert_before in content:
+            updated = content.replace(insert_before, f"\n{section}{insert_before}", 1)
+        else:
+            updated = content.rstrip() + "\n\n" + section
+
+    try:
+        progress_file.write_text(updated, encoding="utf-8")
+    except OSError:
+        return
+
+
+_FORBIDDEN_RETROSPECTIVE_TASK_PATTERNS: tuple[str, ...] = (
+    r"\bgit\s+checkout\b",
+    r"\bgit\s+reset\b",
+    r"\bgit\s+restore\b",
+    r"\bgit\s+clean\b",
+    r"\brm\s+-rf\b",
+)
+
+
+def _unsafe_retrospective_tasks(tasks: list[Task]) -> list[str]:
+    """Return R-task files that contain forbidden destructive recovery instructions."""
+    unsafe: list[str] = []
+    for task in tasks:
+        if not task.prefix.startswith("R"):
+            continue
+        try:
+            content = task.path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for pattern in _FORBIDDEN_RETROSPECTIVE_TASK_PATTERNS:
+            if re.search(pattern, content, re.IGNORECASE):
+                unsafe.append(task.path.name)
+                break
+    return unsafe
 
 
 # ---------------------------------------------------------------------------
@@ -1450,22 +1627,6 @@ def _prompt_goal() -> str:
     Returns:
         The goal string (non-empty).
     """
-    # TUI fast-path — Phase 12. When the TUI is active, collect the
-    # goal via a Textual screen instead of a plain-terminal prompt so
-    # the whole pre-run experience stays inside the TUI.
-    if _tui_mode_enabled():
-        try:
-            from the_architect.tui.screens.pre_run import run_goal_screen
-
-            result = run_goal_screen()
-            if result is BACK_SENTINEL:
-                return ""  # Signal: user pressed Back
-            return str(result)
-        except SystemExit:
-            raise
-        except Exception as exc:
-            logger.debug(f"TUI goal screen failed, falling back to plain prompt: {exc!r}")
-
     console.print()
     console.print(
         f"[bold {ARCHITECT_GREEN}]The Architect[/bold {ARCHITECT_GREEN}]  "
@@ -1868,6 +2029,9 @@ def run_planning_mode(
     else:
         goal = _prompt_goal()
 
+    if goal:
+        config._infinite_loop_goal = goal  # type: ignore[attr-defined]
+
     # Warn immediately after the goal is known, before scope/model prompts,
     # learning, or planning. If the user intends to walk away after submitting
     # a goal, this is the last safe point to block for provider maintenance.
@@ -2120,7 +2284,8 @@ def _collect_planning_prompts(
         (signals ``run_planning_mode`` to skip the prompt without overriding
         ``config.execution_agent``).
     """
-    config._infinite_loop_enabled = False  # type: ignore[attr-defined]
+    if not _infinite_loop_active(config):
+        config._infinite_loop_enabled = False  # type: ignore[attr-defined]
 
     if headless:
         # Return None for execution_model when no override was given so that
@@ -2928,10 +3093,21 @@ def _read_goal_from_instructions(tasks_dir: Path) -> str:
         return ""
     try:
         content = instructions_md.read_text(encoding="utf-8")
-        # Look for "## Goal" section
+        # Prefer canonical "## Goal"; provider-written plans often use
+        # "## Goal Summary", which Infinite Loop must also be able to reuse.
         import re
 
-        match = re.search(r"## Goal\s*\n\s*(.+?)(?:\n\s*##|\n\s*$)", content, re.DOTALL)
+        match = re.search(
+            r"^## Goal\s*\n\s*(.+?)(?:\n\s*##|\n\s*$)",
+            content,
+            re.DOTALL | re.MULTILINE,
+        )
+        if not match:
+            match = re.search(
+                r"^## Goal Summary\s*\n\s*(.+?)(?:\n\s*##|\n\s*$)",
+                content,
+                re.DOTALL | re.MULTILINE,
+            )
         if match:
             return match.group(1).strip()
     except OSError:
@@ -3139,7 +3315,7 @@ _opencode_install_hint = _provider_install_hint
 @click.option(
     "--persistent",
     is_flag=True,
-    help="Persistent mode: retry up to 30 times with 2 retrospective rounds",
+    help="Persistent mode: retry up to 30 times with 3 retrospective rounds",
 )
 @click.option(
     "--free",
@@ -3750,6 +3926,8 @@ def main(
             if free_mode:
                 config.free_mode = True
 
+            _apply_infinite_loop_mode(config)
+
             # Persist interactive settings to architect.toml for next run.
             if _needs_mode_prompt_local:
                 from the_architect.config import write_config
@@ -3767,8 +3945,13 @@ def main(
                 )
 
             loop_iteration = 1
+            infinite_loop_chain_enabled = _infinite_loop_active(config)
             while True:
-                infinite_loop_enabled = bool(getattr(config, "_infinite_loop_enabled", False))
+                if infinite_loop_chain_enabled:
+                    config._infinite_loop_enabled = True  # type: ignore[attr-defined]
+                    config._infinite_loop_chain_enabled = True  # type: ignore[attr-defined]
+
+                infinite_loop_enabled = infinite_loop_chain_enabled or _infinite_loop_active(config)
                 try:
                     _run_main(
                         project=resolved_project,
@@ -3792,19 +3975,47 @@ def main(
                         _suppress_success_screen=infinite_loop_enabled,
                     )
                 except SystemExit as exc:
-                    if not _infinite_loop_should_continue_after_exit(config, exc):
+                    if not _infinite_loop_should_continue_after_exit(
+                        config,
+                        exc,
+                        chain_enabled=infinite_loop_enabled,
+                    ):
                         raise
 
-                infinite_loop_enabled = bool(getattr(config, "_infinite_loop_enabled", False))
-                if not infinite_loop_enabled:
+                infinite_loop_chain_enabled = infinite_loop_enabled or _infinite_loop_active(config)
+                if not infinite_loop_chain_enabled:
                     return
+
+                config._infinite_loop_enabled = True  # type: ignore[attr-defined]
+                config._infinite_loop_chain_enabled = True  # type: ignore[attr-defined]
+
+                loop_tasks_dir = resolved_project / config.tasks_dir.name
+                loop_progress_file = config.progress_file
+                loop_pending = check_pending_tasks(loop_tasks_dir, loop_progress_file)
+                if loop_pending:
+                    logger.warning(
+                        "Infinite Loop iteration returned with pending tasks; "
+                        "forcing execution before planning another iteration"
+                    )
+                    plan_local["v"] = False
+                    continue
+
+                loop_goal = _resolve_infinite_loop_goal(
+                    goal_text or "",
+                    config,
+                    loop_tasks_dir,
+                )
+                if not loop_goal:
+                    console.print(
+                        "[red]Infinite Loop could not find the original goal to reuse.[/red]"
+                    )
+                    raise SystemExit(1)
+                goal_text = loop_goal
 
                 try:
                     from the_architect.tui.runner import active_runner
 
                     _runner = active_runner()
-                    if _runner is not None and _runner.app.shutdown_started:
-                        raise SystemExit(0)
                     if _runner is not None:
                         _runner.app.push_event_line(
                             "infinite_loop_rerun",
@@ -3855,7 +4066,15 @@ def main(
 
             current_state = read_monitor_state(resolved_project)
             current_status = current_state.get("status", "") if current_state else ""
-            if current_status not in (RUN_STATUS_DONE, RUN_STATUS_FAILED, RUN_STATUS_KILLED):
+            pending_after_exit = check_pending_tasks(
+                resolved_project / config.tasks_dir.name,
+                config.progress_file,
+            )
+            if pending_after_exit or current_status not in (
+                RUN_STATUS_DONE,
+                RUN_STATUS_FAILED,
+                RUN_STATUS_KILLED,
+            ):
                 write_monitor_state(
                     resolved_project,
                     {
@@ -3936,7 +4155,7 @@ def _run_main(
         standalone: Bypass opencode.json and use this model directly.
         from_task: Resume from a specific task prefix.
         only_task: Run a single task only.
-        persistent: Persistent mode (30 retries, 2 retrospective rounds).
+        persistent: Persistent mode (30 retries, 3 retrospective rounds).
         free_mode: Use free-tier OpenRouter models.
         no_monitor: Skip tmux monitoring.
         headless: Headless mode (no interactive prompts).
@@ -4114,6 +4333,8 @@ def _run_main(
 
     # Try to read the original goal for retrospective context
     original_goal = _read_goal_from_instructions(tasks_dir)
+    if original_goal and _infinite_loop_active(config) and not goal_text.strip():
+        config._infinite_loop_goal = original_goal  # type: ignore[attr-defined]
 
     # Filter to pending.  Terminal tasks (Done or Failed) are NOT pending —
     # a failed task requires explicit human/reviewer action before the
@@ -4127,7 +4348,13 @@ def _run_main(
     # When pending tasks exist and we're not in headless/plan mode, show
     # a resume screen so the user can confirm, adjust settings, or replan.
     # Skip if mode flags were already set via CLI (--free, --persistent).
-    if not headless and not plan and not only_task and not from_task:
+    if (
+        not headless
+        and not plan
+        and not only_task
+        and not from_task
+        and not _infinite_loop_active(config)
+    ):
         any_mode_flag = persistent or free_mode
         if not any_mode_flag:
             if (use_tui or _tui_mode_enabled()) and provider is not None:
@@ -4231,6 +4458,7 @@ def _run_main(
                     resume.get("force_reassessment", config.force_reassessment)
                 )
                 _apply_persistent_mode(config)
+                _apply_infinite_loop_mode(config)
 
                 config.token_budget_per_hour = int(resume.get("token_budget_per_hour") or 0)
 
@@ -4251,6 +4479,7 @@ def _run_main(
                 )
 
     _apply_persistent_mode(config)
+    _apply_infinite_loop_mode(config)
 
     # Warn if tasks/INSTRUCTIONS.md is missing — not fatal, just informational
     instructions_md = tasks_dir / "INSTRUCTIONS.md"
@@ -4390,6 +4619,7 @@ def _run_main(
     collected_retrospective_rounds: list[RetrospectiveRound] = []
 
     if should_run_retrospective:
+        validation_feedback = ""
         for round_num in range(1, config.retrospective_rounds + 1):
             console.print()
             console.print(
@@ -4403,6 +4633,7 @@ def _run_main(
                 round_number=round_num,
                 project_dir=project,
                 original_goal=original_goal,
+                validation_feedback=validation_feedback,
                 model_override=architect_model or None,
             )
 
@@ -4448,6 +4679,7 @@ def _run_main(
                     retro_exc = e
             if retro_exc is not None:
                 console.print(f"[red]Retrospective round {round_num} failed: {retro_exc}[/red]")
+                success = False
                 break
             retro_duration = time.time() - retro_start
 
@@ -4463,13 +4695,32 @@ def _run_main(
             )
 
             if not retro_result.tasks_created:
+                validation = _validate_cycle(tasks_dir, progress_file)
+                _write_cycle_validation_to_progress(progress_file, validation, round_num)
+                collected_retrospective_rounds[-1].validation_passed = validation.passed
+                collected_retrospective_rounds[-1].validation_reason = validation.reason
+                collected_retrospective_rounds[-1].unresolved_tasks = list(
+                    validation.unresolved_tasks
+                )
+                if validation.passed:
+                    console.print()
+                    console.print(
+                        f"[#7cc800]✓ Retrospective {round_num} — "
+                        "validation passed[/#7cc800]  [dim]build is clean[/dim]"
+                    )
+                    success = True
+                    break
+
+                validation_feedback = _format_cycle_validation_feedback(validation)
                 console.print()
                 console.print(
-                    f"[#7cc800]✓ Retrospective {round_num} — no issues found[/#7cc800]  "
-                    f"[dim]build is clean[/dim]"
+                    f"[yellow]⚠ Retrospective {round_num} validation failed[/yellow]  "
+                    f"[dim]{validation.reason}[/dim]"
                 )
-                # No issues found — skip remaining rounds
-                break
+                if round_num >= config.retrospective_rounds:
+                    success = False
+                    break
+                continue
 
             console.print()
             console.print(
@@ -4482,6 +4733,18 @@ def _run_main(
             retro_tasks = discover_tasks(tasks_dir)
             retro_tasks = _filter_and_set_status(retro_tasks, progress_file)
             retro_pending = [t for t in retro_tasks if _task_needs_work(t)]
+
+            unsafe_tasks = _unsafe_retrospective_tasks(retro_pending)
+            if unsafe_tasks:
+                console.print(
+                    "[red]Retrospective created unsafe recovery task(s); refusing to execute.[/red]"
+                )
+                console.print(
+                    "[dim]Forbidden destructive git/file recovery instructions found in: "
+                    f"{', '.join(unsafe_tasks)}[/dim]"
+                )
+                success = False
+                break
 
             # Add retrospective tasks to the monitor writer so they appear
             # on the dashboard
@@ -4518,18 +4781,43 @@ def _run_main(
                 )
             except RuntimeError as e:
                 console.print(f"\n[red]Error: {e}[/red]")
+                success = False
                 break
             except Exception as e:
                 console.print(
                     f"\n[red]Unexpected error during retrospective execution: {e!r}[/red]"
                 )
                 logger.error(f"Unexpected error during retrospective execution: {e!r}")
+                success = False
                 break
 
             all_results.extend(retro_results)
 
             if not retro_success:
                 console.print(f"[red]Fix-up execution failed after retrospective {round_num}[/red]")
+
+            validation = _validate_cycle(tasks_dir, progress_file)
+            _write_cycle_validation_to_progress(progress_file, validation, round_num)
+            collected_retrospective_rounds[-1].validation_passed = validation.passed
+            collected_retrospective_rounds[-1].validation_reason = validation.reason
+            collected_retrospective_rounds[-1].unresolved_tasks = list(validation.unresolved_tasks)
+            if validation.passed:
+                console.print()
+                console.print(
+                    f"[#7cc800]✓ Retrospective {round_num} validation passed[/#7cc800]  "
+                    "[dim]cycle is clean[/dim]"
+                )
+                success = True
+                break
+
+            validation_feedback = _format_cycle_validation_feedback(validation)
+            console.print()
+            console.print(
+                f"[yellow]⚠ Retrospective {round_num} validation failed[/yellow]  "
+                f"[dim]{validation.reason}[/dim]"
+            )
+            if round_num >= config.retrospective_rounds:
+                success = False
                 break
 
     # ── Final summary ──────────────────────────────────────────────────
@@ -4558,9 +4846,7 @@ def _run_main(
         # TUI path: show the animated success screen instead of the plain
         # terminal summary.  The screen blocks until the user presses Enter,
         # Q, or Escape, then the ArchitectAppRunner exits cleanly.
-        suppress_success_screen = _suppress_success_screen or bool(
-            getattr(config, "_infinite_loop_enabled", False)
-        )
+        suppress_success_screen = _suppress_success_screen or bool(_infinite_loop_active(config))
         if use_tui and not suppress_success_screen:
             try:
                 from the_architect.tui.runner import active_runner
@@ -4618,7 +4904,7 @@ def _run_main(
         logger.error(f"Error generating final summary: {exc!r}")
         console.print(f"\n[red]Error generating final summary: {exc}[/red]")
 
-    if success and (_return_on_success or bool(getattr(config, "_infinite_loop_enabled", False))):
+    if success and (_return_on_success or _infinite_loop_active(config)):
         return
 
     raise SystemExit(0 if success else 1)
@@ -5639,7 +5925,7 @@ def tui_cmd() -> None:
     """Launch the Textual TUI (phase 1 — standalone preview).
 
     Phase 1 boots the execution screen with a tabbed viewport
-    (Output / Events / Details) and a status footer. It is a preview
+    (Live / Progress / Diagnostics / Settings) and a status footer. It is a preview
     surface — later phases wire it into planning, retrospective,
     reassessment, and interactive run/resume/config.
     """

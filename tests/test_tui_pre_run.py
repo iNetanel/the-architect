@@ -1,4 +1,4 @@
-"""Tests for Phase 12 pre-run screens (provider / goal / scope).
+"""Tests for Phase 12 pre-run screens (provider / scope and related pickers).
 
 Phase 16 note: the ``*App`` classes were converted to ``*Screen``
 classes that live inside one persistent :class:`ArchitectApp`. Tests
@@ -13,11 +13,10 @@ from unittest.mock import MagicMock
 
 import pytest
 from textual.app import App
-from textual.widgets import ListView, TextArea
+from textual.widgets import ListView
 
 from the_architect.tui.screens.pre_run import (
     BACK_SENTINEL,
-    GoalScreen,
     ProviderOption,
     ProviderSelectionScreen,
     ScopeScreen,
@@ -66,44 +65,6 @@ class TestProviderSelectionScreen:
     @pytest.mark.asyncio
     async def test_cancel_returns_none(self) -> None:
         screen = ProviderSelectionScreen(options=[_fake_provider("A"), _fake_provider("B")])
-        harness = _Harness(screen)
-        async with harness.run_test() as pilot:
-            await pilot.pause()
-            screen.action_cancel()
-            await pilot.pause()
-        assert harness.dismissed is None
-
-
-class TestGoalScreen:
-    @pytest.mark.asyncio
-    async def test_submit_returns_text(self) -> None:
-        screen = GoalScreen()
-        harness = _Harness(screen)
-        async with harness.run_test() as pilot:
-            await pilot.pause()
-            area = screen.query_one("#goal_text", TextArea)
-            area.text = "Implement auth"
-            screen.action_submit()
-            await pilot.pause()
-        assert harness.dismissed == "Implement auth"
-
-    @pytest.mark.asyncio
-    async def test_submit_ignores_empty_text(self) -> None:
-        screen = GoalScreen()
-        harness = _Harness(screen)
-        async with harness.run_test() as pilot:
-            await pilot.pause()
-            # No text typed; submit should be a no-op.
-            screen.action_submit()
-            await pilot.pause()
-            assert harness.dismissed == "<not-dismissed>"
-            screen.action_cancel()
-            await pilot.pause()
-        assert harness.dismissed is None
-
-    @pytest.mark.asyncio
-    async def test_cancel_returns_none(self) -> None:
-        screen = GoalScreen()
         harness = _Harness(screen)
         async with harness.run_test() as pilot:
             await pilot.pause()
@@ -165,16 +126,6 @@ class TestScopeScreen:
 
 class TestBackNavigation:
     """Phase A: each pre-run screen dismisses with BACK_SENTINEL on Back."""
-
-    @pytest.mark.asyncio
-    async def test_goal_screen_back_returns_sentinel(self) -> None:
-        screen = GoalScreen()
-        harness = _Harness(screen)
-        async with harness.run_test() as pilot:
-            await pilot.pause()
-            screen.action_go_back()
-            await pilot.pause()
-        assert harness.dismissed is BACK_SENTINEL
 
     @pytest.mark.asyncio
     async def test_scope_screen_back_returns_sentinel(self) -> None:

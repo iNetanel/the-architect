@@ -952,14 +952,14 @@ When `--persistent` is enabled:
 | Setting | Normal Default | Persistent Mode |
 |---------|--------------|----------------|
 | `max_retries` | 3 | **30** |
-| `retrospective_rounds` | 1 | **2** |
+| `retrospective_rounds` | 1 | **3** |
 
-This is designed for long-running autonomous sessions where you want The Architect to keep trying until the work is genuinely complete — with a deeper second retrospective review pass.
+This is designed for long-running autonomous sessions where you want The Architect to keep trying until the work is genuinely complete — with deeper retrospective review and validation capacity.
 
 ### Full Flow with Persistent Mode
 
 ```
-Planning → Execution → Retrospective 1 → Execution (R-tasks) → Retrospective 2 → Execution (R-tasks) → Done
+Planning → Execution → Retrospective 1 → Validation/Fix → Retrospective 2 → Validation/Fix → Retrospective 3 → Done
 ```
 
 Persistent mode is available as:
@@ -990,7 +990,7 @@ All CLI flags can be set via environment variables, making headless mode fully C
 | `ARCHITECT_GOAL` | `--goal` | `"add dark mode"` |
 | `ARCHITECT_SCOPE` | `--scope` | `standard` |
 | `ARCHITECT_CONTEXT` | `--context` | `/path/to/spec.md` (path separator: `:` on Unix, `;` on Windows) |
-| `ARCHITECT_PROVIDER` | `--provider` | `claude-code` |
+| `ARCHITECT_PROVIDER` | Provider preference | `claude-code` |
 | `ARCHITECT_ARCHITECT_MODEL` | `--architect-model` | `openrouter/anthropic/claude-opus-4.5` |
 | `ARCHITECT_EXECUTION_MODEL` | `--execution-model` | `openrouter/google/gemini-2.5-pro` |
 
@@ -1037,7 +1037,7 @@ architect > run.log 2>&1         # piped stdout
 | Screen | When shown |
 |--------|-----------|
 | **Pre-run (tabbed)** | Goal / Provider / Models / Options tabs before planning |
-| **Execution** | Output / Events / Details tabs during task execution |
+| **Execution** | Live / Progress / Diagnostics / Settings tabs during task execution |
 | **Wait overlay** | Animated spinner during planning, retrospective, and reassessment |
 | **list** | `architect list --tui` |
 | **status** | `architect status --tui` |
@@ -1525,7 +1525,7 @@ retrospective_rounds = 1             # Review rounds after execution (0 = disabl
 free_mode = false                    # Use free OpenRouter models, rotate on rate limit
 
 # ── Persistent Mode ──────────────────────────────────────────────────────────
-persistent = false                   # 30 retries, 2 retrospective rounds
+persistent = false                   # 30 retries, 3 retrospective rounds
 
 # ── File Integrity Defense ───────────────────────────────────────────────────
 integrity = true                     # Snapshot existing files before edits (architect_eval_*)
@@ -1567,7 +1567,7 @@ token_budget_per_hour = 0           # Max tokens/rolling hour (0 = disabled)
 | `retry_prompt_mode` | str | `"focused"` | `"focused"` (structured) or `"same"` (identical) |
 | `retrospective_rounds` | int | `1` | Retrospective review rounds (0 = disabled) |
 | `free_mode` | bool | `false` | Use free OpenRouter models |
-| `persistent` | bool | `false` | Persistent mode (30 retries, 2 retrospective rounds) |
+| `persistent` | bool | `false` | Persistent mode (30 retries, 3 retrospective rounds) |
 | `integrity` | bool | `true` | Snapshot existing files before edits (`architect_eval_*`) |
 | `force_reassessment` | bool | `true` | Reassess pending tasks after every task; when false, reassess only after failures or downstream-impact signals |
 | `circuit_no_progress_threshold` | int | `3` | No-progress threshold (0 = disabled) |

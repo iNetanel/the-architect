@@ -12,7 +12,16 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from textual.widgets import Checkbox, Footer, ListView, RadioSet, Static, TabbedContent, TextArea
+from textual.widgets import (
+    Checkbox,
+    Footer,
+    Label,
+    ListView,
+    RadioSet,
+    Static,
+    TabbedContent,
+    TextArea,
+)
 
 from the_architect.core.provider import ArchitectProvider
 from the_architect.tui.screens.pre_run_tabbed import (
@@ -1037,6 +1046,10 @@ class TestPreRunScreen:
             await pilot.press("space")
             await pilot.pause()
             assert screen._collect_values().architect_model == "model-b"
+            selected_label = model_list.children[2].query_one(Label).render()
+            default_label = model_list.children[0].query_one(Label).render()
+            assert str(selected_label).startswith("● ")
+            assert str(default_label).startswith("○ ")
 
             # At the last model row, down leaves the model list for the agent list.
             screen.action_focus_next()

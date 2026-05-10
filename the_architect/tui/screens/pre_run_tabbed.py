@@ -273,7 +273,7 @@ class PreRunScreen(Screen[PreRunValues]):
         Binding("right", "next_tab", "Next tab", show=False, priority=True),
         Binding("left", "prev_tab", "Previous tab", show=False, priority=True),
         # Vertical arrows move focus/highlight only. Selection is explicit:
-        # Space or mouse click for options; Enter still submits the form.
+        # Space commits the focused option; Enter still submits the form.
         Binding("up", "focus_previous", "Previous field", show=False, priority=True),
         Binding("down", "focus_next", "Next field", show=False, priority=True),
         Binding("tab", "next_tab", "Next tab", show=False),
@@ -561,7 +561,7 @@ class PreRunScreen(Screen[PreRunValues]):
                         classes="tab_hint",
                     )
                     yield BlankOffCheckbox(
-                        "Persistent  (30 retries, 2 retrospective rounds)",
+                        "Persistent  (30 retries, 3 retrospective rounds)",
                         id="chk_persistent",
                         value=self._values.persistent,
                     )
@@ -828,11 +828,11 @@ class PreRunScreen(Screen[PreRunValues]):
         avoid Textual mount/unmount races when switching providers.
         """
         lv.clear()
-        lv.append(ListItem(Label("  (use provider default)")))
+        default_dot = "●" if not current else "○"
+        lv.append(ListItem(Label(f"{default_dot} (use provider default)")))
         for item in items:
-            label = f"  {item}"
-            if item == current:
-                label += "  [current]"
+            dot = "●" if item == current else "○"
+            label = f"{dot} {item}"
             lv.append(ListItem(Label(label)))
 
         # Select current if present, else the default row
@@ -1386,6 +1386,7 @@ class PreRunScreen(Screen[PreRunValues]):
             )
         else:
             return
+        self._update_models_tab()
         self._update_tab_labels()
         self._update_footer()
 

@@ -428,6 +428,34 @@ class TestWriteSuccessMdRetrospective:
         assert "## Retrospective" in content
         assert "—" in content  # no fix-up tasks
 
+    def test_retrospective_validation_failure_details(self, tmp_path: Path) -> None:
+        """Should include validation failure reasons and unresolved tasks."""
+        results = [TaskResult(prefix="T01", title="Test task", status="failed")]
+        retro_rounds = [
+            RetrospectiveRound(
+                round_number=1,
+                issues_found=0,
+                fixes_planned=0,
+                tasks_created=[],
+                validation_passed=False,
+                validation_reason="Original tasks failed or were blocked.",
+                unresolved_tasks=["T01 Test task (Failed)"],
+            ),
+        ]
+
+        path = write_success_md(
+            tmp_path,
+            results,
+            60.0,
+            TokenUsage(),
+            retrospective_rounds=retro_rounds,
+        )
+        content = path.read_text(encoding="utf-8")
+
+        assert "Validation Details" in content
+        assert "Original tasks failed or were blocked." in content
+        assert "T01 Test task (Failed)" in content
+
     def test_no_retrospective_section_when_none(self, tmp_path: Path) -> None:
         """Should NOT include Retrospective section when no rounds provided."""
         results = [

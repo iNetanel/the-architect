@@ -8,7 +8,7 @@
 #   MAJOR — breaking changes. Build floor jumps to MAJOR * 10000.
 #   MINOR — new features, backwards compatible
 #   PATCH — bug fixes
-#   BUILD — global counter, increments with every agent operation.
+#   BUILD — global counter, increments with every completed task/change.
 #           Never resets. Ever. Always 5 digits.
 #
 # Build floor by major version:
@@ -32,10 +32,10 @@
 #
 # For every PR — including docs and maintenance — increment __build__.
 # If using an AI agent to contribute, instruct it to increment __build__
-# for every file operation it performs. This is the intended workflow.
+# once for each completed task/change. This is the intended workflow.
 
 __version__ = "1.2.3"
-__build__ = 10280
+__build__ = 10312
 __author__ = "Netanel Eliav"
 __email__ = "inetanel@me.com"
 __repo__ = "https://github.com/inetanel/the-architect"

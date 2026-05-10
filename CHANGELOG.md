@@ -31,6 +31,16 @@ Added / Changed / Deprecated / Removed / Fixed / Security.
 - Startup splash now keeps a one-row gap between the Matrix rain animation and the "Starting up…" subtitle (build 10276).
 - Infinite Loop now treats normal nested completion exits as loop-continuation signals, preventing the TUI host from closing before the next automatic iteration starts (build 10278).
 - Startup splash body height now accounts for the added subtitle gap so "Starting up…" remains visible (build 10279).
+- Infinite Loop now preserves the original goal across iterations, skips resume/goal screens during loop chains, supports `## Goal Summary`, and forces execution if a replanned loop iteration leaves pending tasks (build 10309).
+- Retrospective rounds now run through a deterministic validation gate, feed validation failures into later retrospective rounds, and record validation failure details in `tasks/PROGRESS.md` and `tasks/SUMMARY.md` (build 10309).
+- Retrospective fix-up tasks that contain destructive git/file recovery instructions are refused before execution, and reviewer instructions now forbid git-based cleanup unless explicitly part of the task/baseline (build 10309).
+- Infinite Loop now keeps a dedicated loop-chain flag across planning/execution returns so a successful next-iteration planning pass cannot clear loop state and exit before executing the newly planned tasks (build 10312).
+- Fresh planning prompts now explicitly restart task numbering from the provided first task number instead of continuing numbering from previous run history or archive entries (build 10312).
+
+### Changed
+
+- Persistent Mode now uses 3 retrospective rounds; Infinite Loop without Persistent Mode raises retrospective depth to 2 rounds without silently enabling 30 retries (build 10309).
+- Pre-run selections now consistently render committed choices as `●` and unselected choices as `○`; arrow keys only move focus/highlight, while Space is the explicit commit key for model and option selection (build 10310).
 
 ## [1.2.3] (build 10268) — 2026-05-09
 

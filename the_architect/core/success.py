@@ -30,6 +30,18 @@ class RetrospectiveRound(BaseModel):
     duration_seconds: float = Field(
         default=0.0, description="Wall-clock duration of the review in seconds"
     )
+    validation_passed: bool | None = Field(
+        default=None,
+        description="Whether the deterministic validation gate passed after this round",
+    )
+    validation_reason: str = Field(
+        default="",
+        description="Validation failure reason, if the gate failed after this round",
+    )
+    unresolved_tasks: list[str] = Field(
+        default_factory=list,
+        description="Unresolved task details reported by validation",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -201,12 +213,33 @@ def write_success_md(
     if retrospective_rounds:
         lines.append("## Retrospective")
         lines.append("")
-        lines.append("| Round | Issues Found | Fix-up Tasks | Duration |")
-        lines.append("|-------|-------------|-------------|----------|")
+        lines.append("| Round | Issues Found | Fix-up Tasks | Validation | Duration |")
+        lines.append("|-------|-------------|-------------|------------|----------|")
         for rr in retrospective_rounds:
             tasks_str = ", ".join(rr.tasks_created) if rr.tasks_created else "—"
             dur_str = _fmt_duration(rr.duration_seconds) if rr.duration_seconds > 0 else "—"
-            lines.append(f"| {rr.round_number} | {rr.issues_found} | {tasks_str} | {dur_str} |")
+            if rr.validation_passed is None:
+                validation_str = "—"
+            elif rr.validation_passed:
+                validation_str = "✓ Passed"
+            else:
+                validation_str = f"✗ {rr.validation_reason or 'Failed'}"
+            lines.append(
+                f"| {rr.round_number} | {rr.issues_found} | {tasks_str} | "
+                f"{validation_str} | {dur_str} |"
+            )
+
+        failed_validation_rounds = [
+            rr for rr in retrospective_rounds if rr.validation_passed is False
+        ]
+        if failed_validation_rounds:
+            lines.append("")
+            lines.append("### Validation Details")
+            lines.append("")
+            for rr in failed_validation_rounds:
+                lines.append(f"- **Round {rr.round_number}:** {rr.validation_reason}")
+                for task in rr.unresolved_tasks:
+                    lines.append(f"  - {task}")
         lines.append("")
 
     # Insights

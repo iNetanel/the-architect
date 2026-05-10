@@ -104,7 +104,7 @@ the_architect/
     renderer.py       # TextualStreamRenderer — plugs into StreamRenderer seam
     session.py        # tui_execution_session + tui_wait_session context managers
     screens/
-      execution.py    # Output / Events / Details tabbed viewport + footer
+      execution.py    # Live / Progress / Diagnostics / Settings tabbed viewport + footer
       wait.py         # WaitScreen (overlay) + WaitApp (standalone) for long-running work
       mode_selection.py, resume.py, config.py, list_screen.py, status_screen.py,
       logs_screen.py, circuit_screen.py, monitor_screen.py

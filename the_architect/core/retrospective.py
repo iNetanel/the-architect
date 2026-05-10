@@ -52,6 +52,10 @@ class RetrospectiveRequest(BaseModel):
     round_number: int = Field(ge=1, description="Which retrospective round (1-based)")
     project_dir: Path = Field(description="The project root directory")
     original_goal: str = Field(default="", description="The user's original planning goal")
+    validation_feedback: str = Field(
+        default="",
+        description="Failure details from the previous validation gate, if any",
+    )
     model_override: str | None = Field(
         default=None,
         description="Model to use for the reviewer — same as the architect model by default",
@@ -275,33 +279,66 @@ def build_retrospective_instruction(request: RetrospectiveRequest, context: str)
         "=== PROJECT CONTEXT ===",
         context,
         "",
-        "=== YOUR ROLE ===",
-        "You are the retrospective reviewer — a supervisor and advisor, not a planner.",
-        "Review the work that was done, assess quality, and create fix-up tasks ONLY if needed.",
-        "If everything looks good, do not write any task files.",
-        "",
-        "=== INSTRUCTIONS ===",
-        "1. Read PROGRESS.md to understand what was done and what (if anything) failed",
-        "2. Read the task files in tasks/ to understand what was planned",
-        "3. Read the actual code that was written or modified",
-        "4. Run the test suite (e.g., pytest) to verify everything passes",
-        "5. Assess: completeness, quality, tests, consistency, correctness",
-        "6. If you find issues, write R-prefixed fix-up task files",
-        "7. If everything is clean, write no task files at all",
-        "",
-        "CRITICAL — WHERE TO WRITE TASK FILES:",
-        f"  Task files MUST go in: {abs_tasks_dir}/",
-        "  Use the R prefix for all fix-up tasks — never T or S.",
-        f"  First fix-up task: {abs_tasks_dir}/{next_prefix}_<descriptive_name>.md",
-        f"  Number subsequent tasks R{next_num + 1:02d}, R{next_num + 2:02d}, etc.",
-        "  Do NOT skip numbers. Do NOT reuse numbers from existing task files.",
-        "  Do NOT modify existing T or S task files.",
-        "  Do NOT write PROGRESS.md or INSTRUCTIONS.md — The Architect handles those.",
-        "",
-        "IMPORTANT: Do NOT write any task files if your review finds no issues.",
-        "The Architect will detect that no new tasks were created "
-        "and skip the next execution round.",
     ]
+
+    if request.validation_feedback.strip():
+        lines.extend(
+            [
+                "=== VALIDATION FAILURE FROM PREVIOUS ROUND ===",
+                request.validation_feedback.strip(),
+                "",
+                "Your next fix-up tasks must directly address this validation failure. "
+                "If you believe it is a false positive, create a narrowly scoped R-task "
+                "that verifies and documents why the cycle is actually clean.",
+                "",
+            ]
+        )
+
+    lines.extend(
+        [
+            "=== YOUR ROLE ===",
+            "You are the retrospective reviewer — a supervisor and advisor, not a planner.",
+            "Review the work that was done, assess quality, and create fix-up tasks "
+            "ONLY if needed.",
+            "If everything looks good, do not write any task files.",
+            "",
+            "=== HARD SAFETY RULES ===",
+            "Do NOT inspect or reason from git history, git status, or git diffs unless "
+            "the original task explicitly made git inspection part of the implementation work. "
+            "Even when a task mentions git status as a verification command, treat dirty "
+            "worktree findings as diagnostic only unless The Architect provides a task-start "
+            "baseline proving the current task caused those changes.",
+            "Do NOT create fix-up tasks that run destructive git commands or discard work.",
+            "Forbidden in R-task instructions: git checkout, git reset, git restore, "
+            "git clean, rm -rf, deleting user files, or reverting broad worktree changes.",
+            "Dirty worktree findings are diagnostic unless The Architect provides a "
+            "task-start baseline proving the current task created those changes.",
+            "If destructive recovery might be needed, write a human-action note in the "
+            "review summary instead of an executable R-task.",
+            "",
+            "=== INSTRUCTIONS ===",
+            "1. Read PROGRESS.md to understand what was done and what (if anything) failed",
+            "2. Read the task files in tasks/ to understand what was planned",
+            "3. Read the actual code that was written or modified",
+            "4. Run the test suite (e.g., pytest) to verify everything passes",
+            "5. Assess: completeness, quality, tests, consistency, correctness",
+            "6. If you find issues, write R-prefixed fix-up task files",
+            "7. If everything is clean, write no task files at all",
+            "",
+            "CRITICAL — WHERE TO WRITE TASK FILES:",
+            f"  Task files MUST go in: {abs_tasks_dir}/",
+            "  Use the R prefix for all fix-up tasks — never T or S.",
+            f"  First fix-up task: {abs_tasks_dir}/{next_prefix}_<descriptive_name>.md",
+            f"  Number subsequent tasks R{next_num + 1:02d}, R{next_num + 2:02d}, etc.",
+            "  Do NOT skip numbers. Do NOT reuse numbers from existing task files.",
+            "  Do NOT modify existing T or S task files.",
+            "  Do NOT write PROGRESS.md or INSTRUCTIONS.md — The Architect handles those.",
+            "",
+            "IMPORTANT: Do NOT write any task files if your review finds no issues.",
+            "The Architect will detect that no new tasks were created "
+            "and skip the next execution round.",
+        ]
+    )
 
     return "\n".join(lines)
 

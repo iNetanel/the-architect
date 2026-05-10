@@ -583,6 +583,9 @@ def build_planning_instruction(request: PlanningRequest, context: str) -> str:
             "  They will be archived automatically — treat them as historical context only.",
             "  tasks/archive/ contains ALREADY-EXECUTED sessions — do NOT re-plan that work.",
             "  Start fresh task numbering from the number given below.",
+            "  Historical T/R numbers in PROGRESS.md or archive summaries do NOT reserve numbers.",
+            "  If the first task file below says T01, create T01 even when old history "
+            "mentions T01.",
             "",
             "CRITICAL — WHERE TO WRITE TASK FILES:",
             f"  Task files MUST go in: {abs_tasks_dir}/",
@@ -593,7 +596,8 @@ def build_planning_instruction(request: PlanningRequest, context: str) -> str:
             f"First task file: {abs_tasks_dir}/{next_prefix}_<descriptive_name>.md",
             f"Number subsequent tasks {next_prefix[0]}{next_num + 1:02d}, "
             f"{next_prefix[0]}{next_num + 2:02d}, etc.",
-            "Do NOT skip numbers. Do NOT reuse numbers shown in the context above.",
+            "Do NOT skip numbers. Do NOT continue numbering from previous plan history or "
+            "archive entries.",
             "Do NOT read, write, or modify AGENTS.md or CLAUDE.md — "
             "those files belong to the user.",
         ]

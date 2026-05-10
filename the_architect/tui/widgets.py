@@ -3,16 +3,12 @@
 Hosts:
 
 - :class:`BlankOffCheckbox` — a :class:`~textual.widgets.Checkbox`
-  variant whose off-state marker is blank (a space) rather than a dim
-  ``X``. The stock Textual checkbox renders the same ``X`` glyph in
-  both states and communicates on/off only through colour — which is
-  easy to misread on dark themes, especially when the off-state colour
-  is close to the button background. Swapping the glyph itself removes
-  the ambiguity.
-- :class:`BlankOffRadioButton` — the same treatment for
-  :class:`~textual.widgets.RadioButton`: the filled ``●`` is shown only
-  for the selected option; unselected options render an empty slot
-  instead of a dim dot.
+  variant whose state is shown with filled/empty dots. The stock Textual
+  checkbox renders an ``X`` glyph that can read as selected even when dimmed;
+  using ``●`` / ``○`` makes on/off unambiguous in every theme.
+- :class:`BlankOffRadioButton` — the same filled/empty dot treatment for
+  :class:`~textual.widgets.RadioButton`, so selected vs unselected is visible
+  by glyph, not colour alone.
 - :data:`MATRIX_GLYPHS` — the pool of katakana / half-width katakana /
   digit characters used across the app's loading animations. Mirrors
   the iconic Matrix digital-rain alphabet (half-width katakana plus a
@@ -41,7 +37,7 @@ from textual.widgets import Checkbox, RadioButton, Static
 
 
 class BlankOffCheckbox(Checkbox):
-    """Checkbox that shows ``▐ ▌`` when off and ``▐X▌`` when on.
+    """Checkbox that shows ``▐○▌`` when off and ``▐●▌`` when on.
 
     Overrides :meth:`~textual.widgets._toggle_button.ToggleButton._button`
     to pick the inner glyph based on :attr:`value`, keeping the left and
@@ -53,17 +49,15 @@ class BlankOffCheckbox(Checkbox):
     def _button(self) -> Content:
         """Build the button content, swapping the inner glyph by state.
 
-        Reimplements the parent's :meth:`_button` body but substitutes a
-        space for :attr:`BUTTON_INNER` when :attr:`value` is false. This
-        is the glyph-level fix for the "dim X looks selected" problem;
-        it is independent of theme colours and of any CSS overrides.
+        Reimplements the parent's :meth:`_button` body but uses explicit
+        filled/empty dots instead of relying on colour or dimmed glyphs.
         """
         button_style = self.get_visual_style("toggle--button")
         side_style = Style(
             foreground=button_style.background,
             background=self.background_colors[1],
         )
-        inner = self.BUTTON_INNER if self.value else " "
+        inner = "●" if self.value else "○"
         return Content.assemble(
             (self.BUTTON_LEFT, side_style),
             (inner, button_style),
@@ -72,14 +66,10 @@ class BlankOffCheckbox(Checkbox):
 
 
 class BlankOffRadioButton(RadioButton):
-    """Radio button that shows ``▐ ▌`` when off and ``▐●▌`` when on.
+    """Radio button that shows ``▐○▌`` when off and ``▐●▌`` when on.
 
-    Same rationale as :class:`BlankOffCheckbox`: Textual's stock
-    :class:`~textual.widgets.RadioButton` renders its ``●`` glyph in
-    both states and communicates selected vs unselected only through
-    colour, which makes unselected options look like they still "have
-    something in the box". Swapping the glyph to a space on off makes
-    the single selected option unambiguous.
+    Same rationale as :class:`BlankOffCheckbox`: state must be visible by
+    glyph, not colour alone.
     """
 
     @property
@@ -90,7 +80,7 @@ class BlankOffRadioButton(RadioButton):
             foreground=button_style.background,
             background=self.background_colors[1],
         )
-        inner = self.BUTTON_INNER if self.value else " "
+        inner = "●" if self.value else "○"
         return Content.assemble(
             (self.BUTTON_LEFT, side_style),
             (inner, button_style),

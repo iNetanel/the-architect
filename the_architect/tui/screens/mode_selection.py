@@ -112,7 +112,7 @@ class ModeSelectionScreen(Screen[dict[str, bool | int]]):
                     classes="mode_help",
                 )
             yield BlankOffCheckbox(
-                "Persistent  (30 retries, 2 retrospective rounds)",
+                "Persistent  (30 retries, 3 retrospective rounds)",
                 id="chk_persistent",
                 value=self._initial_persistent,
             )
