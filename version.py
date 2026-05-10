@@ -35,7 +35,7 @@
 # once for each completed task/change. This is the intended workflow.
 
 __version__ = "1.2.3"
-__build__ = 10312
+__build__ = 10313
 __author__ = "Netanel Eliav"
 __email__ = "inetanel@me.com"
 __repo__ = "https://github.com/inetanel/the-architect"
