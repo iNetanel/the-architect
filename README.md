@@ -35,8 +35,9 @@ It wraps your agentic AI coding tool and adds everything it lacks out of the box
 | Agent hallucinates completion | Multi-signal completion detection |
 | You re-explain the project every time | Project structure auto-detected and injected |
 | Repo knowledge starts shallow | Pre-planning intelligence learns and repairs `ARCHITECT.md` |
-| One shot — no quality gate | Retrospective reviewer creates fix-up tasks |
+| One shot — no quality gate | Retrospective reviewer + validation gate creates fix-up tasks until clean |
 | Developer plans every task manually | AI planner decomposes the goal autonomously |
+| One run, then you start over | **Infinite Loop** — keep iterating the same goal hands-free until you stop it |
 
 The agent does the coding. The Architect makes sure it actually finishes.
 
@@ -234,8 +235,18 @@ Everything below is what you get on top of your AI coding CLI — none of it exi
 |---|---|---|
 | Code review | Manual | Retrospective reviewer runs after execution, reads actual code and tests |
 | Fix-up tasks | Manual | Reviewer creates R-prefixed fix-up tasks; they execute through the same pipeline |
+| Validation gate | None | Deterministic validation after each retrospective round; failures trigger another round and are recorded in `tasks/PROGRESS.md` and `tasks/SUMMARY.md` |
 | Cross-task drift | Silent | Inter-task reassessment updates pending tasks when completed work changes interfaces |
 | File corruption | Silent | Integrity defense: snapshot before edit, validate after write, restore on truncation |
+
+#### Long-Running Autonomy
+
+| | Raw CLI | With The Architect |
+|---|---|---|
+| Long unattended sessions | One run, then you start over | Persistent mode (30 retries, 3 retrospective rounds) for deeper recovery |
+| Repeating the same goal | Manual rerun every time | **Infinite Loop** — keeps planning, executing, reviewing, and validating the same goal with the same settings until you stop it |
+| Loop safety | Easy to spiral | Loop only advances after a successful planning → execution → retrospective → validation cycle; reviewer is forbidden from destructive git/file recovery |
+| Loop diagnostics | None | Lifecycle traces in `.architect/logs/the_architect.log` and `.architect/logs/architect_runtime.log` survive between iterations |
 
 #### Observability
 
@@ -501,6 +512,96 @@ tmux attach -t arch
 ```
 
 The `architect` process still writes live state to `.architect/monitor_state.json`, so `architect monitor --tui` (or the classic `architect monitor` tmux reattach, when run under `--no-tui`) works for reconnecting read-only.
+
+---
+
+## Run Modes
+
+### Persistent Mode
+
+Persistent mode is built for long, unattended sessions where you want The Architect to keep trying until the work is genuinely complete:
+
+- `max_retries = 30`
+- `retrospective_rounds = 3`
+
+Enable it any of these ways:
+
+```bash
+architect --persistent                          # CLI flag
+ARCHITECT_PERSISTENT=true architect             # environment variable
+```
+
+```toml
+[architect]
+persistent = true
+```
+
+Or toggle **Persistent** in the TUI Options tab before starting a run.
+
+### Infinite Loop
+
+Infinite Loop tells The Architect to keep iterating the same goal with the same provider, model, scope, and feature flags after each successful planning → execution → retrospective → validation cycle. The next iteration starts automatically and shows the planning screen, so it always feels like a fresh manual run.
+
+Use it when you want the agent to keep working a long-running goal hands-free:
+
+- generating a series of similar artifacts
+- running unattended improvement passes against the same brief
+- using the goal as a smoke / heartbeat task while you monitor the system
+
+**Enabling Infinite Loop**
+
+Open the **Options** tab on the pre-run / resume screen and toggle **Infinite Loop**. The TUI shows a confirmation warning before enabling it, because the loop will keep running until you stop it.
+
+**Stopping Infinite Loop**
+
+- Press `Ctrl+C` inside the TUI.
+- Use the pause menu and choose Stop.
+- From another terminal: `architect cancel`.
+
+**What carries over between iterations**
+
+- Original goal text (or `## Goal Summary` from `tasks/INSTRUCTIONS.md` when starting from existing tasks)
+- Provider, model, agent, scope, persistent / free / integrity / force-reassessment flags
+- Token budget and circuit-breaker configuration
+
+Each iteration starts task numbering at `T01` and writes a fresh `tasks/PROGRESS.md`, so successive runs do not pile up on top of each other. Previous iterations are preserved under `tasks/archive/YYYY-MM-DD_HHMMSS/`.
+
+**Loop safety**
+
+- Infinite Loop only advances after a fully successful cycle. A failing task, failed retrospective fix-up, or failed validation gate stops the loop.
+- Without Persistent mode, Infinite Loop automatically uses at least 2 retrospective rounds so a failed validation can trigger one recovery retrospective.
+- The retrospective reviewer is not allowed to issue destructive recovery (`git checkout`, `git reset`, `git restore`, `git clean`, `rm -rf`, etc.); fix-up tasks containing those instructions are refused before execution.
+- Validation results — passed/failed, reason, and unresolved tasks — are written to `tasks/PROGRESS.md` (`## Cycle Validation`) and `tasks/SUMMARY.md` (`### Validation Details`).
+
+**Diagnostics**
+
+Two persistent log files capture loop and TUI lifecycle events and survive between iterations:
+
+- `.architect/logs/the_architect.log`
+- `.architect/logs/architect_runtime.log`
+
+If a run ever exits unexpectedly mid-loop, those logs show exactly which iteration and phase it stopped in.
+
+### Free Mode
+
+Free mode rotates through zero-cost OpenRouter models when rate limits hit, so a session with no budget can keep running without manual intervention. Currently OpenCode-only.
+
+```bash
+architect --free
+```
+
+```toml
+[architect]
+free_mode = true
+```
+
+### Standalone Mode
+
+Standalone mode bypasses the provider's own configuration entirely and forces a single model for planning, execution, and retrospective. Useful for CI runs that must be deterministic or for quickly trying a model without reconfiguring the provider.
+
+```bash
+architect --standalone openrouter/anthropic/claude-sonnet-4.5
+```
 
 ---
 

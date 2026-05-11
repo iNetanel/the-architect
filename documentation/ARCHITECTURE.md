@@ -972,6 +972,67 @@ When set via the interactive screen or resume screen, the `persistent` setting i
 
 ---
 
+## 14a. Infinite Loop Mode
+
+Infinite Loop tells The Architect to keep iterating the same goal hands-free after each successful planning → execution → retrospective → validation cycle. It is intended for long-running autonomous sessions where the user wants the goal to keep being re-applied (for example, generating a series of similar artifacts, or running an unattended improvement pass against the same brief).
+
+### Enabling and Stopping
+
+- Toggle **Infinite Loop** in the TUI Options tab on the pre-run / resume screen. The TUI confirms before enabling because the loop will keep running until stopped.
+- Stop with `Ctrl+C`, the pause menu, or `architect cancel` from another terminal.
+
+Infinite Loop is a runtime-only mode — it is intentionally not exposed as a CLI flag or persisted to `architect.toml`, to avoid accidentally enabling it in CI or non-interactive runs.
+
+### Loop Driver
+
+The loop is driven by an outer loop in `the_architect.cli` that wraps `_run_main`. Planning and execution run as **explicit separate phases**:
+
+1. The driver calls `_run_main(plan=True, _return_after_planning=True)`.
+2. `_run_main` runs the planner, reloads `tasks/PROGRESS.md`, and returns immediately to the driver.
+3. The driver detects the new pending tasks and calls `_run_main(plan=False)` to execute them.
+4. Execution, reassessment, and retrospective run as normal.
+5. After validation passes, the driver resolves the goal again (`_resolve_infinite_loop_goal`) and starts the next iteration.
+
+This phase split is deliberate: it removes any reliance on a single nested `_run_main` call to "fall through" from planning into execution, which is what caused earlier loop-continuation regressions.
+
+### Settings Carried Over Between Iterations
+
+| Setting | Behaviour |
+|---------|-----------|
+| Goal text | Reused as-is; falls back to `## Goal` / `## Goal Summary` from `tasks/INSTRUCTIONS.md` when running on existing tasks |
+| Provider, model, agent | Reused from the active config |
+| Scope, persistent, free, integrity, force-reassessment | Reused from the active config |
+| Token budget, circuit breaker | Reused from the active config |
+| Task numbering | Reset to `T01` for each iteration |
+| `tasks/PROGRESS.md` | Recreated for each iteration; previous package archived |
+
+Without Persistent mode, Infinite Loop automatically raises `retrospective_rounds` to at least 2 so a failed validation gate can trigger one recovery retrospective without silently turning into 30-retry persistent mode.
+
+### Cycle Validation Gate
+
+After each retrospective round, The Architect runs a deterministic validation gate (`_validate_cycle`) that confirms the cycle is genuinely complete:
+
+- All planned tasks are `Done` (or are `Failed`/`Blocked` with a successful matching R-task recovery).
+- No `architect_eval_*` snapshots remain.
+- `tasks/PROGRESS.md` parses cleanly.
+
+The result is appended to `tasks/PROGRESS.md` under `## Cycle Validation` and surfaced in `tasks/SUMMARY.md` under `### Validation Details`. A failed validation triggers another retrospective round; if rounds are exhausted, the loop stops and the run is reported as failed.
+
+### Reviewer Safety
+
+The retrospective reviewer is explicitly forbidden from inspecting git history or producing destructive recovery (`git checkout`, `git reset`, `git restore`, `git clean`, `rm -rf`, broad file deletion, commits, tags, pushes) unless the original task asked for it. Any reviewer-created fix-up task containing those instructions is refused before execution.
+
+### Diagnostics
+
+Two persistent log files capture loop and runner lifecycle events and survive between iterations:
+
+- `.architect/logs/the_architect.log` — full INFO/DEBUG stream from the loop driver, runner, planner, and retrospective.
+- `.architect/logs/architect_runtime.log` — filtered stream containing only loop driver, TUI runner, and planning-handoff events (iteration entry, post-iteration pending check, unexpected TUI exit warning with stack).
+
+Per-iteration log archive cleanup preserves both files, so live-failure evidence is never wiped between iterations.
+
+---
+
 ## 15. Headless Mode — CI/Automated Execution
 
 Headless mode skips all interactive prompts. All values must come from flags or environment variables.

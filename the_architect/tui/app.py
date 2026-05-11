@@ -596,7 +596,14 @@ class ArchitectApp(App[None]):
         self._wait_screen.append_log(line)
 
     def hide_wait(self) -> None:
-        """Pop the wait screen overlay and return to the execution screen."""
+        """Hide the wait overlay without allowing the app to exit.
+
+        During Infinite Loop, planning for the next iteration can run after the
+        previous execution screen has been replaced by wait overlays. Popping the
+        current wait screen may empty Textual's screen stack, which exits the app
+        and kills the CLI flow before the newly planned tasks execute. Replacing
+        the wait screen with the execution screen keeps the persistent TUI alive.
+        """
         self._thread_safe_call(self._hide_wait_sync)
 
     def _hide_wait_sync(self) -> None:
@@ -604,7 +611,7 @@ class ArchitectApp(App[None]):
             return
         try:
             if self.screen is self._wait_screen:
-                self.pop_screen()
+                self.switch_screen(self._ensure_execution_screen())
         except Exception:
             pass
         self._wait_screen = None

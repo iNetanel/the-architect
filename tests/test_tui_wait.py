@@ -117,8 +117,9 @@ class TestArchitectAppWaitOverlay:
             assert isinstance(app.screen, WaitScreen)
 
     @pytest.mark.asyncio
-    async def test_hide_wait_pops_overlay(self) -> None:
-        from the_architect.tui.app import ArchitectApp, SplashScreen
+    async def test_hide_wait_returns_to_execution_without_emptying_stack(self) -> None:
+        from the_architect.tui.app import ArchitectApp
+        from the_architect.tui.screens.execution import ExecutionScreen
 
         app = ArchitectApp()
         async with app.run_test() as pilot:
@@ -128,9 +129,11 @@ class TestArchitectAppWaitOverlay:
             app._hide_wait_sync()
             await pilot.pause()
             assert app._wait_screen is None
-            # After dismissing the wait overlay we return to whatever
-            # screen was active before — the SplashScreen, in this test.
-            assert isinstance(app.screen, SplashScreen)
+            # Hide must not pop the final screen off the stack. Infinite Loop
+            # uses wait overlays between planning iterations; if the wait
+            # screen is the active screen, return to execution instead of
+            # letting the TUI app exit before newly planned tasks run.
+            assert isinstance(app.screen, ExecutionScreen)
 
     @pytest.mark.asyncio
     async def test_update_wait_updates_title_and_detail(self) -> None:

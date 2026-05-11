@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 
 import pytest
 from textual.app import ComposeResult
@@ -72,6 +73,59 @@ class TestArchitectAppRunner:
         with pytest.raises(_Boom, match="flow blew up"):
             runner.run()
         assert active_runner() is None
+
+    def test_unexpected_app_exit_waits_for_flow_without_killing_subprocesses(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An accidental TUI exit must not cancel an active CLI flow.
+
+        Infinite Loop can briefly leave only a wait overlay on the Textual
+        screen stack between iterations. If that stack exits unexpectedly, the
+        runner must keep the worker alive so newly planned tasks still execute.
+        """
+        from loguru import logger
+
+        kill_calls: list[bool] = []
+        completed: dict[str, bool] = {}
+        warnings: list[str] = []
+
+        def _kill_active_subprocesses() -> int:
+            kill_calls.append(True)
+            return 0
+
+        monkeypatch.setattr(
+            "the_architect.core.runner.kill_active_subprocesses",
+            _kill_active_subprocesses,
+        )
+
+        def _capture_warning(message: object) -> None:
+            warnings.append(str(message))
+
+        sink_id = logger.add(_capture_warning, level="WARNING", format="{message}")
+
+        try:
+
+            def _flow() -> str:
+                runner = active_runner()
+                assert runner is not None
+                runner.app.call_from_thread(runner.app.exit)
+                deadline = time.time() + 3.0
+                while active_runner() is not None and time.time() < deadline:
+                    time.sleep(0.05)
+                assert active_runner() is None
+                completed["flow"] = True
+                return "completed"
+
+            runner = ArchitectAppRunner(flow=_flow)
+
+            assert runner.run() == "completed"
+        finally:
+            logger.remove(sink_id)
+
+        assert completed["flow"] is True
+        assert kill_calls == []
+        assert active_runner() is None
+        assert any("exited unexpectedly" in msg for msg in warnings), warnings
 
 
 class TestRunSingleScreenPrefersActiveRunner:

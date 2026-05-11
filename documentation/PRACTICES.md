@@ -423,6 +423,57 @@ changed. This prevents later tasks from doing redundant or conflicting work.
 
 ---
 
+## Cycle Validation Gate
+
+After each retrospective round, The Architect runs a deterministic validation
+gate (`_validate_cycle`) before declaring the run complete. The gate confirms:
+
+- All planned tasks are `Done`, or are `Failed`/`Blocked` with a successful
+  matching R-task recovery.
+- No `architect_eval_*` snapshots remain.
+- `tasks/PROGRESS.md` parses cleanly.
+
+The result is appended to `tasks/PROGRESS.md` under `## Cycle Validation` and
+to `tasks/SUMMARY.md` under `### Validation Details`. A failed validation
+triggers another retrospective round; if rounds are exhausted, the run is
+reported as failed.
+
+The retrospective reviewer is not allowed to issue destructive recovery
+(`git checkout`, `git reset`, `git restore`, `git clean`, `rm -rf`,
+broad file deletion, commits, tags, pushes) unless the original task asked
+for it. Any reviewer-created fix-up task containing those instructions is
+refused before execution.
+
+---
+
+## Infinite Loop Mode
+
+Infinite Loop is a runtime-only TUI option that keeps rerunning the same goal
+with the same provider, model, scope, and feature flags after each successful
+planning → execution → retrospective → validation cycle. It is intentionally
+not exposed as a CLI flag or persisted to `architect.toml`, to avoid
+accidentally enabling it in CI or non-interactive runs.
+
+Loop guarantees:
+
+- The loop only advances after a fully successful cycle. A failing task,
+  failed retrospective fix-up, or failed validation gate stops the loop.
+- Without Persistent mode, Infinite Loop runtime-raises
+  `retrospective_rounds` to at least 2 so a failed validation can trigger
+  one recovery retrospective without silently turning into 30-retry
+  Persistent mode.
+- Each iteration resets task numbering at `T01` and writes a fresh
+  `tasks/PROGRESS.md`. Previous iterations are archived under
+  `tasks/archive/YYYY-MM-DD_HHMMSS/`.
+- Lifecycle traces are written to `.architect/logs/the_architect.log` and
+  `.architect/logs/architect_runtime.log`; both files survive per-iteration
+  log archive cleanup so live-failure evidence is never wiped between
+  iterations.
+
+Stop the loop with `Ctrl+C`, the pause menu, or `architect cancel`.
+
+---
+
 ## Documentation Updates
 
 After any task that introduces or changes any of the following, update the

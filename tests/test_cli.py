@@ -795,6 +795,41 @@ class TestRunMain:
             assert exc_info.value.code == 1
             mock_plan.assert_called_once()
 
+    def test_run_main_can_return_after_planning_for_infinite_loop_driver(
+        self, tmp_path: Path
+    ) -> None:
+        """Infinite Loop driver should own execution after each planning phase."""
+        from the_architect.cli import _run_main
+
+        mock_task = Task(
+            name="T01_test",
+            prefix="T01",
+            number=1,
+            path=tmp_path / "tasks" / "T01_test.md",
+            title="Test task",
+            status=TaskStatus.PENDING,
+        )
+        config = ArchitectConfig().resolve(tmp_path)
+        config._infinite_loop_enabled = True  # type: ignore[attr-defined]
+
+        with (
+            patch("the_architect.cli.discover_tasks", side_effect=[[], [mock_task]]),
+            patch("the_architect.cli._filter_and_set_status", side_effect=[[], [mock_task]]),
+            patch("the_architect.cli.run_planning_mode") as mock_plan,
+            patch("the_architect.cli._run_tasks_raw") as mock_run,
+        ):
+            _run_main(
+                project=tmp_path,
+                plan=True,
+                headless=True,
+                goal_text="Test goal",
+                _pre_loaded_config=config,
+                _return_after_planning=True,
+            )
+
+        mock_plan.assert_called_once()
+        mock_run.assert_not_called()
+
     def test_run_main_with_pending_tasks(self, tmp_path: Path) -> None:
         """Should run execution when there are pending tasks."""
         from the_architect.cli import _run_main

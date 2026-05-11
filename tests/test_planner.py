@@ -14,6 +14,7 @@ from the_architect.core.planner import (
     PlanningRequest,
     TaskScope,
     _clear_log_dir,
+    _enforce_planning_lifecycle_contract,
     _next_task_number,
     _rescue_stray_tasks,
     _summarize_progress_historical,
@@ -697,6 +698,47 @@ class TestBuildPlanningInstructionAdditional:
         assert "Historical T/R numbers" in instruction
         assert "Do NOT continue numbering from previous plan history" in instruction
         assert "Do NOT reuse numbers shown" not in instruction
+
+    def test_build_instruction_forbids_lifecycle_exemptions(self, tmp_path: Path) -> None:
+        """Planner prompt must not let simple tasks skip progress/build rules."""
+        request = PlanningRequest(
+            goal="Create a file",
+            scope=TaskScope.SIMPLE,
+            project_dir=tmp_path,
+        )
+
+        instruction = build_planning_instruction(request, "project context")
+
+        assert "Never tell task agents to skip PROGRESS.md updates" in instruction
+        assert "every completed task must increment root /version.py __build__" in instruction
+
+    def test_enforce_lifecycle_contract_corrects_bad_planner_output(self, tmp_path: Path) -> None:
+        """Contradictory planner output should be corrected before execution."""
+        from the_architect.core.tasks import Task, TaskStatus
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        instructions = tasks_dir / "INSTRUCTIONS.md"
+        task_path = tasks_dir / "T01_bad.md"
+        instructions.write_text(
+            "Do NOT add task completion to PROGRESS.md or bump build counter.\n",
+            encoding="utf-8",
+        )
+        task_path.write_text("No build counter bump is needed.\n", encoding="utf-8")
+        task = Task(
+            name="T01_bad",
+            prefix="T01",
+            number=1,
+            path=task_path,
+            title="Bad task",
+            status=TaskStatus.PENDING,
+        )
+
+        updated = _enforce_planning_lifecycle_contract(tasks_dir, [task])
+
+        assert updated == 2
+        assert "The Architect Lifecycle Contract" in instructions.read_text(encoding="utf-8")
+        assert "must update `tasks/PROGRESS.md`" in task_path.read_text(encoding="utf-8")
 
 
 class TestWriteInstructionsMd:

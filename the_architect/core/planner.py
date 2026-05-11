@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -564,6 +565,12 @@ def build_planning_instruction(request: PlanningRequest, context: str) -> str:
             "YOUR REQUIRED OUTPUTS: write task files, write goal-specific tasks/INSTRUCTIONS.md, "
             "and curate ARCHITECT.md durable project intelligence.",
             "Do NOT write PROGRESS.md.",
+            "IMPORTANT EXECUTION LIFECYCLE: task agents, not the planner, must update "
+            "tasks/PROGRESS.md when they complete work.",
+            "IMPORTANT BUILD LIFECYCLE: in this repository, every completed task must "
+            "increment root /version.py __build__ by exactly 1, even docs-only, "
+            "content-only, no-op, or simple verification tasks.",
+            "Never tell task agents to skip PROGRESS.md updates or skip the build bump.",
             "tasks/INSTRUCTIONS.md is the current goal's cross-task contract: include sequence, "
             "dependencies, goal-specific assumptions, shared contracts expected during this run, "
             "verification strategy, boundaries, and what later task agents must read from "
@@ -603,6 +610,62 @@ def build_planning_instruction(request: PlanningRequest, context: str) -> str:
         ]
     )
     return "\n".join(lines)
+
+
+_LIFECYCLE_CONTRACT = """
+
+---
+
+## The Architect Lifecycle Contract
+
+These rules override any contrary text above:
+
+- Every completed task must update `tasks/PROGRESS.md` with the real outcome before marking Done.
+- Every completed task in this repository must increment root `/version.py` `__build__` by
+  exactly 1.
+- This applies to docs-only, content-only, no-op, verification-only, and simple tasks.
+- Do not mark a task Done if the progress update or build bump is missing.
+""".strip()
+
+
+_LIFECYCLE_CONTRADICTION_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"do\s+not\s+[^\n]*(?:progress\.md|build|version|__build__)", re.IGNORECASE),
+    re.compile(r"no\s+(?:build\s+counter\s+)?bump", re.IGNORECASE),
+    re.compile(
+        r"not\s+part\s+of\s+the\s+architect'?s\s+standard\s+task\s+lifecycle", re.IGNORECASE
+    ),
+    re.compile(r"do\s+not\s+[^\n]*task\s+completion", re.IGNORECASE),
+)
+
+
+def _ensure_lifecycle_contract(path: Path) -> bool:
+    """Append mandatory execution lifecycle rules when planner output contradicts them."""
+    try:
+        content = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+
+    if _LIFECYCLE_CONTRACT in content:
+        return False
+
+    if not any(pattern.search(content) for pattern in _LIFECYCLE_CONTRADICTION_PATTERNS):
+        return False
+
+    path.write_text(content.rstrip() + "\n\n" + _LIFECYCLE_CONTRACT + "\n", encoding="utf-8")
+    logger.warning(f"Appended mandatory lifecycle contract to planner output: {path}")
+    return True
+
+
+def _enforce_planning_lifecycle_contract(tasks_dir: Path, tasks: list[Task]) -> int:
+    """Correct planner output that exempts tasks from progress/build lifecycle rules."""
+    updated = 0
+    instructions_md = tasks_dir / "INSTRUCTIONS.md"
+    if instructions_md.exists() and _ensure_lifecycle_contract(instructions_md):
+        updated += 1
+    for task in tasks:
+        if task.path.exists() and _ensure_lifecycle_contract(task.path):
+            updated += 1
+    return updated
 
 
 # ---------------------------------------------------------------------------
@@ -968,12 +1031,20 @@ def _clear_log_dir(log_dir: Path) -> None:
         return
     cleared = 0
     for f in log_dir.iterdir():
-        if f.is_file():
-            try:
-                f.unlink()
-                cleared += 1
-            except OSError as e:
-                logger.warning(f"Failed to remove log {f.name}: {e}")
+        if not f.is_file():
+            continue
+        # Preserve the persistent runtime log: the loop driver and the
+        # persistent TUI runner write lifecycle traces to
+        # ``the_architect.log`` and ``architect_runtime.log``. Wiping
+        # them between iterations would delete the very evidence we need
+        # to diagnose loop continuation regressions.
+        if f.name in {"the_architect.log", "architect_runtime.log"}:
+            continue
+        try:
+            f.unlink()
+            cleared += 1
+        except OSError as e:
+            logger.warning(f"Failed to remove log {f.name}: {e}")
     if cleared:
         logger.info(f"Cleared {cleared} log file(s) from {log_dir}")
 
@@ -1278,6 +1349,13 @@ async def run_planner(
         except OSError:
             architect_instructions = None
     _write_instructions_md(instructions_md, request.goal, tasks_after, architect_instructions)
+
+    lifecycle_updates = _enforce_planning_lifecycle_contract(tasks_dir, tasks_after)
+    if lifecycle_updates:
+        logger.warning(
+            f"Planning output contained lifecycle-rule contradictions; "
+            f"corrected {lifecycle_updates} file(s)"
+        )
 
     # Note: project rules file belongs to the user — we read it for context but never write it
     if provider is not None and provider.name == "claude-code":

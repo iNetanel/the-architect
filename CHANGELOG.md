@@ -18,29 +18,29 @@ empty [Unreleased] above it. Use Keep a Changelog section headings:
 Added / Changed / Deprecated / Removed / Fixed / Security.
 -->
 
+## [1.2.4] (build 10327) — 2026-05-11
+
 ### Added
 
-- Added an Infinite Loop option in the TUI Options tab that warns before enabling and automatically reruns the same goal with identical settings after successful completion until stopped (build 10269).
-
-### Fixed
-
-- Infinite Loop now requires confirmation every time it is re-enabled after a canceled warning, preventing an unconfirmed loop from starting on a later submit (build 10270).
-- Infinite Loop now suppresses the completion summary and continues rerunning when enabled from the pending-task resume screen, not only when enabled before initial planning (build 10271).
-- Options-tab up/down navigation now includes the Infinite Loop control instead of skipping from Force Reassessment to the token budget field (build 10272).
-- Pre-run keyboard navigation now moves focus/highlight without changing scope, provider, action, model, or agent selections; Space or mouse click is required to commit those choices (build 10274).
-- Startup splash now keeps a one-row gap between the Matrix rain animation and the "Starting up…" subtitle (build 10276).
-- Infinite Loop now treats normal nested completion exits as loop-continuation signals, preventing the TUI host from closing before the next automatic iteration starts (build 10278).
-- Startup splash body height now accounts for the added subtitle gap so "Starting up…" remains visible (build 10279).
-- Infinite Loop now preserves the original goal across iterations, skips resume/goal screens during loop chains, supports `## Goal Summary`, and forces execution if a replanned loop iteration leaves pending tasks (build 10309).
-- Retrospective rounds now run through a deterministic validation gate, feed validation failures into later retrospective rounds, and record validation failure details in `tasks/PROGRESS.md` and `tasks/SUMMARY.md` (build 10309).
-- Retrospective fix-up tasks that contain destructive git/file recovery instructions are refused before execution, and reviewer instructions now forbid git-based cleanup unless explicitly part of the task/baseline (build 10309).
-- Infinite Loop now keeps a dedicated loop-chain flag across planning/execution returns so a successful next-iteration planning pass cannot clear loop state and exit before executing the newly planned tasks (build 10312).
-- Fresh planning prompts now explicitly restart task numbering from the provided first task number instead of continuing numbering from previous run history or archive entries (build 10312).
+- **Infinite Loop mode.** Enable Infinite Loop in the TUI Options tab to keep rerunning the same goal with the same provider, model, scope, persistent/free flags, and integrity settings after each successful planning → execution → retrospective → validation cycle. The loop preserves the original goal across iterations, restarts task numbering each iteration, and shows the planning screen for every new iteration so it always feels like a fresh manual run. Stop it with Ctrl+C, the pause menu, or `architect cancel`.
+- **Retrospective validation gate.** Each retrospective round now ends with a deterministic validation check. Validation results — passed/failed, reason, and unresolved tasks — are written to `tasks/PROGRESS.md` (`## Cycle Validation`) and `tasks/SUMMARY.md` (`### Validation Details`), giving every run a clear, auditable post-execution verdict.
+- **Reviewer safety guardrails.** The retrospective reviewer is now explicitly forbidden from inspecting git history or producing destructive recovery (`git checkout`, `git reset`, `git restore`, `git clean`, `rm -rf`, etc.) unless the original task asked for it; any reviewer-created fix-up task containing such instructions is refused before execution.
+- **Persistent runtime diagnostics.** New `.architect/logs/the_architect.log` and `.architect/logs/architect_runtime.log` capture loop driver and TUI runner lifecycle events (iteration entry, post-iteration pending check, planning-to-execution handoff, unexpected TUI exits) and survive per-iteration log archive cleanup.
 
 ### Changed
 
-- Persistent Mode now uses 3 retrospective rounds; Infinite Loop without Persistent Mode raises retrospective depth to 2 rounds without silently enabling 30 retries (build 10309).
-- Pre-run selections now consistently render committed choices as `●` and unselected choices as `○`; arrow keys only move focus/highlight, while Space is the explicit commit key for model and option selection (build 10310).
+- **Persistent mode is deeper.** Persistent mode now uses 3 retrospective rounds (up from 2) so long-running unattended sessions get an extra review/fix/validate pass before completing.
+- **Infinite Loop minimum review depth.** Without Persistent mode, Infinite Loop automatically raises retrospective depth to 2 rounds so a failed validation can trigger one recovery retrospective without silently turning into 30-retry persistent mode.
+- **Pre-run selection visuals.** Pre-run pickers consistently render committed choices as `●` and unselected choices as `○`. Arrow keys only move focus/highlight; Space is the explicit commit key for model and option selection. Mouse click still works.
+- **Planning lifecycle contract.** Planning prompts now explicitly forbid lifecycle exemptions and append an authoritative execution contract whenever a planner-written task or `INSTRUCTIONS.md` claims simple/content/no-op work can skip `PROGRESS.md` updates or the mandatory build bump.
+
+### Fixed
+
+- **Loop continuation reliability.** Infinite Loop now drives planning and execution as explicit separate phases, keeps a dedicated loop-chain flag across nested returns, supports `## Goal Summary` for goal recovery, forces execution if a replanned iteration leaves pending tasks, and switches the persistent TUI back to the execution screen between iterations instead of popping its final screen. Together these eliminate the "second iteration plans then exits" failure.
+- **Persistent TUI runner survives unexpected exits.** If the Textual app exits while the worker flow is still active, the runner now waits for the flow to finish, treats `active_runner()` as unavailable so later phases stop reusing a dead UI, and does not kill provider subprocesses unless the user explicitly shuts down.
+- **Pre-run keyboard navigation.** Up/down navigation in the pre-run Options tab now includes the Infinite Loop control and never silently changes scope, provider, action, model, or agent selections; commit requires Space or mouse click.
+- **Infinite Loop confirmation flow.** Re-enabling Infinite Loop after canceling its warning now requires a fresh confirmation, and the loop suppresses the completion summary so it can keep rerunning when enabled from the pending-task resume screen.
+- **Startup splash spacing.** The startup splash now keeps a one-row gap between the Matrix rain animation and the "Starting up…" subtitle and reserves enough body height for the subtitle to remain visible.
 
 ## [1.2.3] (build 10268) — 2026-05-09
 

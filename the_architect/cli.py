@@ -3801,6 +3801,43 @@ def main(
             nonlocal execution_model_resolved, persistent, free_mode
             nonlocal _active_provider
 
+            # Configure file logging early so the Infinite Loop driver and
+            # TUI runner emit their lifecycle traces into
+            # ``.architect/logs/the_architect.log`` even when the alternate
+            # screen is active and stderr is hidden by Textual.
+            try:
+                from the_architect.core.runner import setup_logging
+
+                config.log_dir.mkdir(parents=True, exist_ok=True)
+                setup_logging(config.log_dir)
+                # Add a dedicated runtime log so loop/runner lifecycle
+                # entries survive the planner's per-iteration log
+                # archive cleanup. ``setup_logging`` already writes to
+                # ``the_architect.log`` (which the planner now skips when
+                # clearing the directory), but a second sink targeted
+                # specifically at runtime traces makes them trivial to
+                # locate during a live failure.
+                runtime_log = config.log_dir / "architect_runtime.log"
+                if not getattr(_run_main, "_runtime_log_added", False):
+                    logger.add(
+                        runtime_log,
+                        level="DEBUG",
+                        rotation="5 MB",
+                        retention=5,
+                        format="{time} | {level} | {name}:{line} | {message}",
+                        filter=lambda record: any(
+                            tag in record["message"]
+                            for tag in (
+                                "Infinite Loop",
+                                "Architect TUI app",
+                                "Planning phase completed",
+                            )
+                        ),
+                    )
+                    _run_main._runtime_log_added = True  # type: ignore[attr-defined]
+            except Exception as _log_exc:
+                logger.debug(f"Could not configure file logging early: {_log_exc!r}")
+
             # ── Self-update check ─────────────────────────────────
             # Runs while the splash animation is still showing.  The
             # PyPI request is short (5 s timeout); if an update exists
@@ -3946,12 +3983,20 @@ def main(
 
             loop_iteration = 1
             infinite_loop_chain_enabled = _infinite_loop_active(config)
+            logger.info(
+                "Infinite Loop driver: entering loop "
+                f"(active={infinite_loop_chain_enabled}, plan={plan_local['v']})"
+            )
             while True:
                 if infinite_loop_chain_enabled:
                     config._infinite_loop_enabled = True  # type: ignore[attr-defined]
                     config._infinite_loop_chain_enabled = True  # type: ignore[attr-defined]
 
                 infinite_loop_enabled = infinite_loop_chain_enabled or _infinite_loop_active(config)
+                logger.info(
+                    f"Infinite Loop driver: iteration {loop_iteration} starting "
+                    f"(plan={plan_local['v']}, active={infinite_loop_enabled})"
+                )
                 try:
                     _run_main(
                         project=resolved_project,
@@ -3973,17 +4018,31 @@ def main(
                         use_tui=use_tui,
                         _return_on_success=infinite_loop_enabled,
                         _suppress_success_screen=infinite_loop_enabled,
+                        _return_after_planning=infinite_loop_enabled and plan_local["v"],
                     )
                 except SystemExit as exc:
+                    logger.info(
+                        "Infinite Loop driver: nested run raised SystemExit "
+                        f"code={exc.code} during iteration {loop_iteration}"
+                    )
                     if not _infinite_loop_should_continue_after_exit(
                         config,
                         exc,
                         chain_enabled=infinite_loop_enabled,
                     ):
+                        logger.info(
+                            "Infinite Loop driver: SystemExit not eligible for loop "
+                            "continuation, re-raising"
+                        )
                         raise
+                    logger.info("Infinite Loop driver: SystemExit absorbed, continuing loop")
 
                 infinite_loop_chain_enabled = infinite_loop_enabled or _infinite_loop_active(config)
                 if not infinite_loop_chain_enabled:
+                    logger.info(
+                        "Infinite Loop driver: chain disabled after iteration "
+                        f"{loop_iteration}, exiting loop"
+                    )
                     return
 
                 config._infinite_loop_enabled = True  # type: ignore[attr-defined]
@@ -3992,6 +4051,10 @@ def main(
                 loop_tasks_dir = resolved_project / config.tasks_dir.name
                 loop_progress_file = config.progress_file
                 loop_pending = check_pending_tasks(loop_tasks_dir, loop_progress_file)
+                logger.info(
+                    f"Infinite Loop driver: post-iteration pending_tasks={loop_pending} "
+                    f"(plan_was={plan_local['v']})"
+                )
                 if loop_pending:
                     logger.warning(
                         "Infinite Loop iteration returned with pending tasks; "
@@ -4006,11 +4069,17 @@ def main(
                     loop_tasks_dir,
                 )
                 if not loop_goal:
+                    logger.error(
+                        "Infinite Loop driver: could not resolve a goal to reuse; stopping"
+                    )
                     console.print(
                         "[red]Infinite Loop could not find the original goal to reuse.[/red]"
                     )
                     raise SystemExit(1)
                 goal_text = loop_goal
+                logger.info(
+                    f"Infinite Loop driver: reusing goal for next iteration ({loop_goal!r:.80})"
+                )
 
                 try:
                     from the_architect.tui.runner import active_runner
@@ -4029,11 +4098,14 @@ def main(
                 except Exception as exc:
                     logger.debug(f"Infinite Loop status update failed: {exc!r}")
 
+                loop_iteration += 1
+                logger.info(
+                    f"Infinite Loop driver: starting iteration {loop_iteration} (plan=True)"
+                )
                 console.print(
                     f"[yellow]Infinite Loop[/yellow]  "
-                    f"[dim]starting iteration {loop_iteration + 1}[/dim]"
+                    f"[dim]starting iteration {loop_iteration}[/dim]"
                 )
-                loop_iteration += 1
                 plan_local["v"] = True
 
         # Mutable wrapper so _tui_flow (nested closure) can update
@@ -4123,6 +4195,7 @@ def _run_main(
     use_tui: bool = False,
     _return_on_success: bool = False,
     _suppress_success_screen: bool = False,
+    _return_after_planning: bool = False,
 ) -> None:
     """Main flow: planning, execution, and retrospective review.
 
@@ -4330,6 +4403,9 @@ def _run_main(
         if not tasks:
             console.print("[red]Planning did not create any tasks.[/red]")
             raise SystemExit(1)
+        if _return_after_planning:
+            logger.info("Planning phase completed and returned to outer driver before execution")
+            return
 
     # Try to read the original goal for retrospective context
     original_goal = _read_goal_from_instructions(tasks_dir)

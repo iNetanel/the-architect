@@ -28,9 +28,11 @@ from __future__ import annotations
 import atexit
 import signal
 import threading
+import traceback
 from collections.abc import Callable
 from typing import Any, TypeVar
 
+from loguru import logger
 from textual.screen import Screen
 
 from the_architect.tui.app import ArchitectApp
@@ -48,6 +50,8 @@ _ACTIVE_LOCK = threading.Lock()
 def active_runner() -> ArchitectAppRunner | None:
     """Return the runner that currently hosts the TUI, if any."""
     with _ACTIVE_LOCK:
+        if _ACTIVE_RUNNER is None or not _ACTIVE_RUNNER.app_available:
+            return None
         return _ACTIVE_RUNNER
 
 
@@ -77,6 +81,12 @@ class ArchitectAppRunner:
         self._flow_exception: BaseException | None = None
         self._flow_return: Any = None
         self._flow_done = threading.Event()
+        self._app_available = True
+
+    @property
+    def app_available(self) -> bool:
+        """Return whether the hosted Textual app is still running and reusable."""
+        return self._app_available and not self.app.shutdown_started
 
     def push_and_wait(self, screen: Screen[T]) -> T | None:
         """Push a screen on the hosted app and block until dismiss.
@@ -170,6 +180,28 @@ class ArchitectAppRunner:
         try:
             self.app.run()
         finally:
+            unexpected_app_exit = not self._flow_done.is_set() and not self.app.shutdown_started
+            if unexpected_app_exit:
+                logger.warning(
+                    "Architect TUI app exited unexpectedly while the worker flow is still active; "
+                    "marking active_runner unavailable and waiting for the flow to complete."
+                )
+                stack = "".join(traceback.format_stack())
+                logger.debug(f"Unexpected TUI exit stack:\n{stack}")
+                self._app_available = False
+                with _ACTIVE_LOCK:
+                    if _ACTIVE_RUNNER is self:
+                        _ACTIVE_RUNNER = None
+                # The TUI can disappear if Textual's screen stack is emptied by
+                # an overlay transition. That must not cancel the CLI flow: in
+                # Infinite Loop it happens after the next planning pass, right
+                # before the newly planned tasks should execute. Keep the worker
+                # alive and let the run finish rather than returning a dead app
+                # from active_runner() or killing provider subprocesses from
+                # under it. Explicit user shutdown still goes through
+                # begin_shutdown()/shutdown_started and is handled below.
+                self._flow_done.wait()
+
             # Restore whatever SIGINT handler was in place before we
             # took over (usually Python's default, or a pytest one).
             if _prev_sigint is not None:
@@ -177,29 +209,31 @@ class ArchitectAppRunner:
                     signal.signal(signal.SIGINT, _prev_sigint)
                 except (ValueError, OSError):
                     pass
-            # When the app exits (user hit Ctrl+C in the TUI, or the
-            # worker completed normally), make sure no provider
-            # subprocess is left running in the background. This is
-            # the critical half of the Ctrl+C fix — the event loop
-            # has already torn down, but a daemon worker thread may
-            # still be blocked on ``process.wait()`` for the child
-            # opencode / claude invocation. Kill anything tracked by
-            # the runner registry before we return.
-            try:
-                from the_architect.core.runner import kill_active_subprocesses
+            if not unexpected_app_exit:
+                # When the app exits (user hit Ctrl+C in the TUI, or the
+                # worker completed normally), make sure no provider
+                # subprocess is left running in the background. This is
+                # the critical half of the Ctrl+C fix — the event loop
+                # has already torn down, but a daemon worker thread may
+                # still be blocked on ``process.wait()`` for the child
+                # opencode / claude invocation. Kill anything tracked by
+                # the runner registry before we return.
+                try:
+                    from the_architect.core.runner import kill_active_subprocesses
 
-                kill_active_subprocesses()
-            except Exception:
-                pass
+                    kill_active_subprocesses()
+                except Exception:
+                    pass
 
             # Wait for the worker to finish so flow_exception /
             # flow_return are fully populated.
-            self._flow_done.wait(timeout=5.0)
+            self._flow_done.wait(timeout=None if unexpected_app_exit else 5.0)
             if self._worker is not None and self._worker.is_alive():
                 # Worker still stuck; don't block forever.
                 self._worker.join(timeout=1.0)
             with _ACTIVE_LOCK:
-                _ACTIVE_RUNNER = None
+                if _ACTIVE_RUNNER is self:
+                    _ACTIVE_RUNNER = None
             # Unregister the atexit hook now that we've cleaned up
             # synchronously — leaving it registered would fire again
             # at process exit and log "no active subprocesses" noise.
