@@ -138,3 +138,78 @@ class TestRunSelfUpdate:
                     run_self_update()
 
         assert exc_info.value.code == 0
+
+
+class TestIsNewerFallback:
+    """Tests for _is_newer() when the `packaging` library is unavailable.
+
+    Forces the fallback tuple-of-ints comparison path by mocking
+    `packaging.version.Version` to raise ImportError, simulating an
+    environment where `packaging` is not installed.
+    """
+
+    def test_newer_patch_fallback(self) -> None:
+        from the_architect.core.self_update import _is_newer
+
+        with patch.object(
+            __import__("packaging.version", fromlist=["Version"]),
+            "Version",
+            side_effect=ImportError("packaging not available"),
+        ):
+            assert _is_newer("1.2.1", "1.2.0") is True
+
+    def test_newer_minor_fallback(self) -> None:
+        from the_architect.core.self_update import _is_newer
+
+        with patch.object(
+            __import__("packaging.version", fromlist=["Version"]),
+            "Version",
+            side_effect=ImportError("packaging not available"),
+        ):
+            assert _is_newer("1.3.0", "1.2.0") is True
+
+    def test_newer_major_fallback(self) -> None:
+        from the_architect.core.self_update import _is_newer
+
+        with patch.object(
+            __import__("packaging.version", fromlist=["Version"]),
+            "Version",
+            side_effect=ImportError("packaging not available"),
+        ):
+            assert _is_newer("2.0.0", "1.9.9") is True
+
+    def test_same_version_fallback(self) -> None:
+        from the_architect.core.self_update import _is_newer
+
+        with patch.object(
+            __import__("packaging.version", fromlist=["Version"]),
+            "Version",
+            side_effect=ImportError("packaging not available"),
+        ):
+            assert _is_newer("1.0.0", "1.0.0") is False
+
+    def test_older_version_fallback(self) -> None:
+        from the_architect.core.self_update import _is_newer
+
+        with patch.object(
+            __import__("packaging.version", fromlist=["Version"]),
+            "Version",
+            side_effect=ImportError("packaging not available"),
+        ):
+            assert _is_newer("0.9.0", "1.0.0") is False
+
+    def test_non_numeric_segments_fallback(self) -> None:
+        from the_architect.core.self_update import _is_newer
+
+        with patch.object(
+            __import__("packaging.version", fromlist=["Version"]),
+            "Version",
+            side_effect=ImportError("packaging not available"),
+        ):
+            # Non-numeric segments are filtered by isdigit():
+            #   "1.2.4alpha" -> "4alpha".isdigit()=False -> (1, 2)
+            #   "1.2.3" -> (1, 2, 3)
+            #   (1,2) > (1,2,3) = False (shorter tuple loses)
+            assert _is_newer("1.2.4alpha", "1.2.3") is False
+            assert _is_newer("1.2.3alpha", "1.2.3") is False
+            assert _is_newer("1.2.3", "1.2.3alpha") is True

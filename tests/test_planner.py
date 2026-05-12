@@ -1048,13 +1048,14 @@ class TestArchivePreviousRunAdditional:
         assert result is None
 
     def test_archives_summary_with_task_package(self, tmp_path: Path) -> None:
-        """Should archive tasks/SUMMARY.md with task files and instructions."""
+        """Should archive package metadata with task files and instructions."""
         tasks_dir = tmp_path / "tasks"
         tasks_dir.mkdir()
         log_dir = tmp_path / ".architect" / "logs"
         log_dir.mkdir(parents=True)
         (tasks_dir / "T01_task.md").write_text("# T01", encoding="utf-8")
         (tasks_dir / "INSTRUCTIONS.md").write_text("# Instructions", encoding="utf-8")
+        (tasks_dir / "PROGRESS.md").write_text("# Progress", encoding="utf-8")
         (tasks_dir / "SUMMARY.md").write_text("# Summary", encoding="utf-8")
 
         archive_dir = archive_previous_run(tasks_dir, log_dir, tmp_path / "tasks" / "PROGRESS.md")
@@ -1062,10 +1063,12 @@ class TestArchivePreviousRunAdditional:
         assert archive_dir is not None
         assert (archive_dir / "T01_task.md").exists()
         assert (archive_dir / "INSTRUCTIONS.md").exists()
+        assert (archive_dir / "PROGRESS.md").read_text(encoding="utf-8") == "# Progress"
         assert (archive_dir / "SUMMARY.md").exists()
+        assert (tasks_dir / "PROGRESS.md").read_text(encoding="utf-8") == "# Progress"
 
     def test_archive_preserves_goal_md_for_infinite_loop(self, tmp_path: Path) -> None:
-        """GOAL.md should survive archive cleanup for the next loop iteration."""
+        """GOAL.md should be copied to history and survive for the next loop."""
         tasks_dir = tmp_path / "tasks"
         tasks_dir.mkdir()
         log_dir = tmp_path / ".architect" / "logs"
@@ -1077,7 +1080,7 @@ class TestArchivePreviousRunAdditional:
 
         assert archive_dir is not None
         assert (archive_dir / "T01_task.md").exists()
-        assert not (archive_dir / "GOAL.md").exists()
+        assert (archive_dir / "GOAL.md").read_text(encoding="utf-8").endswith("Permanent mission\n")
         assert (tasks_dir / "GOAL.md").read_text(encoding="utf-8").endswith("Permanent mission\n")
 
     def test_write_goal_md_records_original_goal(self, tmp_path: Path) -> None:

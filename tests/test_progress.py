@@ -404,6 +404,38 @@ class TestStringPathBranches:
             )
             assert get_next_task(str(progress_file)) == "R02"
 
+    def test_task_is_resolved_with_str_path(self) -> None:
+        """task_is_resolved should accept a string path and convert to Path."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            progress_file = Path(tmpdir) / "PROGRESS.md"
+            progress_file.write_text(
+                "| T01 | First | Done | 2026-04-13 |\n",
+                encoding="utf-8",
+            )
+            assert task_is_resolved(str(progress_file), "T01") is True
+
+    def test_task_status_with_str_path(self) -> None:
+        """task_status should accept a string path and convert to Path."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            progress_file = Path(tmpdir) / "PROGRESS.md"
+            progress_file.write_text(
+                "| T01 | First | Pending | — |\n",
+                encoding="utf-8",
+            )
+            assert task_status(str(progress_file), "T01") == "Pending"
+
+    def test_reconcile_task_status_with_str_path(self) -> None:
+        """reconcile_task_status should accept a string path and convert to Path."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            progress_file = Path(tmpdir) / "PROGRESS.md"
+            progress_file.write_text(
+                "| T01 | First | Pending | — |\n",
+                encoding="utf-8",
+            )
+            ok = reconcile_task_status(str(progress_file), "T01", "Done", completed="2026-04-13")
+            assert ok is True
+            assert task_is_done(progress_file, "T01") is True
+
 
 class TestUnreadableFileExceptionPaths:
     """Tests for OSError/UnicodeDecodeError handling in progress readers."""
@@ -488,6 +520,89 @@ class TestUnreadableFileExceptionPaths:
                 Path, "read_text", side_effect=UnicodeDecodeError("utf-8", b"", 0, 1, "invalid")
             ):
                 assert get_next_task(progress_file) == "T00"
+
+    def test_reconcile_task_status_oserror_returns_false(self) -> None:
+        """reconcile_task_status should return False when file is unreadable (OSError)."""
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            progress_file = Path(tmpdir) / "PROGRESS.md"
+            progress_file.write_text("| T01 | First | Pending | — |\n", encoding="utf-8")
+
+            with patch.object(Path, "read_text", side_effect=OSError("permission denied")):
+                assert reconcile_task_status(progress_file, "T01", "Done") is False
+
+    def test_reconcile_task_status_unicode_decode_error_returns_false(self) -> None:
+        """reconcile_task_status should return False when file has encoding errors."""
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            progress_file = Path(tmpdir) / "PROGRESS.md"
+            progress_file.write_text("| T01 | First | Pending | — |\n", encoding="utf-8")
+
+            with patch.object(
+                Path, "read_text", side_effect=UnicodeDecodeError("utf-8", b"", 0, 1, "invalid")
+            ):
+                assert reconcile_task_status(progress_file, "T01", "Done") is False
+
+    def test_reconcile_task_status_write_oserror_returns_false(self) -> None:
+        """reconcile_task_status should return False when write fails (OSError)."""
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            progress_file = Path(tmpdir) / "PROGRESS.md"
+            progress_file.write_text("| T01 | First | Pending | — |\n", encoding="utf-8")
+
+            with patch.object(Path, "write_text", side_effect=OSError("disk full")):
+                assert reconcile_task_status(progress_file, "T01", "Done") is False
+
+    def test_task_is_resolved_oserror_returns_false(self) -> None:
+        """task_is_resolved should return False when file is unreadable (OSError)."""
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            progress_file = Path(tmpdir) / "PROGRESS.md"
+            progress_file.write_text("| T01 | First | Done | 2026-04-13 |\n", encoding="utf-8")
+
+            with patch.object(Path, "read_text", side_effect=OSError("permission denied")):
+                assert task_is_resolved(progress_file, "T01") is False
+
+    def test_task_is_resolved_unicode_decode_error_returns_false(self) -> None:
+        """task_is_resolved should return False when file has encoding errors."""
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            progress_file = Path(tmpdir) / "PROGRESS.md"
+            progress_file.write_text("| T01 | First | Done | 2026-04-13 |\n", encoding="utf-8")
+
+            with patch.object(
+                Path, "read_text", side_effect=UnicodeDecodeError("utf-8", b"", 0, 1, "invalid")
+            ):
+                assert task_is_resolved(progress_file, "T01") is False
+
+    def test_task_status_oserror_returns_none(self) -> None:
+        """task_status should return None when file is unreadable (OSError)."""
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            progress_file = Path(tmpdir) / "PROGRESS.md"
+            progress_file.write_text("| T01 | First | Done | 2026-04-13 |\n", encoding="utf-8")
+
+            with patch.object(Path, "read_text", side_effect=OSError("permission denied")):
+                assert task_status(progress_file, "T01") is None
+
+    def test_task_status_unicode_decode_error_returns_none(self) -> None:
+        """task_status should return None when file has encoding errors."""
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            progress_file = Path(tmpdir) / "PROGRESS.md"
+            progress_file.write_text("| T01 | First | Done | 2026-04-13 |\n", encoding="utf-8")
+
+            with patch.object(
+                Path, "read_text", side_effect=UnicodeDecodeError("utf-8", b"", 0, 1, "invalid")
+            ):
+                assert task_status(progress_file, "T01") is None
 
 
 class TestTerminalStatusVocabulary:

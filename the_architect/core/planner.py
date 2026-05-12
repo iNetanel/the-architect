@@ -994,17 +994,21 @@ def archive_previous_run(
     """Archive task files from the previous run and clear the log directory.
 
     Moves all T- and R-prefixed task files, **INSTRUCTIONS.md**, and
-    **SUMMARY.md**
+    **SUMMARY.md**, and copies the completed package's **PROGRESS.md**
     into ``tasks/archive/YYYY-MM-DD_HHMMSS/`` so history is preserved but
     the new planning session starts clean.
 
     ``GOAL.md`` is intentionally left in place. It stores the original goal
     for an Infinite Loop chain and must be readable before every new planning
-    iteration, even after the previous task package is archived.
+    iteration, even after the previous task package is archived. It is also
+    copied into the archive so each package keeps the mission it was planned
+    from.
 
     INSTRUCTIONS.md and SUMMARY.md are archived alongside the task files because
     they contain the original goal, stack information, architecture notes, final
     outcomes, and retrospective information that make archived tasks meaningful.
+    PROGRESS.md is copied, not moved, so the next planner can still summarize
+    the previous package before overwriting the canonical live state file.
 
     Also clears the log directory (``log_dir``) because logs are internal
     The Architect artifacts — they have no user value after a run completes and
@@ -1056,6 +1060,15 @@ def archive_previous_run(
     for f in to_archive:
         try:
             shutil.move(str(f), archive_dir / f.name)
+            logger.info(f"Archived {f.name} → tasks/archive/{timestamp}/")
+        except OSError as e:
+            logger.warning(f"Failed to archive {f.name}: {e}")
+
+    for f in (tasks_dir / GOAL_FILE_NAME, progress_file):
+        if not f.exists() or not f.is_file():
+            continue
+        try:
+            shutil.copy2(f, archive_dir / f.name)
             logger.info(f"Archived {f.name} → tasks/archive/{timestamp}/")
         except OSError as e:
             logger.warning(f"Failed to archive {f.name}: {e}")

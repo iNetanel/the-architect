@@ -11,33 +11,32 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ## [Unreleased]
 
-### Added
-
-- Added comprehensive test coverage for the project intelligence pass (`intelligence.py`), including quality assessment, instruction building, section parsing, async refresh paths, agent override, non-agent prompt prepend, and non-zero exit handling (build 10339).
-- Added a project-local OpenCode `live-test-architect` skill and documented root `demi_project/` sandbox area for real headless Architect smoke runs, including timeout, interruption/resume, lock, and artifact checks (build 10333).
-- Added a dependency-free `demi_project` Ubuntu terminal resource dashboard demo app for live Architect sandbox testing (build 10334).
-- Added `demi_project` unittest coverage so Architect sandbox runs have a realistic test command to discover and execute (build 10335).
-
-### Changed
-
-- **CI: PyPI publish gated on tag pushes only (build 10331).** Plain pushes to `main` no longer queue the PyPI publish job (which previously waited indefinitely on environment approval on every build). Lint, test, build, and a GitHub pre-release still run on every push to `main`. PyPI publish now triggers strictly on `v*` tag pushes — create and push a `v<version>` tag to release. Removed the `check-pypi-version` job and the duplicate PyPI lookup in the `github-release` job; the prerelease flag is now derived from whether the trigger is a tag push.
-
-### Fixed
-
-- Infinite Loop now continues when a nested execution exits nonzero after writing a clean completed task state, preventing false-negative post-planning exits from stopping the loop (build 10342).
-- Infinite Loop planning now persists the original user goal in `tasks/GOAL.md` and reuses it before every planning iteration, while `tasks/INSTRUCTIONS.md` can remain focused on the selected cycle task (build 10343).
-- Non-loop planning with an empty or derived goal now removes stale `tasks/GOAL.md` instead of accidentally inheriting the previous completed goal; Infinite Loop still preserves it across iterations (build 10344).
-- Git-installed builds now ship and display the build counter in `architect --version`, `architect version`, and the TUI header (build 10345).
-- Formatted the new SuccessScreen test module so CI's `ruff format --check .` gate passes (build 10346).
-- Infinite Loop now treats clean post-task false-negative failures as successful before summary/monitor finalization, reuses existing review provider setup after transient `MultiplexedPath` resource-loader errors, and always disables terminal mouse reporting during persistent TUI cleanup so raw mouse escape fragments do not leak into the shell after unexpected exits (build 10348).
-- Hardened Infinite Loop/TUI recovery further: clean-state continuation now requires real completed task state, monitor finalization preserves terminal `FAILED` runs, unexpected Textual exits cannot hang indefinitely, alternate-screen cleanup is explicit, and retrospective/reassessment prompt routing works safely across OpenCode, Claude, Gemini, and Codex (build 10349).
-
 <!--
 Every completed task appends a bullet here and bumps __build__ in /version.py.
 When cutting a release, rename [Unreleased] to the version and add a fresh
 empty [Unreleased] above it. Use Keep a Changelog section headings:
 Added / Changed / Deprecated / Removed / Fixed / Security.
 -->
+
+## [1.2.5] (build 10353) — 2026-05-12
+
+### Added
+
+- Added the project-local OpenCode `live-test-architect` skill, documented `demi_project/` smoke-test sandbox, and included a dependency-free terminal dashboard demo with unittest coverage for realistic headless Architect validation (builds 10333-10335).
+- Expanded coverage for project intelligence, progress-state helpers, and self-update fallback version comparison paths, including unreadable `PROGRESS.md`, string-path handling, provider prompt routing, and missing-`packaging` behavior (builds 10339, 10350-10351).
+
+### Changed
+
+- CI now publishes to PyPI only from `v*` tag pushes; normal `main` pushes still lint, test, build, and create GitHub prereleases without waiting on PyPI environment approval (build 10331).
+- Infinite Loop now archives completed package snapshots of `GOAL.md` and final `PROGRESS.md` with task files, instructions, and summaries while preserving live root files for the next planner cycle (build 10352).
+- Refreshed the project SVG artwork with a denser Matrix-style Architect wordmark treatment.
+
+### Fixed
+
+- Hardened Infinite Loop continuation and recovery so completed task state survives nested nonzero exits, post-task false negatives, transient resource-loader failures, unexpected Textual exits, and stale monitor finalization (builds 10342, 10348-10349).
+- Persisted Infinite Loop goals in `tasks/GOAL.md`, reused them across planning iterations, and removed stale goals for non-loop planning so completed-loop context does not leak into unrelated runs (builds 10343-10344).
+- Git-installed builds now ship and display the build counter in `architect --version`, `architect version`, and the TUI header (build 10345).
+- Formatted the SuccessScreen test module so CI's `ruff format --check .` gate passes (build 10346).
 
 ## [1.2.4] (build 10327) — 2026-05-11
 
