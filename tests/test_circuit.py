@@ -1543,9 +1543,7 @@ class TestAttemptReplan:
 
         captured_instruction: str | None = None
 
-        async def capture_stream_provider(
-            instruction: str, **kwargs: Any
-        ) -> MagicMock:
+        async def capture_stream_provider(instruction: str, **kwargs: Any) -> MagicMock:
             nonlocal captured_instruction
             captured_instruction = instruction
             return mock_stream_result
