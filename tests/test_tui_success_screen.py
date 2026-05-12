@@ -162,7 +162,6 @@ class TestSuccessScreenRendering:
             total_tokens=tokens,
         )
 
-
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen)
@@ -182,7 +181,6 @@ class TestSuccessScreenRendering:
             total_duration=90.0,
             total_tokens=tokens,
         )
-
 
         app = _HostApp()
         async with app.run_test() as pilot:
@@ -207,7 +205,6 @@ class TestSuccessScreenRendering:
             total_tokens=tokens,
         )
 
-
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen)
@@ -228,7 +225,6 @@ class TestSuccessScreenRendering:
             total_tokens=tokens,
         )
 
-
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen)
@@ -247,7 +243,6 @@ class TestSuccessScreenRendering:
             total_duration=125.0,
             total_tokens=tokens,
         )
-
 
         app = _HostApp()
         async with app.run_test() as pilot:
@@ -269,7 +264,6 @@ class TestSuccessScreenRendering:
             total_tokens=tokens,
         )
 
-
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen)
@@ -289,7 +283,6 @@ class TestSuccessScreenRendering:
             total_tokens=tokens,
         )
 
-
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen)
@@ -308,7 +301,6 @@ class TestSuccessScreenRendering:
             total_duration=45.0,
             total_tokens=tokens,
         )
-
 
         app = _HostApp()
         async with app.run_test() as pilot:
@@ -338,7 +330,6 @@ class TestSuccessScreenRendering:
             retrospective_rounds=rounds,
         )
 
-
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen)
@@ -361,7 +352,6 @@ class TestSuccessScreenRendering:
             retrospective_rounds=[],
         )
 
-
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen)
@@ -381,7 +371,6 @@ class TestSuccessScreenRendering:
             total_tokens=tokens,
             success_md_path="tasks/SUMMARY.md",
         )
-
 
         app = _HostApp()
         async with app.run_test() as pilot:
@@ -403,7 +392,6 @@ class TestSuccessScreenRendering:
             success_md_path=None,
         )
 
-
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen)
@@ -421,7 +409,6 @@ class TestSuccessScreenRendering:
             total_duration=45.0,
             total_tokens=tokens,
         )
-
 
         app = _HostApp()
         async with app.run_test() as pilot:
@@ -441,7 +428,6 @@ class TestSuccessScreenRendering:
             total_duration=125.0,
             total_tokens=tokens,
         )
-
 
         app = _HostApp()
         async with app.run_test() as pilot:
@@ -470,7 +456,6 @@ class TestSuccessScreenExit:
             total_tokens=tokens,
         )
 
-
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen, callback=lambda result: setattr(app, "_dismiss_result", result))
@@ -493,7 +478,6 @@ class TestSuccessScreenExit:
             total_tokens=tokens,
         )
 
-
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen)
@@ -513,7 +497,6 @@ class TestSuccessScreenExit:
             total_tokens=tokens,
         )
 
-
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen)
@@ -532,7 +515,6 @@ class TestSuccessScreenExit:
             total_duration=45.0,
             total_tokens=tokens,
         )
-
 
         app = _HostApp()
         async with app.run_test() as pilot:
@@ -559,7 +541,6 @@ class TestSuccessScreenEdgeCases:
             total_tokens=tokens,
         )
 
-
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen)
@@ -576,7 +557,6 @@ class TestSuccessScreenEdgeCases:
             total_duration=30.0,
             total_tokens=tokens,
         )
-
 
         app = _HostApp()
         async with app.run_test() as pilot:
@@ -606,7 +586,6 @@ class TestSuccessScreenEdgeCases:
             total_tokens=tokens,
             retrospective_rounds=rounds,
         )
-
 
         app = _HostApp()
         async with app.run_test() as pilot:

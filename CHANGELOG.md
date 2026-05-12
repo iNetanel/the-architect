@@ -28,6 +28,7 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 - Infinite Loop planning now persists the original user goal in `tasks/GOAL.md` and reuses it before every planning iteration, while `tasks/INSTRUCTIONS.md` can remain focused on the selected cycle task (build 10343).
 - Non-loop planning with an empty or derived goal now removes stale `tasks/GOAL.md` instead of accidentally inheriting the previous completed goal; Infinite Loop still preserves it across iterations (build 10344).
 - Git-installed builds now ship and display the build counter in `architect --version`, `architect version`, and the TUI header (build 10345).
+- Formatted the new SuccessScreen test module so CI's `ruff format --check .` gate passes (build 10346).
 
 <!--
 Every completed task appends a bullet here and bumps __build__ in /version.py.
