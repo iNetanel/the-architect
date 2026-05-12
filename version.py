@@ -23,22 +23,22 @@
 #   1. Bump __version__ here and version in pyproject.toml
 #   2. Bump __build__ here
 #   3. Add entry to CHANGELOG.md
-#   4. Push to main — CI auto-creates a GitHub pre-release tagged v<ver>+<build>
-#   5. To publish to PyPI: create and push a `v<ver>` tag
-#      (e.g. `git tag v1.2.5 && git push --tags`).
-#      CI then creates the canonical GitHub release and publishes to PyPI
-#      (after your approval on the `pypi` environment).
+#   4. Push to main — if SemVer changed, CI creates the canonical GitHub
+#      release and requests PyPI approval; otherwise it creates a GitHub
+#      pre-release tagged v<ver>+<build>.
+#   5. Optional manual path: create and push a `v<ver>` tag
+#      (e.g. `git tag v1.2.5 && git push --tags`) to publish that tag.
 #   6. After PyPI upload — record SHA256 hashes in NOTICE (first release only)
 #
-# Pushes to main (no tag) only create a GitHub pre-release — they never
-# publish to PyPI. PyPI publish is gated strictly on `v*` tag pushes.
+# Build-only pushes to main create a GitHub pre-release and never publish to
+# PyPI. SemVer-changing pushes to main and v* tag pushes publish after approval.
 #
 # For every PR — including docs and maintenance — increment __build__.
 # If using an AI agent to contribute, instruct it to increment __build__
 # once for each completed task/change. This is the intended workflow.
 
 __version__ = "1.2.5"
-__build__ = 10353
+__build__ = 10354
 __author__ = "Netanel Eliav"
 __email__ = "inetanel@me.com"
 __repo__ = "https://github.com/inetanel/the-architect"

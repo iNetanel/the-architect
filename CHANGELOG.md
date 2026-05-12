@@ -18,7 +18,7 @@ empty [Unreleased] above it. Use Keep a Changelog section headings:
 Added / Changed / Deprecated / Removed / Fixed / Security.
 -->
 
-## [1.2.5] (build 10353) — 2026-05-12
+## [1.2.5] (build 10354) — 2026-05-12
 
 ### Added
 
@@ -33,6 +33,7 @@ Added / Changed / Deprecated / Removed / Fixed / Security.
 
 ### Fixed
 
+- Restored the release workflow so a SemVer change on `main` creates the canonical GitHub release and triggers the PyPI publishing job behind the `pypi` approval environment; build-only pushes still create prereleases only (build 10354).
 - Hardened Infinite Loop continuation and recovery so completed task state survives nested nonzero exits, post-task false negatives, transient resource-loader failures, unexpected Textual exits, and stale monitor finalization (builds 10342, 10348-10349).
 - Persisted Infinite Loop goals in `tasks/GOAL.md`, reused them across planning iterations, and removed stale goals for non-loop planning so completed-loop context does not leak into unrelated runs (builds 10343-10344).
 - Git-installed builds now ship and display the build counter in `architect --version`, `architect version`, and the TUI header (build 10345).

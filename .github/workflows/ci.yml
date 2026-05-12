@@ -103,32 +103,75 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  github-release:
-    # Auto-creates a GitHub pre-release for every green build on main.
-    # Tag pushes (v*) produce the canonical release + trigger the PyPI publish job.
-    name: GitHub Release
+  release-metadata:
+    # Decides whether this run is a build-only prerelease or a SemVer release.
+    # On main, a SemVer change in pyproject.toml triggers the same release path as a v* tag.
+    name: Release Metadata
     runs-on: ubuntu-latest
     needs: build
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      build: ${{ steps.version.outputs.build }}
+      tag: ${{ steps.version.outputs.tag }}
+      is_release: ${{ steps.version.outputs.is_release }}
+      should_publish: ${{ steps.version.outputs.should_publish }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Extract version and build
+        id: version
+        run: |
+          VERSION=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          ROOT_VERSION=$(python3 -c "import re; print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', open('version.py').read()).group(1))")
+          BUILD=$(python3 -c "import re; print(re.search(r'__build__\s*=\s*(\d+)', open('version.py').read()).group(1))")
+          if [[ "$VERSION" != "$ROOT_VERSION" ]]; then
+            echo "pyproject.toml version ($VERSION) does not match version.py ($ROOT_VERSION)" >&2
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            if [[ "$TAG" != "v${VERSION}" ]]; then
+              echo "Tag ($TAG) does not match project version (v${VERSION})" >&2
+              exit 1
+            fi
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            echo "is_release=true" >> "$GITHUB_OUTPUT"
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          else
+            PREVIOUS_VERSION=""
+            BEFORE_SHA="${{ github.event.before }}"
+            if [[ -n "$BEFORE_SHA" ]] && git cat-file -e "$BEFORE_SHA:pyproject.toml" 2>/dev/null; then
+              PREVIOUS_VERSION=$(git show "$BEFORE_SHA:pyproject.toml" | python3 -c 'import sys, tomllib; print(tomllib.loads(sys.stdin.read())["project"]["version"])')
+            fi
+
+            if [[ -n "$PREVIOUS_VERSION" && "$PREVIOUS_VERSION" != "$VERSION" ]]; then
+              echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+              echo "is_release=true" >> "$GITHUB_OUTPUT"
+              echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "tag=v${VERSION}+${BUILD}" >> "$GITHUB_OUTPUT"
+              echo "is_release=false" >> "$GITHUB_OUTPUT"
+              echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+  github-release:
+    # Auto-creates a GitHub prerelease for build-only main pushes.
+    # SemVer-changing main pushes and v* tag pushes create canonical releases.
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build, release-metadata]
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v6
-
-      - name: Extract version and build
-        id: version
-        run: |
-          VERSION=$(python3 -c "import re; print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', open('version.py').read()).group(1))")
-          BUILD=$(python3 -c "import re; print(re.search(r'__build__\s*=\s*(\d+)', open('version.py').read()).group(1))")
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
-            echo "is_release=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=v${VERSION}+${BUILD}" >> "$GITHUB_OUTPUT"
-            echo "is_release=false" >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Download distribution artefacts
         uses: actions/download-artifact@v8
@@ -139,23 +182,23 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: v${{ steps.version.outputs.version }} (build ${{ steps.version.outputs.build }})
-          prerelease: ${{ steps.version.outputs.is_release == 'false' }}
+          tag_name: ${{ needs.release-metadata.outputs.tag }}
+          name: v${{ needs.release-metadata.outputs.version }} (build ${{ needs.release-metadata.outputs.build }})
+          prerelease: ${{ needs.release-metadata.outputs.is_release == 'false' }}
           files: dist/*
           generate_release_notes: true
 
   publish:
-    # Publishes to PyPI only on `v*` tag pushes.
-    # Build-only pushes to main create a GitHub pre-release but never reach this job.
+    # Publishes to PyPI on SemVer-changing main pushes or v* tag pushes.
+    # Build-only pushes to main create a GitHub prerelease but never reach this job.
     # The `pypi` environment requires @iNetanel approval before upload.
     #
     # Uses PyPI Trusted Publishing (OIDC) — no API tokens required.
     # See: https://docs.pypi.org/trusted-publishers/
     name: Publish to PyPI
     runs-on: ubuntu-latest
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [github-release, release-metadata]
+    if: needs.release-metadata.outputs.should_publish == 'true'
     environment:
       name: pypi
       url: https://pypi.org/p/the-architect
