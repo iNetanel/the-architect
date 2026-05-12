@@ -11,6 +11,16 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ## [Unreleased]
 
+### Added
+
+- Added a project-local OpenCode `live-test-architect` skill and documented root `demi_project/` sandbox area for real headless Architect smoke runs, including timeout, interruption/resume, lock, and artifact checks (build 10333).
+- Added a dependency-free `demi_project` Ubuntu terminal resource dashboard demo app for live Architect sandbox testing (build 10334).
+- Added `demi_project` unittest coverage so Architect sandbox runs have a realistic test command to discover and execute (build 10335).
+
+### Changed
+
+- **CI: PyPI publish gated on tag pushes only (build 10331).** Plain pushes to `main` no longer queue the PyPI publish job (which previously waited indefinitely on environment approval on every build). Lint, test, build, and a GitHub pre-release still run on every push to `main`. PyPI publish now triggers strictly on `v*` tag pushes — create and push a `v<version>` tag to release. Removed the `check-pypi-version` job and the duplicate PyPI lookup in the `github-release` job; the prerelease flag is now derived from whether the trigger is a tag push.
+
 <!--
 Every completed task appends a bullet here and bumps __build__ in /version.py.
 When cutting a release, rename [Unreleased] to the version and add a fresh
