@@ -118,6 +118,9 @@ class PlanningResult(BaseModel):
     summary: str = Field(default="", description="Summary of what was planned")
 
 
+GOAL_FILE_NAME = "GOAL.md"
+
+
 # ---------------------------------------------------------------------------
 # Historical PROGRESS.md summarisation
 # ---------------------------------------------------------------------------
@@ -903,6 +906,45 @@ def _write_instructions_md(
     logger.info(f"Written tasks/INSTRUCTIONS.md with {len(tasks)} tasks")
 
 
+def _write_goal_md(tasks_dir: Path, goal: str) -> None:
+    """Write tasks/GOAL.md as the durable original goal for this planning chain."""
+    if not goal.strip():
+        return
+
+    goal_file = tasks_dir / GOAL_FILE_NAME
+    goal_file.parent.mkdir(parents=True, exist_ok=True)
+    goal_file.write_text(
+        "\n".join(
+            [
+                "# The Architect — Original Goal",
+                "",
+                goal.strip(),
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    logger.info("Written tasks/GOAL.md with original planning goal")
+
+
+def _sync_goal_md(tasks_dir: Path, goal: str, *, preserve_existing: bool = False) -> None:
+    """Synchronize tasks/GOAL.md with the current planning lifecycle."""
+    if goal.strip():
+        _write_goal_md(tasks_dir, goal)
+        return
+
+    if preserve_existing:
+        return
+
+    goal_file = tasks_dir / GOAL_FILE_NAME
+    try:
+        if goal_file.exists() and goal_file.is_file():
+            goal_file.unlink()
+            logger.info("Removed stale tasks/GOAL.md before non-loop planning")
+    except OSError as exc:
+        logger.warning(f"Failed to remove stale tasks/GOAL.md: {exc}")
+
+
 # ---------------------------------------------------------------------------
 # Pre-planning helpers — pending task detection and archive
 # ---------------------------------------------------------------------------
@@ -955,6 +997,10 @@ def archive_previous_run(
     **SUMMARY.md**
     into ``tasks/archive/YYYY-MM-DD_HHMMSS/`` so history is preserved but
     the new planning session starts clean.
+
+    ``GOAL.md`` is intentionally left in place. It stores the original goal
+    for an Infinite Loop chain and must be readable before every new planning
+    iteration, even after the previous task package is archived.
 
     INSTRUCTIONS.md and SUMMARY.md are archived alongside the task files because
     they contain the original goal, stack information, architecture notes, final
@@ -1103,6 +1149,17 @@ async def run_planner(
 
     # Archive task files from the previous run and clear logs.
     archive_previous_run(tasks_dir, config.log_dir, config.progress_file)
+
+    # Persist the user's original planning goal before invoking the planner.
+    # The planner may narrow INSTRUCTIONS.md to the selected cycle goal, but
+    # GOAL.md remains the durable source for Infinite Loop continuation.
+    # Outside Infinite Loop, an empty/derived planning request must not inherit
+    # a stale goal from the previous completed run.
+    preserve_goal = bool(
+        getattr(config, "_infinite_loop_enabled", False)
+        or getattr(config, "_infinite_loop_chain_enabled", False)
+    )
+    _sync_goal_md(tasks_dir, request.goal, preserve_existing=preserve_goal)
 
     # Snapshot tasks before planning so we can report what's new
     tasks_before = {s.name for s in discover_tasks(tasks_dir)}

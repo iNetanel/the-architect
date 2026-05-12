@@ -77,6 +77,43 @@ class TestMoreHelperFunctions:
             is True
         )
 
+    def test_infinite_loop_clean_exit_state_allows_false_negative_exit(
+        self, tmp_path: Path
+    ) -> None:
+        """A clean completed cycle should be eligible for loop continuation."""
+        from the_architect.cli import _infinite_loop_has_clean_exit_state
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01_done.md").write_text("# T01\n", encoding="utf-8")
+        progress = tasks_dir / "PROGRESS.md"
+        progress.write_text(
+            "\n".join(
+                [
+                    "# The Architect — Progress Tracker",
+                    "",
+                    "## Task Log",
+                    "",
+                    "| Task | Title | Status | Completed |",
+                    "|------|-------|--------|-----------|",
+                    "| T01 | Done task | Done | 2026-05-12 |",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        config = ArchitectConfig().resolve(tmp_path)
+
+        assert _infinite_loop_has_clean_exit_state(tmp_path, config) is True
+
+        progress.write_text(
+            progress.read_text(encoding="utf-8").replace(
+                "| T01 | Done task | Done | 2026-05-12 |",
+                "| T01 | Done task | Pending | — |",
+            ),
+            encoding="utf-8",
+        )
+        assert _infinite_loop_has_clean_exit_state(tmp_path, config) is False
+
     def test_truncate_goal_for_display_limits_long_goal(self) -> None:
         """Long goals should not overwhelm planning/execution surfaces."""
         from the_architect.cli import _truncate_goal_for_display
@@ -161,6 +198,42 @@ class TestMoreHelperFunctions:
 
         assert result == "Repeat the stored loop goal"
         assert config._infinite_loop_goal == "Repeat the stored loop goal"  # type: ignore[attr-defined]
+
+    def test_resolve_infinite_loop_goal_prefers_goal_md(self, tmp_path: Path) -> None:
+        """Infinite Loop should reuse the durable original goal, not the cycle goal."""
+        from the_architect.cli import _resolve_infinite_loop_goal
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "GOAL.md").write_text(
+            "# The Architect — Original Goal\n\nPermanent mission\n",
+            encoding="utf-8",
+        )
+        (tasks_dir / "INSTRUCTIONS.md").write_text(
+            "# Instructions\n\n## Goal\nNarrow cycle goal\n",
+            encoding="utf-8",
+        )
+        config = ArchitectConfig()
+
+        result = _resolve_infinite_loop_goal("", config, tasks_dir)
+
+        assert result == "Permanent mission"
+        assert config._infinite_loop_goal == "Permanent mission"  # type: ignore[attr-defined]
+
+    def test_read_goal_from_instructions_prefers_goal_md(self, tmp_path: Path) -> None:
+        """Execution summaries and retrospectives should see the original goal."""
+        from the_architect.cli import _read_goal_from_instructions
+
+        (tmp_path / "GOAL.md").write_text(
+            "# The Architect — Original Goal\n\nPermanent mission\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "INSTRUCTIONS.md").write_text(
+            "# Instructions\n\n## Goal\nNarrow cycle goal\n",
+            encoding="utf-8",
+        )
+
+        assert _read_goal_from_instructions(tmp_path) == "Permanent mission"
 
     def test_validate_cycle_requires_recovery_for_failed_original_task(
         self, tmp_path: Path

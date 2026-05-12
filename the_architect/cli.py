@@ -34,6 +34,7 @@ from the_architect import __version__
 from the_architect.config import ArchitectConfig, load_config, write_config
 from the_architect.core.monitor_state import MonitorStateWriter
 from the_architect.core.planner import (
+    GOAL_FILE_NAME,
     PlanningFailedError,
     PlanningRequest,
     check_pending_tasks,
@@ -253,6 +254,21 @@ def _infinite_loop_should_continue_after_exit(
     return exc.code is None or exc.code == 0
 
 
+def _infinite_loop_has_clean_exit_state(project: Path, config: ArchitectConfig) -> bool:
+    """Return True when on-disk task state is clean enough to continue the loop.
+
+    This is a defensive guard for rare nested-flow mismatches where the run
+    writes a successful summary and all task rows are terminal, but still exits
+    with ``SystemExit(1)``. Infinite Loop should not stop on that false negative.
+    Real incomplete or failed cycles remain blocking because validation catches
+    pending work and unrecovered failed/blocked original tasks.
+    """
+    tasks_dir = project / config.tasks_dir.name
+    if check_pending_tasks(tasks_dir, config.progress_file):
+        return False
+    return _validate_cycle(tasks_dir, config.progress_file).passed
+
+
 def _task_is_terminal(task: Task) -> bool:
     """Return True if a task's in-memory status is terminal (no more work).
 
@@ -286,7 +302,10 @@ def _resolve_infinite_loop_goal(
     tasks_dir: Path,
 ) -> str:
     """Return the goal to reuse for the next Infinite Loop planning pass."""
-    if current_goal.strip():
+    goal_file_goal = _read_goal_md(tasks_dir).strip()
+    if goal_file_goal:
+        goal = goal_file_goal
+    elif current_goal.strip():
         goal = current_goal.strip()
     else:
         stored_goal = str(getattr(config, "_infinite_loop_goal", "") or "").strip()
@@ -3077,6 +3096,22 @@ def _fmt_duration(seconds: float) -> str:
     return f"{m}:{s:02d}"
 
 
+def _read_goal_md(tasks_dir: Path) -> str:
+    """Read tasks/GOAL.md, returning the original planning goal when present."""
+    goal_md = tasks_dir / GOAL_FILE_NAME
+    if not goal_md.exists():
+        return ""
+    try:
+        content = goal_md.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+    lines = content.splitlines()
+    if lines and lines[0].strip().startswith("#"):
+        lines = lines[1:]
+    return "\n".join(lines).strip()
+
+
 def _read_goal_from_instructions(tasks_dir: Path) -> str:
     """Try to read the original goal from tasks/INSTRUCTIONS.md.
 
@@ -3088,6 +3123,10 @@ def _read_goal_from_instructions(tasks_dir: Path) -> str:
     Returns:
         The goal string, or empty string if not found.
     """
+    goal_md = _read_goal_md(tasks_dir)
+    if goal_md:
+        return goal_md
+
     instructions_md = tasks_dir / "INSTRUCTIONS.md"
     if not instructions_md.exists():
         return ""
@@ -4030,12 +4069,23 @@ def main(
                         exc,
                         chain_enabled=infinite_loop_enabled,
                     ):
-                        logger.info(
-                            "Infinite Loop driver: SystemExit not eligible for loop "
-                            "continuation, re-raising"
-                        )
-                        raise
-                    logger.info("Infinite Loop driver: SystemExit absorbed, continuing loop")
+                        if infinite_loop_enabled and _infinite_loop_has_clean_exit_state(
+                            resolved_project,
+                            config,
+                        ):
+                            logger.warning(
+                                "Infinite Loop driver: nested run raised nonzero SystemExit "
+                                f"code={exc.code}, but post-run task state is clean; "
+                                "continuing loop"
+                            )
+                        else:
+                            logger.info(
+                                "Infinite Loop driver: SystemExit not eligible for loop "
+                                "continuation, re-raising"
+                            )
+                            raise
+                    else:
+                        logger.info("Infinite Loop driver: SystemExit absorbed, continuing loop")
 
                 infinite_loop_chain_enabled = infinite_loop_enabled or _infinite_loop_active(config)
                 if not infinite_loop_chain_enabled:

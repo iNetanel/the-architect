@@ -18,6 +18,8 @@ from the_architect.core.planner import (
     _next_task_number,
     _rescue_stray_tasks,
     _summarize_progress_historical,
+    _sync_goal_md,
+    _write_goal_md,
     _write_instructions_md,
     _write_progress_md,
     archive_previous_run,
@@ -1061,6 +1063,52 @@ class TestArchivePreviousRunAdditional:
         assert (archive_dir / "T01_task.md").exists()
         assert (archive_dir / "INSTRUCTIONS.md").exists()
         assert (archive_dir / "SUMMARY.md").exists()
+
+    def test_archive_preserves_goal_md_for_infinite_loop(self, tmp_path: Path) -> None:
+        """GOAL.md should survive archive cleanup for the next loop iteration."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        log_dir = tmp_path / ".architect" / "logs"
+        log_dir.mkdir(parents=True)
+        (tasks_dir / "T01_task.md").write_text("# T01", encoding="utf-8")
+        (tasks_dir / "GOAL.md").write_text("# Goal\n\nPermanent mission\n", encoding="utf-8")
+
+        archive_dir = archive_previous_run(tasks_dir, log_dir, tmp_path / "tasks" / "PROGRESS.md")
+
+        assert archive_dir is not None
+        assert (archive_dir / "T01_task.md").exists()
+        assert not (archive_dir / "GOAL.md").exists()
+        assert (tasks_dir / "GOAL.md").read_text(encoding="utf-8").endswith("Permanent mission\n")
+
+    def test_write_goal_md_records_original_goal(self, tmp_path: Path) -> None:
+        """Planner should create a durable original-goal file for every plan."""
+        tasks_dir = tmp_path / "tasks"
+
+        _write_goal_md(tasks_dir, "Permanent mission")
+
+        assert (tasks_dir / "GOAL.md").read_text(encoding="utf-8") == (
+            "# The Architect — Original Goal\n\nPermanent mission\n"
+        )
+
+    def test_sync_goal_md_removes_stale_non_loop_goal(self, tmp_path: Path) -> None:
+        """Non-loop planning without an explicit goal should not inherit stale GOAL.md."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "GOAL.md").write_text("# Goal\n\nOld mission\n", encoding="utf-8")
+
+        _sync_goal_md(tasks_dir, "", preserve_existing=False)
+
+        assert not (tasks_dir / "GOAL.md").exists()
+
+    def test_sync_goal_md_preserves_existing_loop_goal(self, tmp_path: Path) -> None:
+        """Infinite Loop planning without a new goal should keep the durable goal."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "GOAL.md").write_text("# Goal\n\nPermanent mission\n", encoding="utf-8")
+
+        _sync_goal_md(tasks_dir, "", preserve_existing=True)
+
+        assert (tasks_dir / "GOAL.md").read_text(encoding="utf-8").endswith("Permanent mission\n")
 
 
 class TestClearLogDirAdditional:

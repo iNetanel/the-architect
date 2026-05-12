@@ -274,6 +274,40 @@ async def test_refresh_runs_with_agent_override_when_provider_supports_agents(
     assert call_kwargs["config_override"] == tmp_path / ".architect" / "architect.json"
 
 
+async def test_refresh_uses_standalone_mode_as_model_override(
+    tmp_path: Path,
+) -> None:
+    """config.standalone_mode should be forwarded as model_override to stream_provider."""
+    config = ArchitectConfig(standalone_mode="gpt-4o").resolve(tmp_path)
+    provider = MagicMock()
+    provider.supports_agents.return_value = True
+
+    mock_result = MagicMock()
+    mock_result.exit_code = 0
+
+    with (
+        patch(
+            "the_architect.core.intelligence.stream_provider",
+            new=AsyncMock(return_value=mock_result),
+        ) as mock_stream,
+        patch(
+            "the_architect.core.planner.gather_project_context",
+            return_value="## File Tree\nFile tree:",
+        ),
+    ):
+        assessment = await refresh_project_intelligence(
+            project_dir=tmp_path,
+            config=config,
+            provider=provider,
+            structure_report=_make_structure_report(),
+        )
+
+    assert assessment.should_run is True
+    mock_stream.assert_called_once()
+    call_kwargs = mock_stream.call_args.kwargs
+    assert call_kwargs["model_override"] == "gpt-4o"
+
+
 async def test_refresh_prepends_intelligence_prompt_when_provider_has_no_agents(
     tmp_path: Path,
 ) -> None:
