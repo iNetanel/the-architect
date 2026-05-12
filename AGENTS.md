@@ -140,6 +140,12 @@ Agents defined: `master` (default), `backend`, `frontend`, `qa-fast`, `qa-deep`,
 
 ---
 
+## Smoke Testing
+
+Use the `live-test-architect` skill for real smoke tests in disposable sandboxes. It covers headless provider runs, timeout handling, interruption/resume checks, and post-run artifact verification.
+
+---
+
 ## CHANGELOG
 
 Every user-visible change needs an entry under `## [Unreleased]` in `CHANGELOG.md`.
