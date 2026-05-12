@@ -18,6 +18,10 @@ empty [Unreleased] above it. Use Keep a Changelog section headings:
 Added / Changed / Deprecated / Removed / Fixed / Security.
 -->
 
+### Fixed
+
+- Simplified CI releases to a single `main` workflow run: SemVer changes create clean `vX.Y.Z` tags and releases titled with the build number, while build-only pushes run CI without creating releases or PyPI publish requests (build 10355).
+
 ## [1.2.5] (build 10354) — 2026-05-12
 
 ### Added

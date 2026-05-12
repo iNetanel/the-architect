@@ -3,7 +3,6 @@ name: CI
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
     branches: [main]
 
@@ -104,12 +103,12 @@ jobs:
           retention-days: 14
 
   release-metadata:
-    # Decides whether this run is a build-only prerelease or a SemVer release.
-    # On main, a SemVer change in pyproject.toml triggers the same release path as a v* tag.
+    # Decides whether this main push is build-only CI or a SemVer release.
+    # SemVer releases use clean tags (vX.Y.Z); the build number stays in the release title.
     name: Release Metadata
     runs-on: ubuntu-latest
     needs: build
-    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    if: github.ref == 'refs/heads/main'
     outputs:
       version: ${{ steps.version.outputs.version }}
       build: ${{ steps.version.outputs.build }}
@@ -134,40 +133,30 @@ jobs:
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "build=$BUILD" >> "$GITHUB_OUTPUT"
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            TAG="${GITHUB_REF#refs/tags/}"
-            if [[ "$TAG" != "v${VERSION}" ]]; then
-              echo "Tag ($TAG) does not match project version (v${VERSION})" >&2
-              exit 1
-            fi
-            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          PREVIOUS_VERSION=""
+          BEFORE_SHA="${{ github.event.before }}"
+          if [[ -n "$BEFORE_SHA" ]] && git cat-file -e "$BEFORE_SHA:pyproject.toml" 2>/dev/null; then
+            PREVIOUS_VERSION=$(git show "$BEFORE_SHA:pyproject.toml" | python3 -c 'import sys, tomllib; print(tomllib.loads(sys.stdin.read())["project"]["version"])')
+          fi
+
+          if [[ -n "$PREVIOUS_VERSION" && "$PREVIOUS_VERSION" != "$VERSION" ]]; then
+            echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
             echo "is_release=true" >> "$GITHUB_OUTPUT"
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
           else
-            PREVIOUS_VERSION=""
-            BEFORE_SHA="${{ github.event.before }}"
-            if [[ -n "$BEFORE_SHA" ]] && git cat-file -e "$BEFORE_SHA:pyproject.toml" 2>/dev/null; then
-              PREVIOUS_VERSION=$(git show "$BEFORE_SHA:pyproject.toml" | python3 -c 'import sys, tomllib; print(tomllib.loads(sys.stdin.read())["project"]["version"])')
-            fi
-
-            if [[ -n "$PREVIOUS_VERSION" && "$PREVIOUS_VERSION" != "$VERSION" ]]; then
-              echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
-              echo "is_release=true" >> "$GITHUB_OUTPUT"
-              echo "should_publish=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "tag=v${VERSION}+${BUILD}" >> "$GITHUB_OUTPUT"
-              echo "is_release=false" >> "$GITHUB_OUTPUT"
-              echo "should_publish=false" >> "$GITHUB_OUTPUT"
-            fi
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "is_release=false" >> "$GITHUB_OUTPUT"
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
           fi
 
   github-release:
-    # Auto-creates a GitHub prerelease for build-only main pushes.
-    # SemVer-changing main pushes and v* tag pushes create canonical releases.
+    # SemVer-changing main pushes create a clean vX.Y.Z tag and canonical release.
+    # Build-only main pushes do not create GitHub releases.
     name: GitHub Release
     runs-on: ubuntu-latest
     needs: [build, release-metadata]
-    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    if: needs.release-metadata.outputs.is_release == 'true'
     permissions:
       contents: write
     steps:
@@ -183,14 +172,15 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.release-metadata.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           name: v${{ needs.release-metadata.outputs.version }} (build ${{ needs.release-metadata.outputs.build }})
-          prerelease: ${{ needs.release-metadata.outputs.is_release == 'false' }}
+          prerelease: false
           files: dist/*
           generate_release_notes: true
 
   publish:
-    # Publishes to PyPI on SemVer-changing main pushes or v* tag pushes.
-    # Build-only pushes to main create a GitHub prerelease but never reach this job.
+    # Publishes to PyPI only on SemVer-changing main pushes.
+    # Build-only pushes to main run CI but never reach this job.
     # The `pypi` environment requires @iNetanel approval before upload.
     #
     # Uses PyPI Trusted Publishing (OIDC) — no API tokens required.
