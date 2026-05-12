@@ -1,0 +1,127 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 420" width="680" height="420">
+<title>Matrix Digital Rain — The Architect</title>
+
+<defs>
+  <linearGradient id="vfade" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0%"   stop-color="white" stop-opacity="1"/>
+    <stop offset="42%"  stop-color="white" stop-opacity="1"/>
+    <stop offset="75%"  stop-color="white" stop-opacity="0.5"/>
+    <stop offset="90%"  stop-color="white" stop-opacity="0.12"/>
+    <stop offset="100%" stop-color="white" stop-opacity="0"/>
+  </linearGradient>
+  <mask id="fade">
+    <rect width="680" height="420" fill="url(#vfade)"/>
+  </mask>
+
+  <!-- Gentle glow on head only -->
+  <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+    <feGaussianBlur stdDeviation="2.5" result="b"/>
+    <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+  </filter>
+
+  <style>
+    /* 4 green shades — no flicker classes, pure smooth fall */
+    .h  { font-family:'Courier New',Courier,monospace; font-size:14px; fill:#d4f5c0; filter:url(#glow); }
+    .g2 { font-family:'Courier New',Courier,monospace; font-size:14px; fill:#7ddb6b; }
+    .g3 { font-family:'Courier New',Courier,monospace; font-size:14px; fill:#3db832; }
+    .g4 { font-family:'Courier New',Courier,monospace; font-size:14px; fill:#1f8c1c; }
+
+    /* Smooth linear fall — no step-end, no opacity flicker */
+    .c0  { animation: fall 3.2s -0.4s  linear infinite; }
+    .c1  { animation: fall 4.1s -1.3s  linear infinite; }
+    .c2  { animation: fall 2.8s -0.9s  linear infinite; }
+    .c3  { animation: fall 4.6s -2.2s  linear infinite; }
+    .c4  { animation: fall 3.5s -0.5s  linear infinite; }
+    .c5  { animation: fall 3.8s -1.7s  linear infinite; }
+    .c6  { animation: fall 2.6s -1.1s  linear infinite; }
+    .c7  { animation: fall 4.3s -0.2s  linear infinite; }
+    .c8  { animation: fall 3.0s -2.0s  linear infinite; }
+    .c9  { animation: fall 4.0s -0.7s  linear infinite; }
+    .c10 { animation: fall 3.3s -1.5s  linear infinite; }
+    .c11 { animation: fall 4.5s -2.6s  linear infinite; }
+    .c12 { animation: fall 2.7s -0.6s  linear infinite; }
+    .c13 { animation: fall 4.2s -1.9s  linear infinite; }
+    .c14 { animation: fall 3.6s -1.0s  linear infinite; }
+    .c15 { animation: fall 3.9s -1.6s  linear infinite; }
+    .c16 { animation: fall 2.9s -2.4s  linear infinite; }
+    .c17 { animation: fall 4.4s -0.1s  linear infinite; }
+    .c18 { animation: fall 3.1s -1.8s  linear infinite; }
+    .c19 { animation: fall 3.7s -1.1s  linear infinite; }
+    .c20 { animation: fall 3.4s -1.4s  linear infinite; }
+    .c21 { animation: fall 4.1s -0.5s  linear infinite; }
+    .c22 { animation: fall 2.7s -2.1s  linear infinite; }
+    .c23 { animation: fall 4.6s -1.2s  linear infinite; }
+    .c24 { animation: fall 3.2s -0.8s  linear infinite; }
+    .c25 { animation: fall 3.8s -2.0s  linear infinite; }
+    .c26 { animation: fall 2.6s -0.3s  linear infinite; }
+    .c27 { animation: fall 4.3s -1.7s  linear infinite; }
+    .c28 { animation: fall 3.0s -0.9s  linear infinite; }
+    .c29 { animation: fall 4.0s -2.5s  linear infinite; }
+    .c30 { animation: fall 3.3s -1.2s  linear infinite; }
+    .c31 { animation: fall 4.5s -0.6s  linear infinite; }
+    .c32 { animation: fall 2.8s -1.9s  linear infinite; }
+    .c33 { animation: fall 4.2s -1.0s  linear infinite; }
+    .c34 { animation: fall 3.6s -2.6s  linear infinite; }
+    .c35 { animation: fall 3.9s -1.4s  linear infinite; }
+    .c36 { animation: fall 2.9s -0.2s  linear infinite; }
+    .c37 { animation: fall 4.4s -1.8s  linear infinite; }
+    .c38 { animation: fall 3.1s -1.0s  linear infinite; }
+    .c39 { animation: fall 3.7s -2.3s  linear infinite; }
+    .c40 { animation: fall 3.4s -0.4s  linear infinite; }
+    .c41 { animation: fall 4.1s -1.3s  linear infinite; }
+    .c42 { animation: fall 2.7s -2.0s  linear infinite; }
+
+    @keyframes fall {
+      from { transform: translateY(-280px); }
+      to   { transform: translateY(700px);  }
+    }
+  </style>
+</defs>
+
+<g mask="url(#fade)">
+
+<g class="c0"> <text class="h"  x="4"   y="0">ア</text><text class="g2" x="4"   y="16">ネ</text><text class="g2" x="4"   y="32">Z</text><text class="g3" x="4"   y="48">7</text><text class="g3" x="4"   y="64">コ</text><text class="g4" x="4"   y="80">ス</text><text class="g4" x="4"   y="96">3</text><text class="g4" x="4"   y="112">ラ</text></g>
+<g class="c1"> <text class="h"  x="20"  y="0">ノ</text><text class="g2" x="20"  y="16">A</text><text class="g2" x="20"  y="32">ウ</text><text class="g3" x="20"  y="48">9</text><text class="g3" x="20"  y="64">ト</text><text class="g4" x="20"  y="80">K</text><text class="g4" x="20"  y="96">ヲ</text><text class="g4" x="20"  y="112">ヒ</text></g>
+<g class="c2"> <text class="h"  x="36"  y="0">S</text><text class="g2" x="36"  y="16">エ</text><text class="g2" x="36"  y="32">2</text><text class="g3" x="36"  y="48">ヤ</text><text class="g3" x="36"  y="64">M</text><text class="g4" x="36"  y="80">イ</text><text class="g4" x="36"  y="96">6</text><text class="g4" x="36"  y="112">ネ</text></g>
+<g class="c3"> <text class="h"  x="52"  y="0">カ</text><text class="g2" x="52"  y="16">1</text><text class="g2" x="52"  y="32">ヒ</text><text class="g3" x="52"  y="48">X</text><text class="g3" x="52"  y="64">オ</text><text class="g4" x="52"  y="80">4</text><text class="g4" x="52"  y="96">レ</text><text class="g4" x="52"  y="112">ウ</text></g>
+<g class="c4"> <text class="h"  x="68"  y="0">8</text><text class="g2" x="68"  y="16">ケ</text><text class="g2" x="68"  y="32">T</text><text class="g3" x="68"  y="48">ユ</text><text class="g3" x="68"  y="64">0</text><text class="g4" x="68"  y="80">テ</text><text class="g4" x="68"  y="96">R</text><text class="g4" x="68"  y="112">コ</text></g>
+<g class="c5"> <text class="h"  x="84"  y="0">ホ</text><text class="g2" x="84"  y="16">F</text><text class="g2" x="84"  y="32">ク</text><text class="g3" x="84"  y="48">3</text><text class="g3" x="84"  y="64">セ</text><text class="g4" x="84"  y="80">V</text><text class="g4" x="84"  y="96">ワ</text><text class="g4" x="84"  y="112">ア</text></g>
+<g class="c6"> <text class="h"  x="100" y="0">D</text><text class="g2" x="100" y="16">ニ</text><text class="g2" x="100" y="32">5</text><text class="g3" x="100" y="48">ソ</text><text class="g3" x="100" y="64">G</text><text class="g4" x="100" y="80">ヘ</text><text class="g4" x="100" y="96">1</text><text class="g4" x="100" y="112">ヤ</text></g>
+<g class="c7"> <text class="h"  x="116" y="0">ミ</text><text class="g2" x="116" y="16">9</text><text class="g2" x="116" y="32">ハ</text><text class="g3" x="116" y="48">W</text><text class="g3" x="116" y="64">ツ</text><text class="g4" x="116" y="80">2</text><text class="g4" x="116" y="96">リ</text><text class="g4" x="116" y="112">ト</text></g>
+<g class="c8"> <text class="h"  x="132" y="0">J</text><text class="g2" x="132" y="16">ア</text><text class="g2" x="132" y="32">4</text><text class="g3" x="132" y="48">タ</text><text class="g3" x="132" y="64">Q</text><text class="g4" x="132" y="80">マ</text><text class="g4" x="132" y="96">8</text><text class="g4" x="132" y="112">ス</text></g>
+<g class="c9"> <text class="h"  x="148" y="0">ヨ</text><text class="g2" x="148" y="16">C</text><text class="g2" x="148" y="32">ラ</text><text class="g3" x="148" y="48">0</text><text class="g3" x="148" y="64">ノ</text><text class="g4" x="148" y="80">E</text><text class="g4" x="148" y="96">イ</text><text class="g4" x="148" y="112">ム</text></g>
+<g class="c10"><text class="h"  x="164" y="0">6</text><text class="g2" x="164" y="16">ス</text><text class="g2" x="164" y="32">I</text><text class="g3" x="164" y="48">ウ</text><text class="g3" x="164" y="64">7</text><text class="g4" x="164" y="80">ヒ</text><text class="g4" x="164" y="96">Y</text><text class="g4" x="164" y="112">リ</text></g>
+<g class="c11"><text class="h"  x="180" y="0">ヘ</text><text class="g2" x="180" y="16">O</text><text class="g2" x="180" y="32">カ</text><text class="g3" x="180" y="48">1</text><text class="g3" x="180" y="64">ナ</text><text class="g4" x="180" y="80">U</text><text class="g4" x="180" y="96">テ</text><text class="g4" x="180" y="112">エ</text></g>
+<g class="c12"><text class="h"  x="196" y="0">P</text><text class="g2" x="196" y="16">ロ</text><text class="g2" x="196" y="32">8</text><text class="g3" x="196" y="48">ケ</text><text class="g3" x="196" y="64">V</text><text class="g4" x="196" y="80">ワ</text><text class="g4" x="196" y="96">2</text><text class="g4" x="196" y="112">ホ</text></g>
+<g class="c13"><text class="h"  x="212" y="0">ニ</text><text class="g2" x="212" y="16">4</text><text class="g2" x="212" y="32">ホ</text><text class="g3" x="212" y="48">X</text><text class="g3" x="212" y="64">チ</text><text class="g4" x="212" y="80">F</text><text class="g4" x="212" y="96">ヤ</text><text class="g4" x="212" y="112">ア</text></g>
+<g class="c14"><text class="h"  x="228" y="0">3</text><text class="g2" x="228" y="16">タ</text><text class="g2" x="228" y="32">R</text><text class="g3" x="228" y="48">ミ</text><text class="g3" x="228" y="64">0</text><text class="g4" x="228" y="80">レ</text><text class="g4" x="228" y="96">T</text><text class="g4" x="228" y="112">ン</text></g>
+<g class="c15"><text class="h"  x="244" y="0">ク</text><text class="g2" x="244" y="16">G</text><text class="g2" x="244" y="32">ヌ</text><text class="g3" x="244" y="48">5</text><text class="g3" x="244" y="64">モ</text><text class="g4" x="244" y="80">A</text><text class="g4" x="244" y="96">ン</text><text class="g4" x="244" y="112">カ</text></g>
+<g class="c16"><text class="h"  x="260" y="0">イ</text><text class="g2" x="260" y="16">B</text><text class="g2" x="260" y="32">ヒ</text><text class="g3" x="260" y="48">9</text><text class="g3" x="260" y="64">ト</text><text class="g4" x="260" y="80">D</text><text class="g4" x="260" y="96">ウ</text><text class="g4" x="260" y="112">ヨ</text></g>
+<g class="c17"><text class="h"  x="276" y="0">W</text><text class="g2" x="276" y="16">ヨ</text><text class="g2" x="276" y="32">1</text><text class="g3" x="276" y="48">コ</text><text class="g3" x="276" y="64">L</text><text class="g4" x="276" y="80">ス</text><text class="g4" x="276" y="96">8</text><text class="g4" x="276" y="112">ミ</text></g>
+<g class="c18"><text class="h"  x="292" y="0">サ</text><text class="g2" x="292" y="16">E</text><text class="g2" x="292" y="32">ネ</text><text class="g3" x="292" y="48">6</text><text class="g3" x="292" y="64">マ</text><text class="g4" x="292" y="80">C</text><text class="g4" x="292" y="96">カ</text><text class="g4" x="292" y="112">ワ</text></g>
+<g class="c19"><text class="h"  x="308" y="0">5</text><text class="g2" x="308" y="16">ム</text><text class="g2" x="308" y="32">Q</text><text class="g3" x="308" y="48">ハ</text><text class="g3" x="308" y="64">7</text><text class="g4" x="308" y="80">ソ</text><text class="g4" x="308" y="96">M</text><text class="g4" x="308" y="112">チ</text></g>
+<g class="c20"><text class="h"  x="324" y="0">リ</text><text class="g2" x="324" y="16">N</text><text class="g2" x="324" y="32">ヤ</text><text class="g3" x="324" y="48">2</text><text class="g3" x="324" y="64">ケ</text><text class="g4" x="324" y="80">O</text><text class="g4" x="324" y="96">ン</text><text class="g4" x="324" y="112">ラ</text></g>
+<g class="c21"><text class="h"  x="340" y="0">T</text><text class="g2" x="340" y="16">ヒ</text><text class="g2" x="340" y="32">4</text><text class="g3" x="340" y="48">ナ</text><text class="g3" x="340" y="64">U</text><text class="g4" x="340" y="80">チ</text><text class="g4" x="340" y="96">1</text><text class="g4" x="340" y="112">ノ</text></g>
+<g class="c22"><text class="h"  x="356" y="0">ツ</text><text class="g2" x="356" y="16">8</text><text class="g2" x="356" y="32">ロ</text><text class="g3" x="356" y="48">F</text><text class="g3" x="356" y="64">ア</text><text class="g4" x="356" y="80">5</text><text class="g4" x="356" y="96">ワ</text><text class="g4" x="356" y="112">テ</text></g>
+<g class="c23"><text class="h"  x="372" y="0">H</text><text class="g2" x="372" y="16">ノ</text><text class="g2" x="372" y="32">6</text><text class="g3" x="372" y="48">イ</text><text class="g3" x="372" y="64">K</text><text class="g4" x="372" y="80">ラ</text><text class="g4" x="372" y="96">0</text><text class="g4" x="372" y="112">ア</text></g>
+<g class="c24"><text class="h"  x="388" y="0">ヌ</text><text class="g2" x="388" y="16">Z</text><text class="g2" x="388" y="32">マ</text><text class="g3" x="388" y="48">7</text><text class="g3" x="388" y="64">ヘ</text><text class="g4" x="388" y="80">R</text><text class="g4" x="388" y="96">ス</text><text class="g4" x="388" y="112">ム</text></g>
+<g class="c25"><text class="h"  x="404" y="0">2</text><text class="g2" x="404" y="16">テ</text><text class="g2" x="404" y="32">A</text><text class="g3" x="404" y="48">ヲ</text><text class="g3" x="404" y="64">9</text><text class="g4" x="404" y="80">コ</text><text class="g4" x="404" y="96">B</text><text class="g4" x="404" y="112">エ</text></g>
+<g class="c26"><text class="h"  x="420" y="0">ケ</text><text class="g2" x="420" y="16">S</text><text class="g2" x="420" y="32">ハ</text><text class="g3" x="420" y="48">1</text><text class="g3" x="420" y="64">エ</text><text class="g4" x="420" y="80">W</text><text class="g4" x="420" y="96">オ</text><text class="g4" x="420" y="112">ヲ</text></g>
+<g class="c27"><text class="h"  x="436" y="0">モ</text><text class="g2" x="436" y="16">3</text><text class="g2" x="436" y="32">ヒ</text><text class="g3" x="436" y="48">E</text><text class="g3" x="436" y="64">ル</text><text class="g4" x="436" y="80">8</text><text class="g4" x="436" y="96">カ</text><text class="g4" x="436" y="112">ヒ</text></g>
+<g class="c28"><text class="h"  x="452" y="0">L</text><text class="g2" x="452" y="16">ア</text><text class="g2" x="452" y="32">4</text><text class="g3" x="452" y="48">タ</text><text class="g3" x="452" y="64">I</text><text class="g4" x="452" y="80">ナ</text><text class="g4" x="452" y="96">7</text><text class="g4" x="452" y="112">ロ</text></g>
+<g class="c29"><text class="h"  x="468" y="0">ヲ</text><text class="g2" x="468" y="16">P</text><text class="g2" x="468" y="32">ン</text><text class="g3" x="468" y="48">5</text><text class="g3" x="468" y="64">チ</text><text class="g4" x="468" y="80">M</text><text class="g4" x="468" y="96">ヘ</text><text class="g4" x="468" y="112">ス</text></g>
+<g class="c30"><text class="h"  x="484" y="0">9</text><text class="g2" x="484" y="16">ソ</text><text class="g2" x="484" y="32">T</text><text class="g3" x="484" y="48">ワ</text><text class="g3" x="484" y="64">6</text><text class="g4" x="484" y="80">ク</text><text class="g4" x="484" y="96">O</text><text class="g4" x="484" y="112">テ</text></g>
+<g class="c31"><text class="h"  x="500" y="0">ヤ</text><text class="g2" x="500" y="16">V</text><text class="g2" x="500" y="32">イ</text><text class="g3" x="500" y="48">8</text><text class="g3" x="500" y="64">ホ</text><text class="g4" x="500" y="80">Q</text><text class="g4" x="500" y="96">ネ</text><text class="g4" x="500" y="112">コ</text></g>
+<g class="c32"><text class="h"  x="516" y="0">U</text><text class="g2" x="516" y="16">ニ</text><text class="g2" x="516" y="32">0</text><text class="g3" x="516" y="48">ト</text><text class="g3" x="516" y="64">G</text><text class="g4" x="516" y="80">エ</text><text class="g4" x="516" y="96">5</text><text class="g4" x="516" y="112">ナ</text></g>
+<g class="c33"><text class="h"  x="532" y="0">ル</text><text class="g2" x="532" y="16">K</text><text class="g2" x="532" y="32">ヌ</text><text class="g3" x="532" y="48">3</text><text class="g3" x="532" y="64">セ</text><text class="g4" x="532" y="80">A</text><text class="g4" x="532" y="96">ウ</text><text class="g4" x="532" y="112">サ</text></g>
+<g class="c34"><text class="h"  x="548" y="0">4</text><text class="g2" x="548" y="16">マ</text><text class="g2" x="548" y="32">X</text><text class="g3" x="548" y="48">ノ</text><text class="g3" x="548" y="64">2</text><text class="g4" x="548" y="80">ア</text><text class="g4" x="548" y="96">B</text><text class="g4" x="548" y="112">ヘ</text></g>
+<g class="c35"><text class="h"  x="564" y="0">リ</text><text class="g2" x="564" y="16">Y</text><text class="g2" x="564" y="32">テ</text><text class="g3" x="564" y="48">6</text><text class="g3" x="564" y="64">ハ</text><text class="g4" x="564" y="80">Z</text><text class="g4" x="564" y="96">モ</text><text class="g4" x="564" y="112">ユ</text></g>
+<g class="c36"><text class="h"  x="580" y="0">C</text><text class="g2" x="580" y="16">ケ</text><text class="g2" x="580" y="32">8</text><text class="g3" x="580" y="48">サ</text><text class="g3" x="580" y="64">D</text><text class="g4" x="580" y="80">ン</text><text class="g4" x="580" y="96">4</text><text class="g4" x="580" y="112">イ</text></g>
+<g class="c37"><text class="h"  x="596" y="0">ヒ</text><text class="g2" x="596" y="16">5</text><text class="g2" x="596" y="32">ト</text><text class="g3" x="596" y="48">P</text><text class="g3" x="596" y="64">ネ</text><text class="g4" x="596" y="80">0</text><text class="g4" x="596" y="96">イ</text><text class="g4" x="596" y="112">ク</text></g>
+<g class="c38"><text class="h"  x="612" y="0">V</text><text class="g2" x="612" y="16">ウ</text><text class="g2" x="612" y="32">3</text><text class="g3" x="612" y="48">ホ</text><text class="g3" x="612" y="64">N</text><text class="g4" x="612" y="80">ラ</text><text class="g4" x="612" y="96">6</text><text class="g4" x="612" y="112">ン</text></g>
+<g class="c39"><text class="h"  x="628" y="0">ム</text><text class="g2" x="628" y="16">J</text><text class="g2" x="628" y="32">ス</text><text class="g3" x="628" y="48">2</text><text class="g3" x="628" y="64">ヌ</text><text class="g4" x="628" y="80">L</text><text class="g4" x="628" y="96">コ</text><text class="g4" x="628" y="112">タ</text></g>
+<g class="c40"><text class="h"  x="644" y="0">T</text><text class="g2" x="644" y="16">ン</text><text class="g2" x="644" y="32">1</text><text class="g3" x="644" y="48">ヨ</text><text class="g3" x="644" y="64">G</text><text class="g4" x="644" y="80">エ</text><text class="g4" x="644" y="96">9</text><text class="g4" x="644" y="112">セ</text></g>
+<g class="c41"><text class="h"  x="660" y="0">ア</text><text class="g2" x="660" y="16">O</text><text class="g2" x="660" y="32">ヒ</text><text class="g3" x="660" y="48">4</text><text class="g3" x="660" y="64">マ</text><text class="g4" x="660" y="80">K</text><text class="g4" x="660" y="96">ナ</text><text class="g4" x="660" y="112">ヌ</text></g>
+
+</g>
+</svg>
