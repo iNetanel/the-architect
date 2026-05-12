@@ -730,6 +730,7 @@ class TestMainHeadless:
         result = runner.invoke(main, ["version"])
         assert result.exit_code == 0
         assert "architect v" in result.output
+        assert "build" in result.output
 
     def test_main_no_providers_found(self, tmp_path: Path) -> None:
         """Should exit with error when no providers are installed."""

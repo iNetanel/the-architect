@@ -30,7 +30,7 @@ from loguru import logger
 from prompt_toolkit.layout.dimension import D
 from rich.markup import escape
 
-from the_architect import __version__
+from the_architect import __full_version__, __version__
 from the_architect.config import ArchitectConfig, load_config, write_config
 from the_architect.core.monitor_state import MonitorStateWriter
 from the_architect.core.planner import (
@@ -3317,7 +3317,7 @@ _opencode_install_hint = _provider_install_hint
 
 @click.group(invoke_without_command=True)
 @click.version_option(
-    __version__,
+    __full_version__,
     "-V",
     "--version",
     message="architect v%(version)s",
@@ -6043,7 +6043,7 @@ def circuit_cmd(project: Path | None, reset_task: str, use_tui: bool) -> None:
 @main.command()
 def version() -> None:
     """Show The Architect version."""
-    click.echo(f"architect v{__version__}")
+    click.echo(f"architect v{__full_version__}")
 
 
 @main.command(name="tui")

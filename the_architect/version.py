@@ -1,4 +1,4 @@
-"""The Architect version — single source of truth from pyproject.toml.
+"""The Architect version — SemVer plus shipped build metadata.
 
 Reads ``pyproject.toml`` in development mode and falls back to
 ``importlib.metadata`` when running from an installed package.
@@ -6,6 +6,7 @@ Reads ``pyproject.toml`` in development mode and falls back to
 
 from __future__ import annotations
 
+import importlib
 import importlib.metadata
 from pathlib import Path
 
@@ -63,6 +64,43 @@ def _read_version_from_pyproject() -> str | None:
     return _extract_version_from_toml(content)
 
 
+def get_build() -> int | None:
+    """Return the monotonic build counter when available.
+
+    Development checkouts read the project-root ``version.py``. Installed wheels
+    read the build snapshot force-included as ``the_architect._build``.
+    """
+    build = _read_build_from_root_version()
+    if build is not None:
+        return build
+    return _read_build_from_packaged_snapshot()
+
+
+def _read_build_from_root_version() -> int | None:
+    """Read ``__build__`` from the project-root ``version.py`` in dev mode."""
+    package_dir = Path(__file__).resolve().parent
+    project_root = package_dir.parent
+    version_path = project_root / "version.py"
+    if not version_path.is_file():
+        return None
+
+    try:
+        return _extract_build_from_python(version_path.read_text(encoding="utf-8"))
+    except OSError:
+        return None
+
+
+def _read_build_from_packaged_snapshot() -> int | None:
+    """Read ``__build__`` from the packaged build snapshot when installed."""
+    try:
+        build_module = importlib.import_module("the_architect._build")
+    except ImportError:
+        return None
+
+    build = getattr(build_module, "__build__", None)
+    return build if isinstance(build, int) else None
+
+
 def _extract_version_from_toml(content: str) -> str | None:
     """Extract the ``version`` value from a ``[project]`` TOML section.
 
@@ -94,4 +132,31 @@ def _extract_version_from_toml(content: str) -> str | None:
     return None
 
 
+def _extract_build_from_python(content: str) -> int | None:
+    """Extract the integer ``__build__`` assignment from version.py content."""
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("__build__"):
+            continue
+        parts = stripped.split("=", 1)
+        if len(parts) != 2:
+            continue
+        value = parts[1].split("#", 1)[0].strip()
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
+def get_full_version() -> str:
+    """Return SemVer with build metadata when the build counter is available."""
+    if __build__ is None:
+        return __version__
+    return f"{__version__} (build {__build__})"
+
+
 __version__: str = get_version()
+__build__: int | None = get_build()
+__full_version__: str = get_full_version()
+__banner__: str = f"The Architect v{__full_version__}"

@@ -6,10 +6,15 @@ from pathlib import Path
 from unittest.mock import patch
 
 from the_architect import __version__ as init_version
+from the_architect.version import __full_version__ as module_full_version
 from the_architect.version import __version__ as module_version
 from the_architect.version import (
+    _extract_build_from_python,
     _extract_version_from_toml,
+    _read_build_from_root_version,
     _read_version_from_pyproject,
+    get_build,
+    get_full_version,
     get_version,
 )
 
@@ -34,6 +39,18 @@ class TestGetVersion:
         assert len(parts) >= 2, f"Version '{version}' does not look like semver"
         assert all(p.isdigit() for p in parts[:3]), f"Version '{version}' has non-numeric parts"
 
+    def test_get_build_returns_counter(self) -> None:
+        """``get_build()`` should expose the project build counter in dev mode."""
+        build = get_build()
+        assert isinstance(build, int)
+        assert build > 0
+
+    def test_get_full_version_includes_build(self) -> None:
+        """Full version should include the shipped build when available."""
+        full_version = get_full_version()
+        assert module_version in full_version
+        assert "build" in full_version
+
 
 class TestVersionImportable:
     """Tests that ``__version__`` is importable from the right places."""
@@ -51,6 +68,11 @@ class TestVersionImportable:
     def test_both_imports_match(self) -> None:
         """``the_architect.__version__`` must equal ``the_architect.version.__version__``."""
         assert init_version == module_version
+
+    def test_full_version_importable(self) -> None:
+        """``__full_version__`` should include SemVer and build metadata."""
+        assert module_version in module_full_version
+        assert "build" in module_full_version
 
 
 class TestVersionMatchesPyproject:
@@ -73,6 +95,12 @@ class TestVersionMatchesPyproject:
         assert version is not None
         assert isinstance(version, str)
         assert len(version) > 0
+
+    def test_read_build_from_root_version_returns_value(self) -> None:
+        """``_read_build_from_root_version()`` should read root version.py."""
+        build = _read_build_from_root_version()
+        assert isinstance(build, int)
+        assert build > 0
 
 
 class TestExtractVersionFromToml:
@@ -102,6 +130,12 @@ class TestExtractVersionFromToml:
         """Should handle single-quoted version strings."""
         content = "[project]\nversion = '3.0.0'\n"
         assert _extract_version_from_toml(content) == "3.0.0"
+
+    def test_extract_build_from_python(self) -> None:
+        """Should extract integer build assignments from Python content."""
+        assert _extract_build_from_python("__build__ = 10345\n") == 10345
+        assert _extract_build_from_python("__build__ = 10345  # comment\n") == 10345
+        assert _extract_build_from_python("__build__ = 'bad'\n") is None
 
 
 class TestFallbackBehavior:

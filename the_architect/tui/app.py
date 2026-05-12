@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import threading
 import time
-from pathlib import Path
 from typing import Any, TypeVar
 
 from textual.app import App, ComposeResult
@@ -37,41 +36,12 @@ from textual.widgets import Footer, Header, Static
 from the_architect.tui.screens.execution import ExecutionScreen
 from the_architect.tui.screens.wait import WaitScreen
 from the_architect.tui.widgets import MatrixRain
-from the_architect.version import __version__ as _ARCHITECT_SEMVER
+from the_architect.version import __full_version__ as _ARCHITECT_FULL_VERSION
 
 
 def _architect_header_version() -> str:
-    """Return the version string shown in the Textual Header.
-
-    Installed builds use :data:`the_architect.version.__version__`
-    (SemVer only — the build counter is a dev-churn value not shipped
-    in the wheel). When running from the repo, we additionally probe
-    the project-root ``version.py`` for ``__build__`` so developers
-    see the full ``v1.2.0 (build 10095)`` string on every screen.
-
-    Never raises — any failure collapses to just the SemVer. Called
-    once at app mount, so a little filesystem work is fine.
-    """
-    base = f"v{_ARCHITECT_SEMVER}"
-    try:
-        # Project root is two parents up from this file
-        # (the_architect/tui/app.py → the_architect/tui → the_architect → <root>).
-        root = Path(__file__).resolve().parents[2]
-        version_py = root / "version.py"
-        if not version_py.is_file():
-            return base
-        # Execute the module in a clean namespace so we pick up
-        # __build__ without importing the file as a top-level module
-        # (which would pollute sys.modules with a confusingly-named
-        # "version" entry in dev mode).
-        ns: dict[str, Any] = {}
-        exec(compile(version_py.read_text(encoding="utf-8"), str(version_py), "exec"), ns)
-        build = ns.get("__build__")
-        if isinstance(build, int):
-            return f"{base} (build {build})"
-    except Exception:
-        pass
-    return base
+    """Return the version string shown in the Textual Header."""
+    return f"v{_ARCHITECT_FULL_VERSION}"
 
 
 T = TypeVar("T")

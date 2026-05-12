@@ -71,6 +71,9 @@ architect = "the_architect.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["the_architect"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"version.py" = "the_architect/_build.py"
+
 [tool.hatch.build.targets.sdist]
 include = [
     "the_architect/",
@@ -79,6 +82,7 @@ include = [
     "README.md",
     "CHANGELOG.md",
     "pyproject.toml",
+    "version.py",
 ]
 
 [tool.ruff]
