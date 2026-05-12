@@ -26,6 +26,7 @@ import threading
 import time
 from typing import Any, TypeVar
 
+from loguru import logger
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -242,10 +243,20 @@ class ArchitectApp(App[None]):
         except Exception:
             pass
         self.push_screen(self._initial_screen)
+        self._log_screen_transition("mount", initial=type(self._initial_screen).__name__)
         # Record when the splash was painted so push_and_wait can
         # enforce the minimum display window from the worker thread.
         if isinstance(self._initial_screen, SplashScreen):
             self._splash_shown_at = time.monotonic()
+
+    def on_unmount(self) -> None:
+        """Restore terminal modes whenever Textual tears down this app."""
+        try:
+            from the_architect.tui.terminal import restore_terminal_input_modes
+
+            restore_terminal_input_modes()
+        except Exception:
+            pass
 
     # ── Run-scoped status (Phase 18) ───────────────────────────────────
 
@@ -380,7 +391,18 @@ class ArchitectApp(App[None]):
             done.set()
 
         def _push() -> None:
-            self.push_screen(screen, _on_dismiss)
+            self._log_screen_transition("push_and_wait.before", screen=type(screen).__name__)
+            try:
+                self.push_screen(screen, _on_dismiss)
+            except Exception as exc:
+                logger.warning(f"TUI push_and_wait failed for {type(screen).__name__}: {exc!r}")
+                self._ensure_screen_stack_sync("push_and_wait_exception")
+                done.set()
+                return
+            self.call_after_refresh(
+                self._ensure_screen_stack_sync,
+                f"push_and_wait.after.{type(screen).__name__}",
+            )
 
         # If the splash is still in its minimum display window, wait
         # on the worker thread until the window expires. Using an Event
@@ -432,10 +454,41 @@ class ArchitectApp(App[None]):
         """
 
         def _switch() -> None:
-            screen = self._ensure_execution_screen()
-            self.switch_screen(screen)
+            self._switch_to_execution_sync()
 
         self._thread_safe_call(_switch)
+
+    def _switch_to_execution_sync(self) -> None:
+        """Show execution without corrupting the screen stack.
+
+        If a wait overlay is on top of an existing execution screen, dismiss the
+        overlay instead of ``switch_screen``-ing to the already-mounted execution
+        screen. Reusing an installed screen as the replacement target can confuse
+        Textual's stack bookkeeping and was the likely source of intermittent
+        app drops between Infinite Loop iterations.
+        """
+        screen = self._ensure_execution_screen()
+        self._log_screen_transition("switch_to_execution.before")
+        try:
+            if self.screen is screen:
+                self._log_screen_transition("switch_to_execution.already_active")
+                return
+        except Exception:
+            pass
+
+        if self._dismiss_wait_overlay_if_stacked():
+            self.call_after_refresh(
+                self._ensure_screen_stack_sync, "switch_to_execution.dismiss_wait"
+            )
+            self._log_screen_transition("switch_to_execution.dismissed_wait")
+            return
+
+        try:
+            self.switch_screen(screen)
+        except Exception as exc:
+            logger.warning(f"TUI switch_to_execution failed: {exc!r}")
+            self._repair_screen_stack("switch_to_execution_exception", screen)
+        self.call_after_refresh(self._ensure_screen_stack_sync, "switch_to_execution.after")
 
     def push_output_line(self, line: str) -> None:
         """Forward a streamed provider line to the execution screen.
@@ -521,15 +574,29 @@ class ArchitectApp(App[None]):
         self._thread_safe_call(self._show_wait_sync, title, detail)
 
     def _show_wait_sync(self, title: str, detail: str) -> None:
+        self._log_screen_transition("show_wait.before", title=title)
         if self._wait_screen is not None:
-            self._wait_screen.set_title(title)
-            if detail:
-                self._wait_screen.set_detail(detail)
-            return
+            try:
+                if self._wait_screen in self.screen_stack:
+                    self._wait_screen.set_title(title)
+                    if detail:
+                        self._wait_screen.set_detail(detail)
+                    self._log_screen_transition("show_wait.updated", title=title)
+                    return
+            except Exception:
+                pass
+            self._wait_screen = None
         self._wait_screen = WaitScreen(title=title)
-        self.push_screen(self._wait_screen)
+        try:
+            self.push_screen(self._wait_screen)
+        except Exception as exc:
+            logger.warning(f"TUI show_wait failed for {title!r}: {exc!r}")
+            self._wait_screen = None
+            self._ensure_screen_stack_sync("show_wait_exception")
+            return
         if detail:
             self.call_after_refresh(self._wait_screen.set_detail, detail)
+        self.call_after_refresh(self._ensure_screen_stack_sync, "show_wait.after")
 
     def update_wait(self, title: str | None = None, detail: str | None = None) -> None:
         """Update the currently visible wait screen (if any)."""
@@ -568,23 +635,96 @@ class ArchitectApp(App[None]):
     def hide_wait(self) -> None:
         """Hide the wait overlay without allowing the app to exit.
 
-        During Infinite Loop, planning for the next iteration can run after the
-        previous execution screen has been replaced by wait overlays. Popping the
-        current wait screen may empty Textual's screen stack, which exits the app
-        and kills the CLI flow before the newly planned tasks execute. Replacing
-        the wait screen with the execution screen keeps the persistent TUI alive.
+        During Infinite Loop, planning for the next iteration runs while a wait
+        overlay is on top of the execution screen. Dismissing the overlay reveals
+        that existing execution screen without reinstalling an already-mounted
+        screen or emptying Textual's stack.
         """
         self._thread_safe_call(self._hide_wait_sync)
 
     def _hide_wait_sync(self) -> None:
+        self._log_screen_transition("hide_wait.before")
         if self._wait_screen is None:
+            self._ensure_screen_stack_sync("hide_wait.no_wait")
             return
+        dismissed = self._dismiss_wait_overlay_if_stacked()
+        if not dismissed:
+            try:
+                if self.screen_stack and self.screen is not self._wait_screen:
+                    self._log_screen_transition("hide_wait.deferred_non_top_wait")
+                    return
+                if not self.screen_stack or self.screen is self._wait_screen:
+                    self.switch_screen(self._ensure_execution_screen())
+            except Exception as exc:
+                logger.warning(f"TUI hide_wait recovery failed: {exc!r}")
+                self._repair_screen_stack("hide_wait_exception", self._ensure_execution_screen())
+        self._wait_screen = None
+        self.call_after_refresh(self._ensure_screen_stack_sync, "hide_wait.after")
+
+    def _dismiss_wait_overlay_if_stacked(self) -> bool:
+        """Dismiss a top wait overlay when another screen is underneath it."""
+        wait = self._wait_screen
+        if wait is None:
+            return False
         try:
-            if self.screen is self._wait_screen:
-                self.switch_screen(self._ensure_execution_screen())
+            if self.screen is not wait or len(self.screen_stack) <= 1:
+                return False
+            if not isinstance(self.screen_stack[-2], ExecutionScreen):
+                return False
+            wait.dismiss()
+        except Exception as exc:
+            logger.debug(f"TUI wait overlay dismiss failed: {exc!r}")
+            return False
+        self._wait_screen = None
+        return True
+
+    def _screen_stack_names(self) -> list[str]:
+        """Return current screen stack class names for lifecycle diagnostics."""
+        try:
+            return [type(screen).__name__ for screen in self.screen_stack]
+        except Exception:
+            return ["<unavailable>"]
+
+    def _log_screen_transition(self, event: str, **fields: object) -> None:
+        """Emit a structured debug log for TUI screen-stack transitions."""
+        logger.bind(
+            event=event,
+            stack=self._screen_stack_names(),
+            shutdown_started=self._shutdown_started,
+            **fields,
+        ).debug("TUI screen lifecycle")
+
+    def _ensure_screen_stack_sync(self, reason: str) -> None:
+        """Repair an empty screen stack during active TUI transitions."""
+        try:
+            if self._shutdown_started or self.screen_stack:
+                return
+        except Exception as exc:
+            logger.debug(f"TUI screen-stack invariant check failed ({reason}): {exc!r}")
+            return
+        self._repair_screen_stack(reason, self._execution_screen)
+
+    def _repair_screen_stack(
+        self,
+        reason: str,
+        preferred: Screen[Any] | None = None,
+    ) -> None:
+        """Best-effort guard against Textual ever running with no screen."""
+        try:
+            if self.screen_stack:
+                return
         except Exception:
             pass
-        self._wait_screen = None
+        logger.warning(f"TUI screen stack empty; repairing display ({reason})")
+        try:
+            self.push_screen(preferred or self._ensure_execution_screen())
+        except Exception as exc:
+            logger.warning(f"TUI preferred screen repair failed ({reason}): {exc!r}")
+            try:
+                self.push_screen(SplashScreen(subtitle="Recovering display…"))
+            except Exception as fallback_exc:
+                logger.warning(f"TUI fallback splash repair failed ({reason}): {fallback_exc!r}")
+                pass
 
     # ── Success screen ─────────────────────────────────────────────────
 
@@ -627,6 +767,7 @@ class ArchitectApp(App[None]):
         from textual.app import ScreenStackError
 
         if isinstance(error, ScreenStackError):
+            self._repair_screen_stack("screen_stack_error")
             return
         super()._handle_exception(error)
 
@@ -701,14 +842,24 @@ def run_single_screen(screen: Screen[T]) -> T | None:
     exits when it dismisses.
     """
     try:
-        from the_architect.tui.runner import active_runner
+        from the_architect.tui.runner import active_runner, tui_suppressed_after_exit
     except ImportError:
         runner = None
+        tui_suppressed = False
     else:
         runner = active_runner()
+        tui_suppressed = tui_suppressed_after_exit()
 
     if runner is not None:
         return runner.switch_and_wait(screen)
+    if tui_suppressed:
+        try:
+            from the_architect.tui.terminal import restore_terminal_input_modes
+
+            restore_terminal_input_modes()
+        except Exception:
+            pass
+        return None
 
     collected: dict[str, Any] = {"value": None}
 
@@ -736,5 +887,13 @@ def run_single_screen(screen: Screen[T]) -> T | None:
             collected["value"] = value
             self.exit()
 
-    _Harness().run()
+    try:
+        _Harness().run()
+    finally:
+        try:
+            from the_architect.tui.terminal import restore_terminal_input_modes
+
+            restore_terminal_input_modes()
+        except Exception:
+            pass
     return collected["value"]  # type: ignore[no-any-return]

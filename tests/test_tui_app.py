@@ -350,3 +350,133 @@ async def test_push_event_line_does_not_crash_on_diagnostics_tab() -> None:
         assert "$accent" not in all_text, (
             f"Unresolved Textual CSS variable '$accent' found in Diagnostics log: {all_text!r}"
         )
+
+
+@pytest.mark.asyncio
+async def test_hide_wait_dismisses_overlay_without_reinstalling_execution() -> None:
+    """Wait teardown should reveal the mounted execution screen, not replace it.
+
+    Regression for intermittent Infinite Loop TUI drops: replacing a top wait
+    overlay with an ExecutionScreen instance that was already mounted underneath
+    risks corrupting Textual's screen stack. The safe path is to dismiss the
+    overlay and keep the existing execution screen alive.
+    """
+    app = ArchitectApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.switch_to_execution()
+        await pilot.pause()
+        execution = app._execution_screen
+        assert execution is not None
+
+        app.show_wait("Planning next iteration")
+        await pilot.pause()
+        assert isinstance(app.screen, WaitScreen)
+        assert execution in app.screen_stack
+
+        app.hide_wait()
+        await pilot.pause()
+        await pilot.pause()
+
+        assert app.screen is execution
+        assert app._execution_screen is execution
+        assert app._wait_screen is None
+        assert len(app.screen_stack) >= 1
+
+
+@pytest.mark.asyncio
+async def test_switch_to_execution_dismisses_wait_overlay_when_execution_underneath() -> None:
+    """Switching to execution during a wait overlay must not duplicate screens."""
+    app = ArchitectApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.switch_to_execution()
+        await pilot.pause()
+        execution = app._execution_screen
+        assert execution is not None
+
+        app.show_wait("Retrospective")
+        await pilot.pause()
+        app.switch_to_execution()
+        await pilot.pause()
+        await pilot.pause()
+
+        assert app.screen is execution
+        assert app.screen_stack.count(execution) == 1
+        assert app._wait_screen is None
+
+
+@pytest.mark.asyncio
+async def test_show_wait_recovers_from_stale_wait_reference() -> None:
+    """A stale wait reference must not make later waits invisible."""
+    app = ArchitectApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.switch_to_execution()
+        await pilot.pause()
+
+        app.show_wait("First wait")
+        await pilot.pause()
+        stale_wait = app._wait_screen
+        assert isinstance(stale_wait, WaitScreen)
+        stale_wait.dismiss()
+        await pilot.pause()
+        assert stale_wait not in app.screen_stack
+
+        app.show_wait("Second wait")
+        await pilot.pause()
+
+        assert isinstance(app.screen, WaitScreen)
+        assert app._wait_screen is not stale_wait
+
+
+@pytest.mark.asyncio
+async def test_hide_wait_preserves_pause_menu_above_wait() -> None:
+    """Wait cleanup must not dismiss unrelated overlays above the wait screen."""
+    from the_architect.tui.screens.pause import PauseMenuScreen
+
+    app = ArchitectApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.switch_to_execution()
+        await pilot.pause()
+
+        app.show_wait("Planning")
+        await pilot.pause()
+        wait = app._wait_screen
+        assert isinstance(wait, WaitScreen)
+        app.push_screen(PauseMenuScreen())
+        await pilot.pause()
+        assert isinstance(app.screen, PauseMenuScreen)
+
+        app.hide_wait()
+        await pilot.pause()
+        await pilot.pause()
+
+        assert app.screen is not wait
+        assert wait in app.screen_stack
+        assert app._wait_screen is wait
+        assert len(app.screen_stack) >= 1
+
+
+@pytest.mark.asyncio
+async def test_empty_screen_stack_is_repaired() -> None:
+    """The active TUI should recover instead of exiting if its stack is emptied."""
+    app = ArchitectApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.screen_stack.clear()
+
+        app._ensure_screen_stack_sync("test_empty_stack")
+        await pilot.pause()
+
+        assert len(app.screen_stack) >= 1
+        assert isinstance(app.screen, ExecutionScreen | SplashScreen)
+
+
+def test_screen_stack_names_are_safe_before_app_runs() -> None:
+    """Lifecycle diagnostics should not raise even before Textual mounts."""
+    app = ArchitectApp()
+    names = app._screen_stack_names()
+
+    assert isinstance(names, list)

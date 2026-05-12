@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import atexit
 import signal
-import sys
 import threading
 import traceback
 from collections.abc import Callable
@@ -37,10 +36,11 @@ from loguru import logger
 from textual.screen import Screen
 
 from the_architect.tui.app import ArchitectApp
+from the_architect.tui.terminal import restore_terminal_input_modes
 
 T = TypeVar("T")
 
-_UNEXPECTED_EXIT_WAIT_SECONDS = 30.0
+_UNEXPECTED_STARTUP_EXIT_WAIT_SECONDS = 30.0
 
 
 # Module-global reference to the currently active runner, if any.
@@ -48,6 +48,7 @@ _UNEXPECTED_EXIT_WAIT_SECONDS = 30.0
 # :func:`active_runner()` from any thread.
 _ACTIVE_RUNNER: ArchitectAppRunner | None = None
 _ACTIVE_LOCK = threading.Lock()
+_TUI_SUPPRESSED_AFTER_EXIT = False
 
 
 def active_runner() -> ArchitectAppRunner | None:
@@ -56,6 +57,12 @@ def active_runner() -> ArchitectAppRunner | None:
         if _ACTIVE_RUNNER is None or not _ACTIVE_RUNNER.app_available:
             return None
         return _ACTIVE_RUNNER
+
+
+def tui_suppressed_after_exit() -> bool:
+    """Return True when a dead main TUI should not be replaced by new TUI apps."""
+    with _ACTIVE_LOCK:
+        return _TUI_SUPPRESSED_AFTER_EXIT
 
 
 class ArchitectAppRunner:
@@ -117,9 +124,11 @@ class ArchitectAppRunner:
         pre-Phase-17 behaviour where the flow ran inline on the main
         thread.
         """
-        global _ACTIVE_RUNNER
+        global _ACTIVE_RUNNER, _TUI_SUPPRESSED_AFTER_EXIT
+        restore_terminal_input_modes()
         with _ACTIVE_LOCK:
             _ACTIVE_RUNNER = self
+            _TUI_SUPPRESSED_AFTER_EXIT = False
 
         def _worker() -> None:
             try:
@@ -199,16 +208,22 @@ class ArchitectAppRunner:
                 with _ACTIVE_LOCK:
                     if _ACTIVE_RUNNER is self:
                         _ACTIVE_RUNNER = None
+                    _TUI_SUPPRESSED_AFTER_EXIT = True
                 # The TUI can disappear if Textual's screen stack is emptied by
                 # an overlay transition. That must not cancel the CLI flow: in
-                # Infinite Loop it happens after the next planning pass, right
-                # before the newly planned tasks should execute. Keep the worker
-                # alive and let the run finish rather than returning a dead app
-                # from active_runner(). Explicit user shutdown still goes through
-                # begin_shutdown()/shutdown_started and is handled below. The wait
-                # is bounded so a dead Textual app cannot wedge the CLI forever.
-                completed = self._flow_done.wait(timeout=_UNEXPECTED_EXIT_WAIT_SECONDS)
-                if not completed:
+                # Infinite Loop it happens between iterations, right before the
+                # newly planned tasks should execute. Once the worker exists,
+                # degrade to headless and wait for the real flow to finish. Only
+                # fail fast when the app exited before the worker could even
+                # start; otherwise a long planning/execution pass would be killed
+                # just because it exceeded an arbitrary UI watchdog timeout.
+                if self._worker is not None:
+                    self._flow_done.wait()
+                else:
+                    completed = self._flow_done.wait(timeout=_UNEXPECTED_STARTUP_EXIT_WAIT_SECONDS)
+                    if completed:
+                        unexpected_app_exit = False
+                if unexpected_app_exit and not self._flow_done.is_set():
                     try:
                         from the_architect.core.runner import kill_active_subprocesses
 
@@ -253,6 +268,7 @@ class ArchitectAppRunner:
             with _ACTIVE_LOCK:
                 if _ACTIVE_RUNNER is self:
                     _ACTIVE_RUNNER = None
+                _TUI_SUPPRESSED_AFTER_EXIT = False
             # Unregister the atexit hook now that we've cleaned up
             # synchronously — leaving it registered would fire again
             # at process exit and log "no active subprocesses" noise.
@@ -270,25 +286,12 @@ class ArchitectAppRunner:
 
 def _restore_terminal_input_modes() -> None:
     """Disable terminal input modes that can leak after abrupt Textual exits."""
-    try:
-        sys.stdout.write(
-            "\033[?1049l"  # leave alternate screen + restore cursor
-            "\033[?1000l"  # X10 mouse reporting
-            "\033[?1002l"  # button-event mouse reporting
-            "\033[?1003l"  # any-event mouse reporting
-            "\033[?1004l"  # focus in/out reporting
-            "\033[?1006l"  # SGR mouse mode
-            "\033[?1015l"  # urxvt mouse mode
-            "\033[?2004l"  # bracketed paste
-            "\033[?25h"  # cursor visible
-        )
-        sys.stdout.flush()
-    except Exception:
-        pass
+    restore_terminal_input_modes()
 
 
 def _atexit_kill_subprocesses() -> None:
     """atexit hook — kill every registered provider subprocess on exit."""
+    _restore_terminal_input_modes()
     try:
         from the_architect.core.runner import kill_active_subprocesses
 
@@ -306,6 +309,7 @@ def _sigint_kill_handler(signum: int, frame: Any) -> None:
     that before the raise we yank every live provider subprocess out
     of the OS so the user's Ctrl+C actually stops the backend.
     """
+    _restore_terminal_input_modes()
     try:
         from the_architect.core.runner import kill_active_subprocesses
 

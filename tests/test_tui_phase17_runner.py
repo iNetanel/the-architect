@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import io
 import threading
 import time
@@ -28,6 +29,22 @@ class _DismissNowScreen(Screen[str]):
         self.call_after_refresh(self.dismiss, self._value)
 
 
+class _StringIOContext:
+    def __init__(self, stream: io.StringIO) -> None:
+        self._stream = stream
+
+    def __enter__(self) -> io.StringIO:
+        return self._stream
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+
+class _TtyStringIO(io.StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
 class TestArchitectAppRunner:
     def test_restore_terminal_input_modes_disables_mouse_reporting(
         self, monkeypatch: pytest.MonkeyPatch
@@ -35,17 +52,34 @@ class TestArchitectAppRunner:
         """Runner cleanup should turn off mouse reporting leaked by abrupt TUI exits."""
         from the_architect.tui.runner import _restore_terminal_input_modes
 
-        stdout = io.StringIO()
+        stdout = _TtyStringIO()
+        stderr = _TtyStringIO()
+        tty = io.StringIO()
         monkeypatch.setattr("sys.stdout", stdout)
+        monkeypatch.setattr("sys.stderr", stderr)
+        monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+
+        real_open = builtins.open
+
+        def _open(path: str, *args: object, **kwargs: object) -> object:
+            if path == "/dev/tty":
+                return _StringIOContext(tty)
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", _open)
 
         _restore_terminal_input_modes()
 
         output = stdout.getvalue()
+        assert output == stderr.getvalue() == tty.getvalue()
         assert "\033[?1049l" in output
         assert "\033[?1000l" in output
+        assert "\033[?1001l" in output
         assert "\033[?1002l" in output
         assert "\033[?1003l" in output
+        assert "\033[?1005l" in output
         assert "\033[?1006l" in output
+        assert "\033[?1007l" in output
         assert "\033[?2004l" in output
 
     def test_unexpected_app_exit_before_worker_does_not_hang(
@@ -61,7 +95,7 @@ class TestArchitectAppRunner:
             kill_calls.append(True)
             return 0
 
-        monkeypatch.setattr("the_architect.tui.runner._UNEXPECTED_EXIT_WAIT_SECONDS", 0.01)
+        monkeypatch.setattr("the_architect.tui.runner._UNEXPECTED_STARTUP_EXIT_WAIT_SECONDS", 0.01)
         monkeypatch.setattr(
             "the_architect.core.runner.kill_active_subprocesses",
             _kill_active_subprocesses,
@@ -132,7 +166,9 @@ class TestArchitectAppRunner:
 
         Infinite Loop can briefly leave only a wait overlay on the Textual
         screen stack between iterations. If that stack exits unexpectedly, the
-        runner must keep the worker alive so newly planned tasks still execute.
+        runner must wait for the worker, not kill it after a fixed UI timeout,
+        so newly planned tasks still execute even when the next iteration takes
+        longer than the old 30-second watchdog.
         """
         from loguru import logger
 
@@ -157,6 +193,11 @@ class TestArchitectAppRunner:
         try:
 
             def _flow() -> str:
+                from the_architect.core.runner import PlainStreamRenderer
+                from the_architect.tui import tui_execution_session, tui_wait_session
+                from the_architect.tui.app import run_single_screen
+                from the_architect.tui.runner import tui_suppressed_after_exit
+
                 runner = active_runner()
                 assert runner is not None
                 runner.app.call_from_thread(runner.app.exit)
@@ -164,6 +205,14 @@ class TestArchitectAppRunner:
                 while active_runner() is not None and time.time() < deadline:
                     time.sleep(0.05)
                 assert active_runner() is None
+                assert tui_suppressed_after_exit() is True
+                with tui_execution_session(enabled=True) as session:
+                    assert session.app is None
+                    assert isinstance(session.renderer, PlainStreamRenderer)
+                with tui_wait_session(enabled=True, title="planning") as wait:
+                    assert wait.app is None
+                    assert wait._overlay_app is None
+                assert run_single_screen(_DismissNowScreen("should-not-render")) is None
                 completed["flow"] = True
                 return "completed"
 

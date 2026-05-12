@@ -18,9 +18,15 @@ empty [Unreleased] above it. Use Keep a Changelog section headings:
 Added / Changed / Deprecated / Removed / Fixed / Security.
 -->
 
+## [1.2.6] (build 10362) — 2026-05-12
+
 ### Fixed
 
-- Simplified CI releases to a single `main` workflow run: SemVer changes create clean `vX.Y.Z` tags and releases titled with the build number, while build-only pushes run CI without creating releases or PyPI publish requests (build 10355).
+- **Infinite Loop reliability.** Long-running Infinite Loop sessions now stay active through planning/execution handoffs instead of stopping after a later iteration.
+- **TUI stability.** Wait overlays now close by revealing the existing execution screen instead of replacing already-mounted screens, preventing the app from disappearing between Infinite Loop iterations.
+- **TUI recovery diagnostics.** The app now repairs an empty screen stack during active transitions and records structured lifecycle logs for screen changes, making future terminal/UI issues easier to diagnose.
+- **Terminal cleanup.** Fixed leaked mouse-tracking mode after TUI exits, preventing raw `35;...M` mouse-event text from appearing at the shell prompt.
+- **Release workflow.** Simplified releases so SemVer updates create the real GitHub release, while build-only pushes run CI without publishing noise.
 
 ## [1.2.5] (build 10354) — 2026-05-12
 

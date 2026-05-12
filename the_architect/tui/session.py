@@ -118,6 +118,15 @@ def tui_execution_session(enabled: bool) -> Iterator[TuiSession]:
         yield TuiSession(renderer=PlainStreamRenderer(), app=None, thread=None)
         return
 
+    try:
+        from the_architect.tui.runner import tui_suppressed_after_exit
+    except ImportError:
+        pass
+    else:
+        if tui_suppressed_after_exit():
+            yield TuiSession(renderer=PlainStreamRenderer(), app=None, thread=None)
+            return
+
     # Preferred path: reuse the runner's persistent app so output
     # lands on the one actually on screen.
     try:
@@ -286,6 +295,15 @@ def tui_wait_session(
     if not enabled:
         yield TuiWaitSession(app=None, thread=None)
         return
+
+    try:
+        from the_architect.tui.runner import tui_suppressed_after_exit
+    except ImportError:
+        pass
+    else:
+        if tui_suppressed_after_exit():
+            yield TuiWaitSession(app=None, thread=None)
+            return
 
     # Preferred path: if the CLI flow is being hosted by an
     # :class:`ArchitectAppRunner`, the worker thread is already

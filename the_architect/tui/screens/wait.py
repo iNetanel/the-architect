@@ -226,6 +226,15 @@ class WaitApp(App[None]):
         apply_architect_theme(self)
         self.push_screen(self._screen)
 
+    def on_unmount(self) -> None:
+        """Restore terminal modes whenever the standalone wait app exits."""
+        try:
+            from the_architect.tui.terminal import restore_terminal_input_modes
+
+            restore_terminal_input_modes()
+        except Exception:
+            pass
+
     # Proxy convenience methods so existing callers keep working.
     def set_title(self, title: str) -> None:
         self._screen.set_title(title)

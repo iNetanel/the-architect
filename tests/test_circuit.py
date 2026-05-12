@@ -11,6 +11,7 @@ import pytest
 from the_architect.config import ArchitectConfig
 from the_architect.core.circuit import (
     _COOLDOWN_MIN_SECONDS,
+    _TOKEN_HISTORY_CAP,
     AttemptSummary,
     CircuitBreaker,
     CircuitState,
@@ -1432,3 +1433,365 @@ class TestAttemptReplan:
         allowed, reason = cb.can_run("T01")
         assert not allowed
         assert "cooldown_wait_resume" in reason
+
+    @pytest.mark.asyncio
+    async def test_replan_uses_pre_set_provider(
+        self, config: ArchitectConfig, project_dir: Path
+    ) -> None:
+        """When CircuitBreaker has a pre-set provider, _replan uses it (line 891)."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        # Create a mock provider that supports agents
+        mock_provider = MagicMock()
+        mock_provider.supports_agents.return_value = True
+
+        # Create CircuitBreaker with explicit provider
+        cb = CircuitBreaker(config=config, project_root=project_dir, provider=mock_provider)
+
+        task_file = project_dir / "tasks" / "T01_setup.md"
+        task_file.write_text("# T01 — Setup\n", encoding="utf-8")
+        progress_file = project_dir / "PROGRESS.md"
+
+        mock_stream_result = MagicMock()
+        mock_stream_result.exit_code = 0
+
+        with (
+            patch(
+                "the_architect.core.runner.stream_provider",
+                new_callable=AsyncMock,
+                return_value=mock_stream_result,
+            ),
+            patch(
+                "the_architect.core.tasks.discover_tasks",
+                return_value=[],
+            ),
+        ):
+            await cb.attempt_replan("T01", task_file, progress_file)
+
+        # Verify the pre-set provider was used (ensure_setup called on it)
+        mock_provider.ensure_setup.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_replan_progress_file_oserror(
+        self, cb: CircuitBreaker, project_dir: Path
+    ) -> None:
+        """Progress file OSError: replan continues with empty content (lines 908-909)."""
+        import os
+        from typing import Any
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        task_file = project_dir / "tasks" / "T01_setup.md"
+        task_file.write_text("# T01 — Setup\n", encoding="utf-8")
+        progress_file = project_dir / "PROGRESS.md"
+
+        # Make progress file exist but raise OSError on read
+        progress_file.write_text("# Progress\n", encoding="utf-8")
+
+        original_open = open
+
+        def mock_open(*args: Any, **kwargs: Any) -> Any:
+            if args:
+                path_str = os.fspath(args[0])
+                if path_str == str(progress_file):
+                    raise OSError("permission denied")
+            return original_open(*args, **kwargs)
+
+        mock_stream_result = MagicMock()
+        mock_stream_result.exit_code = 0
+
+        with (
+            patch("io.open", side_effect=mock_open),
+            patch(
+                "the_architect.core.opencode_provider.OpenCodeProvider.ensure_setup",
+            ),
+            patch(
+                "the_architect.core.runner.stream_provider",
+                new_callable=AsyncMock,
+                return_value=mock_stream_result,
+            ),
+            patch(
+                "the_architect.core.tasks.discover_tasks",
+                return_value=[],
+            ),
+        ):
+            result = await cb.attempt_replan("T01", task_file, progress_file)
+
+        # Should complete successfully despite progress file error
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_replan_claude_code_prompt_prepending(
+        self, config: ArchitectConfig, project_dir: Path
+    ) -> None:
+        """Claude Code prompt prepending when provider doesn't support agents (lines 927-931)."""
+        from typing import Any
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from the_architect.core.claude_code_provider import ClaudeCodeProvider
+
+        # Use a real ClaudeCodeProvider instance with mocked methods
+        real_claude = ClaudeCodeProvider()
+
+        cb = CircuitBreaker(config=config, project_root=project_dir, provider=real_claude)
+
+        task_file = project_dir / "tasks" / "T01_setup.md"
+        task_file.write_text("# T01 — Setup\n", encoding="utf-8")
+        progress_file = project_dir / "PROGRESS.md"
+
+        mock_stream_result = MagicMock()
+        mock_stream_result.exit_code = 0
+
+        captured_instruction: str | None = None
+
+        async def capture_stream_provider(
+            instruction: str, **kwargs: Any
+        ) -> MagicMock:
+            nonlocal captured_instruction
+            captured_instruction = instruction
+            return mock_stream_result
+
+        with (
+            patch.object(real_claude, "ensure_setup"),
+            patch.object(real_claude, "supports_agents", return_value=False),
+            patch.object(
+                real_claude,
+                "get_architect_prompt",
+                return_value="# Architect Prompt\nYou are the architect.",
+            ),
+            patch(
+                "the_architect.core.runner.stream_provider",
+                new_callable=AsyncMock,
+                side_effect=capture_stream_provider,
+            ),
+            patch(
+                "the_architect.core.tasks.discover_tasks",
+                return_value=[],
+            ),
+        ):
+            await cb.attempt_replan("T01", task_file, progress_file)
+
+        # Verify architect prompt was prepended
+        assert captured_instruction is not None
+        assert "# Architect Prompt" in captured_instruction
+        assert "---" in captured_instruction
+
+    @pytest.mark.asyncio
+    async def test_replan_nonzero_exit_code(self, cb: CircuitBreaker, project_dir: Path) -> None:
+        """When architect exits with non-zero code, warning is logged (line 956)."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        task_file = project_dir / "tasks" / "T01_setup.md"
+        task_file.write_text("# T01 — Setup\n", encoding="utf-8")
+        progress_file = project_dir / "PROGRESS.md"
+
+        mock_stream_result = MagicMock()
+        mock_stream_result.exit_code = 1
+
+        with (
+            patch("the_architect.core.opencode_provider.OpenCodeProvider.ensure_setup"),
+            patch(
+                "the_architect.core.runner.stream_provider",
+                new_callable=AsyncMock,
+                return_value=mock_stream_result,
+            ),
+            patch(
+                "the_architect.core.tasks.discover_tasks",
+                return_value=[],
+            ),
+        ):
+            result = await cb.attempt_replan("T01", task_file, progress_file)
+
+        # Should still return True (replan completed, just with non-zero exit)
+        assert result is True
+
+
+# ---------------------------------------------------------------------------
+# Private helper method defensive branches — T01 coverage
+# ---------------------------------------------------------------------------
+
+
+class TestSecondsSince:
+    """Tests for CircuitBreaker._seconds_since() defensive branches."""
+
+    def test_timezone_naive_datetime_gets_utc_applied(self) -> None:
+        """A timezone-naive ISO string should have UTC applied (line 1139)."""
+        from datetime import datetime
+
+        # A naive ISO timestamp (no tzinfo)
+        naive_ts = datetime(2025, 1, 1, 12, 0, 0).isoformat()
+        # This should not raise and should return a positive number
+        result = CircuitBreaker._seconds_since(naive_ts)
+        assert result > 0.0
+
+    def test_invalid_iso_string_returns_zero(self) -> None:
+        """An invalid ISO string should return 0.0 (lines 1141-1142)."""
+        result = CircuitBreaker._seconds_since("not-a-date-at-all")
+        assert result == 0.0
+
+    def test_empty_string_returns_zero(self) -> None:
+        """An empty string should return 0.0 via TypeError/ValueError path."""
+        result = CircuitBreaker._seconds_since("")
+        assert result == 0.0
+
+
+class TestTokenDeclineTripped:
+    """Tests for CircuitBreaker._token_decline_tripped() zero-first-token guard."""
+
+    def test_first_token_zero_returns_false(self, cb: CircuitBreaker) -> None:
+        """When first token count is 0, decline check should return False (line 1160)."""
+        state = TaskCircuitState()
+        state.token_history = [0, 500]
+        result = cb._token_decline_tripped(state, decline_pct=60)
+        assert result is False
+
+    def test_first_token_zero_with_large_latest(self, cb: CircuitBreaker) -> None:
+        """Even if latest > first=0, the zero guard still returns False."""
+        state = TaskCircuitState()
+        state.token_history = [0, 10000]
+        result = cb._token_decline_tripped(state, decline_pct=60)
+        assert result is False
+
+
+class TestChooseRecoveryFileProgress:
+    """Tests for CircuitBreaker._choose_recovery() file-progress-WAIT path."""
+
+    def test_wait_when_all_models_tried_and_file_progress(
+        self, config: ArchitectConfig, project_dir: Path
+    ) -> None:
+        """When all models tried and any_file_progress=True → WAIT (line 1209)."""
+        # Disable retry models so attempt 2 already has no models left
+        config.circuit_no_progress_threshold = 1
+        config.retry_model_2 = ""
+        config.retry_model_3 = ""
+        cb = CircuitBreaker(config=config, project_root=project_dir)
+
+        # Attempt 1: writes a file → any_file_progress becomes True
+        cb.record_attempt(_summary(attempt=1, files=["src/foo.py"]))
+        # Attempt 2: no files → threshold=1 → circuit opens
+        # At attempt=2: models_available = (2<2 and False) or (2<3 and False) = False
+        # → falls through to any_file_progress check → WAIT
+        state = cb.record_attempt(_summary(attempt=2, files=[]))
+        assert state.state == CircuitState.OPEN
+        assert state.recovery_action == RecoveryAction.WAIT
+
+
+class TestHasFreeModelsAvailable:
+    """Tests for CircuitBreaker._free_rotator_has_models() missing-attr path."""
+
+    def test_returns_false_when_rotator_missing_attr(self, cb: CircuitBreaker) -> None:
+        """A rotator without has_models_available should return False (line 1000)."""
+
+        class RotatorWithoutAttr:
+            """Object that does NOT have has_models_available."""
+
+            pass
+
+        cb._free_rotator = RotatorWithoutAttr()
+        result = cb._free_rotator_has_models()
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# T02 — Public method error handling branches
+# ---------------------------------------------------------------------------
+
+
+class TestDetectCooldownMalformedWaitTime:
+    """T02.1 — detect_cooldown_signal malformed wait-time parsing (lines 297-298)."""
+
+    def test_valueerror_in_wait_time_parsing_is_caught(self) -> None:
+        """A match group that is not a valid float triggers the except block."""
+        from unittest.mock import MagicMock, patch
+
+        fake_match = MagicMock()
+        fake_match.group.side_effect = ValueError("bad float")
+
+        with patch(
+            "the_architect.core.circuit._WAIT_TIME_RE",
+            MagicMock(search=lambda text: fake_match),
+        ):
+            detected, wait, signal = detect_cooldown_signal("rate limit exceeded", 429)
+        # Cooldown still detected via exit code 429
+        assert detected is True
+        # Wait time falls back to default since parsing failed
+        assert wait == _COOLDOWN_MIN_SECONDS
+
+
+class TestLoadStateNonDictJson:
+    """T02.2 — load_state with non-dict JSON (line 535)."""
+
+    def test_json_array_starts_fresh(self, config: ArchitectConfig, project_dir: Path) -> None:
+        """A JSON array (not object) in the state file triggers ValueError on line 535."""
+        state_file = project_dir / ".architect" / "circuit.json"
+        state_file.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+
+        cb = CircuitBreaker(config=config, project_root=project_dir)
+        cb.load()  # should not raise
+
+        # State should be empty — started fresh
+        assert cb._get_state("T01").state == CircuitState.CLOSED
+        allowed, _ = cb.can_run("T01")
+        assert allowed
+
+
+class TestSaveOSError:
+    """T02.3 — save with OSError during write (lines 557-558)."""
+
+    def test_save_catches_os_error(self, cb: CircuitBreaker) -> None:
+        """An OSError during write_text is logged but does not crash."""
+        from unittest.mock import patch
+
+        with patch.object(Path, "write_text", side_effect=OSError("disk full")):
+            cb.save()  # should not raise
+
+        # The circuit breaker should still be usable after a failed save
+        state = cb._get_state("T01")
+        assert state.state == CircuitState.CLOSED
+
+
+class TestTokenHistoryTruncation:
+    """T02.4 — _record_attempt token_history truncation (line 685)."""
+
+    def test_token_history_capped_at_limit(
+        self, config: ArchitectConfig, project_dir: Path
+    ) -> None:
+        """Recording more than _TOKEN_HISTORY_CAP attempts truncates history."""
+        # Disable thresholds so the circuit stays closed
+        config.circuit_no_progress_threshold = 0
+        config.circuit_same_error_threshold = 0
+        config.circuit_token_decline_pct = 0
+        cb = CircuitBreaker(config=config, project_root=project_dir)
+
+        # Record _TOKEN_HISTORY_CAP + 1 attempts, each writing a file
+        # so no-progress counter stays at 0
+        for i in range(1, _TOKEN_HISTORY_CAP + 2):
+            cb.record_attempt(_summary(attempt=i, files=[f"file{i}.py"], tokens=1000))
+
+        state = cb._get_state("T01")
+        assert len(state.token_history) == _TOKEN_HISTORY_CAP
+        # Circuit should still be closed (all attempts wrote files)
+        assert state.state == CircuitState.CLOSED
+
+
+class TestSameErrorThresholdTrippedReason:
+    """T02.5 — _check_thresholds same-error trigger path (line 748)."""
+
+    def test_same_error_trips_circuit_with_correct_reason(
+        self, config: ArchitectConfig, project_dir: Path
+    ) -> None:
+        """Same-error threshold opens the circuit via line 748 (not no-progress)."""
+        # Disable no-progress threshold so same-error is the only trigger
+        config.circuit_no_progress_threshold = 0
+        config.circuit_same_error_threshold = 3
+        config.circuit_token_decline_pct = 0
+        cb = CircuitBreaker(config=config, project_root=project_dir)
+
+        err = "ModuleNotFoundError: No module named 'requests'"
+        # Write files each attempt so no-progress counter stays at 0
+        for i in range(1, 4):
+            state = cb.record_attempt(_summary(attempt=i, files=[f"file{i}.py"], bash_errors=[err]))
+
+        assert state.state == CircuitState.OPEN
+        assert state.consecutive_same_error == 3
+        # The reason should mention "same-error", not "no-progress"
+        assert state.consecutive_no_progress == 0
