@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import threading
 
+import pytest
+
 from the_architect.core.runner import PlainStreamRenderer
 from the_architect.tui import TuiSession, tui_execution_session, tui_wait_session
 from the_architect.tui.renderer import TextualStreamRenderer
@@ -78,6 +80,20 @@ class TestTuiExecutionSessionReusesActiveRunner:
             assert isinstance(session, TuiSession)
             assert session.app is not None
             assert session._thread is not None
+
+    def test_without_runner_restores_terminal_modes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Standalone fallback cleanup should share the runner terminal restore path."""
+        calls: list[bool] = []
+
+        def _restore() -> None:
+            calls.append(True)
+
+        monkeypatch.setattr("the_architect.tui.runner._restore_terminal_input_modes", _restore)
+
+        with tui_execution_session(enabled=True):
+            pass
+
+        assert calls
 
 
 class TestTuiWaitSessionReusesActiveRunner:

@@ -157,6 +157,13 @@ def tui_execution_session(enabled: bool) -> Iterator[TuiSession]:
             app.run()
         except Exception:
             pass
+        finally:
+            try:
+                from the_architect.tui.runner import _restore_terminal_input_modes
+
+                _restore_terminal_input_modes()
+            except Exception:
+                pass
 
     thread = threading.Thread(target=_run_app, name="architect-tui", daemon=True)
     thread.start()
@@ -171,6 +178,12 @@ def tui_execution_session(enabled: bool) -> Iterator[TuiSession]:
             pass
         if thread.is_alive():
             thread.join(timeout=2.0)
+        try:
+            from the_architect.tui.runner import _restore_terminal_input_modes
+
+            _restore_terminal_input_modes()
+        except Exception:
+            pass
 
 
 class TuiWaitSession:
@@ -317,6 +330,13 @@ def tui_wait_session(
             app.run()
         except Exception:
             pass
+        finally:
+            try:
+                from the_architect.tui.runner import _restore_terminal_input_modes
+
+                _restore_terminal_input_modes()
+            except Exception:
+                pass
 
     thread = threading.Thread(target=_run_app, name="architect-wait", daemon=True)
     thread.start()
@@ -331,3 +351,9 @@ def tui_wait_session(
             pass
         if thread.is_alive():
             thread.join(timeout=2.0)
+        try:
+            from the_architect.tui.runner import _restore_terminal_input_modes
+
+            _restore_terminal_input_modes()
+        except Exception:
+            pass

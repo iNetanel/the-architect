@@ -114,6 +114,93 @@ class TestMoreHelperFunctions:
         )
         assert _infinite_loop_has_clean_exit_state(tmp_path, config) is False
 
+    def test_infinite_loop_clean_exit_state_requires_progress_file(self, tmp_path: Path) -> None:
+        """A planning failure with no PROGRESS.md must not be treated as clean."""
+        from the_architect.cli import _infinite_loop_has_clean_exit_state
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01_done.md").write_text("# T01\n", encoding="utf-8")
+        config = ArchitectConfig().resolve(tmp_path)
+
+        assert _infinite_loop_has_clean_exit_state(tmp_path, config) is False
+
+    def test_infinite_loop_clean_failure_counts_as_success(self, tmp_path: Path) -> None:
+        """A clean on-disk cycle should override a false-negative nested failure."""
+        from the_architect.cli import _infinite_loop_success_after_clean_failure
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01_done.md").write_text("# T01\n", encoding="utf-8")
+        (tasks_dir / "PROGRESS.md").write_text(
+            "\n".join(
+                [
+                    "# The Architect — Progress Tracker",
+                    "",
+                    "## Task Log",
+                    "",
+                    "| Task | Title | Status | Completed |",
+                    "|------|-------|--------|-----------|",
+                    "| T01 | Done task | Done | 2026-05-12 |",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        config = ArchitectConfig().resolve(tmp_path)
+        config._infinite_loop_enabled = True  # type: ignore[attr-defined]
+
+        assert (
+            _infinite_loop_success_after_clean_failure(
+                success=False,
+                project=tmp_path,
+                config=config,
+                return_on_success=True,
+            )
+            is True
+        )
+
+    def test_infinite_loop_dirty_failure_stays_failed(self, tmp_path: Path) -> None:
+        """Pending task state must not be hidden by loop continuation handling."""
+        from the_architect.cli import _infinite_loop_success_after_clean_failure
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01_pending.md").write_text("# T01\n", encoding="utf-8")
+        (tasks_dir / "PROGRESS.md").write_text(
+            "\n".join(
+                [
+                    "# The Architect — Progress Tracker",
+                    "",
+                    "## Task Log",
+                    "",
+                    "| Task | Title | Status | Completed |",
+                    "|------|-------|--------|-----------|",
+                    "| T01 | Pending task | Pending | — |",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        config = ArchitectConfig().resolve(tmp_path)
+        config._infinite_loop_enabled = True  # type: ignore[attr-defined]
+
+        assert (
+            _infinite_loop_success_after_clean_failure(
+                success=False,
+                project=tmp_path,
+                config=config,
+                return_on_success=True,
+            )
+            is False
+        )
+
+    def test_monitor_killed_finalizer_preserves_failed_state(self) -> None:
+        """The outer finalizer must not overwrite a legitimate FAILED run."""
+        from the_architect.cli import _monitor_state_needs_killed_finalizer
+        from the_architect.core.monitor_state import RUN_STATUS_FAILED, RUN_STATUS_RUNNING
+
+        assert _monitor_state_needs_killed_finalizer(RUN_STATUS_FAILED) is False
+        assert _monitor_state_needs_killed_finalizer(RUN_STATUS_RUNNING) is True
+
     def test_truncate_goal_for_display_limits_long_goal(self) -> None:
         """Long goals should not overwhelm planning/execution surfaces."""
         from the_architect.cli import _truncate_goal_for_display

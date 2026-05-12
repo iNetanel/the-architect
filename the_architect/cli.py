@@ -264,9 +264,48 @@ def _infinite_loop_has_clean_exit_state(project: Path, config: ArchitectConfig) 
     pending work and unrecovered failed/blocked original tasks.
     """
     tasks_dir = project / config.tasks_dir.name
+    if not config.progress_file.exists():
+        return False
+    if not discover_tasks(tasks_dir):
+        return False
     if check_pending_tasks(tasks_dir, config.progress_file):
         return False
     return _validate_cycle(tasks_dir, config.progress_file).passed
+
+
+def _infinite_loop_success_after_clean_failure(
+    *,
+    success: bool,
+    project: Path,
+    config: ArchitectConfig,
+    return_on_success: bool,
+) -> bool:
+    """Return effective loop success after a false-negative nested failure."""
+    if success:
+        return True
+    if not (return_on_success or _infinite_loop_active(config)):
+        return False
+    try:
+        if _infinite_loop_has_clean_exit_state(project, config):
+            logger.warning(
+                "Infinite Loop: nested run reported failure after clean task state; "
+                "treating cycle as successful so the loop can continue"
+            )
+            return True
+    except Exception as exc:
+        logger.debug(f"Infinite Loop clean-state check failed: {exc!r}")
+    return False
+
+
+def _monitor_state_needs_killed_finalizer(current_status: str) -> bool:
+    """Return True when the global finalizer should mark the run killed."""
+    from the_architect.core.monitor_state import (
+        RUN_STATUS_DONE,
+        RUN_STATUS_FAILED,
+        RUN_STATUS_KILLED,
+    )
+
+    return current_status not in (RUN_STATUS_DONE, RUN_STATUS_FAILED, RUN_STATUS_KILLED)
 
 
 def _task_is_terminal(task: Task) -> bool:
@@ -4179,8 +4218,6 @@ def main(
         # never clobber DONE or FAILED from a successful run.
         try:
             from the_architect.core.monitor_state import (
-                RUN_STATUS_DONE,
-                RUN_STATUS_FAILED,
                 RUN_STATUS_KILLED,
                 read_monitor_state,
                 write_monitor_state,
@@ -4188,15 +4225,7 @@ def main(
 
             current_state = read_monitor_state(resolved_project)
             current_status = current_state.get("status", "") if current_state else ""
-            pending_after_exit = check_pending_tasks(
-                resolved_project / config.tasks_dir.name,
-                config.progress_file,
-            )
-            if pending_after_exit or current_status not in (
-                RUN_STATUS_DONE,
-                RUN_STATUS_FAILED,
-                RUN_STATUS_KILLED,
-            ):
+            if _monitor_state_needs_killed_finalizer(current_status):
                 write_monitor_state(
                     resolved_project,
                     {
@@ -4945,6 +4974,13 @@ def _run_main(
             if round_num >= config.retrospective_rounds:
                 success = False
                 break
+
+    success = _infinite_loop_success_after_clean_failure(
+        success=success,
+        project=project,
+        config=config,
+        return_on_success=_return_on_success,
+    )
 
     # ── Final summary ──────────────────────────────────────────────────
     # Write final monitor state before generating the summary

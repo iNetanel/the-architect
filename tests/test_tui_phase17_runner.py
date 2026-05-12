@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import io
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 from textual.app import ComposeResult
@@ -27,6 +29,55 @@ class _DismissNowScreen(Screen[str]):
 
 
 class TestArchitectAppRunner:
+    def test_restore_terminal_input_modes_disables_mouse_reporting(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Runner cleanup should turn off mouse reporting leaked by abrupt TUI exits."""
+        from the_architect.tui.runner import _restore_terminal_input_modes
+
+        stdout = io.StringIO()
+        monkeypatch.setattr("sys.stdout", stdout)
+
+        _restore_terminal_input_modes()
+
+        output = stdout.getvalue()
+        assert "\033[?1049l" in output
+        assert "\033[?1000l" in output
+        assert "\033[?1002l" in output
+        assert "\033[?1003l" in output
+        assert "\033[?1006l" in output
+        assert "\033[?2004l" in output
+
+    def test_unexpected_app_exit_before_worker_does_not_hang(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If Textual exits before worker startup, runner should fail fast and clean up."""
+        kill_calls: list[bool] = []
+
+        def _flow() -> None:
+            raise AssertionError("worker should not start")
+
+        def _kill_active_subprocesses() -> int:
+            kill_calls.append(True)
+            return 0
+
+        monkeypatch.setattr("the_architect.tui.runner._UNEXPECTED_EXIT_WAIT_SECONDS", 0.01)
+        monkeypatch.setattr(
+            "the_architect.core.runner.kill_active_subprocesses",
+            _kill_active_subprocesses,
+        )
+        runner = ArchitectAppRunner(flow=_flow)
+        runner.app = SimpleNamespace(  # type: ignore[assignment]
+            shutdown_started=False,
+            call_later=lambda *args, **kwargs: None,
+            run=lambda: None,
+        )
+
+        with pytest.raises(RuntimeError, match="exited unexpectedly"):
+            runner.run()
+
+        assert kill_calls == [True]
+
     def test_flow_runs_on_worker_thread(self) -> None:
         """The flow function sees a different thread than the app thread."""
         observed_threads: dict[str, int] = {}

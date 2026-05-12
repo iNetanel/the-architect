@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import atexit
 import signal
+import sys
 import threading
 import traceback
 from collections.abc import Callable
@@ -38,6 +39,8 @@ from textual.screen import Screen
 from the_architect.tui.app import ArchitectApp
 
 T = TypeVar("T")
+
+_UNEXPECTED_EXIT_WAIT_SECONDS = 30.0
 
 
 # Module-global reference to the currently active runner, if any.
@@ -177,9 +180,13 @@ class ArchitectAppRunner:
             # invoke it from a worker thread — silently skip.
             _prev_sigint = None
 
+        app_error: BaseException | None = None
         try:
             self.app.run()
+        except BaseException as exc:  # noqa: BLE001 — re-raised after cleanup
+            app_error = exc
         finally:
+            _restore_terminal_input_modes()
             unexpected_app_exit = not self._flow_done.is_set() and not self.app.shutdown_started
             if unexpected_app_exit:
                 logger.warning(
@@ -197,10 +204,21 @@ class ArchitectAppRunner:
                 # Infinite Loop it happens after the next planning pass, right
                 # before the newly planned tasks should execute. Keep the worker
                 # alive and let the run finish rather than returning a dead app
-                # from active_runner() or killing provider subprocesses from
-                # under it. Explicit user shutdown still goes through
-                # begin_shutdown()/shutdown_started and is handled below.
-                self._flow_done.wait()
+                # from active_runner(). Explicit user shutdown still goes through
+                # begin_shutdown()/shutdown_started and is handled below. The wait
+                # is bounded so a dead Textual app cannot wedge the CLI forever.
+                completed = self._flow_done.wait(timeout=_UNEXPECTED_EXIT_WAIT_SECONDS)
+                if not completed:
+                    try:
+                        from the_architect.core.runner import kill_active_subprocesses
+
+                        kill_active_subprocesses()
+                    except Exception:
+                        pass
+                    if self._flow_exception is None:
+                        self._flow_exception = RuntimeError(
+                            "Architect TUI exited unexpectedly before the CLI flow completed"
+                        )
 
             # Restore whatever SIGINT handler was in place before we
             # took over (usually Python's default, or a pytest one).
@@ -227,7 +245,8 @@ class ArchitectAppRunner:
 
             # Wait for the worker to finish so flow_exception /
             # flow_return are fully populated.
-            self._flow_done.wait(timeout=None if unexpected_app_exit else 5.0)
+            if not unexpected_app_exit:
+                self._flow_done.wait(timeout=5.0)
             if self._worker is not None and self._worker.is_alive():
                 # Worker still stuck; don't block forever.
                 self._worker.join(timeout=1.0)
@@ -244,7 +263,28 @@ class ArchitectAppRunner:
 
         if self._flow_exception is not None:
             raise self._flow_exception
+        if app_error is not None:
+            raise app_error
         return self._flow_return
+
+
+def _restore_terminal_input_modes() -> None:
+    """Disable terminal input modes that can leak after abrupt Textual exits."""
+    try:
+        sys.stdout.write(
+            "\033[?1049l"  # leave alternate screen + restore cursor
+            "\033[?1000l"  # X10 mouse reporting
+            "\033[?1002l"  # button-event mouse reporting
+            "\033[?1003l"  # any-event mouse reporting
+            "\033[?1004l"  # focus in/out reporting
+            "\033[?1006l"  # SGR mouse mode
+            "\033[?1015l"  # urxvt mouse mode
+            "\033[?2004l"  # bracketed paste
+            "\033[?25h"  # cursor visible
+        )
+        sys.stdout.flush()
+    except Exception:
+        pass
 
 
 def _atexit_kill_subprocesses() -> None:

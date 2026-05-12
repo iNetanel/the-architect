@@ -13,6 +13,7 @@ it reviews what was built, verifies quality, and prescribes targeted fixes.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -28,6 +29,14 @@ from the_architect.core.tasks import Task, discover_tasks
 
 if TYPE_CHECKING:
     from the_architect.core.provider import ArchitectProvider
+
+
+_REQUIRED_PROMPT_FILES = (
+    "architect.md",
+    "intelligence.md",
+    "reviewer.md",
+    "execution-protocol.md",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +100,82 @@ def _find_eval_snapshot_files(project_dir: Path) -> list[Path]:
         for path in sorted(project_dir.rglob("architect_eval_*"))
         if path.is_file() and not any(skip in path.parts for skip in skip_dirs)
     ]
+
+
+def _ensure_provider_setup_for_review(
+    provider: ArchitectProvider,
+    project_dir: Path,
+    config: ArchitectConfig,
+) -> None:
+    """Ensure review provider setup, reusing existing setup after resource-loader glitches."""
+    try:
+        provider.ensure_setup(project_dir, config)
+        return
+    except NotADirectoryError as exc:
+        if "MultiplexedPath" not in str(exc):
+            raise
+        if not _existing_review_setup_is_usable(provider, project_dir):
+            raise
+        logger.warning(
+            "Provider setup hit importlib.resources MultiplexedPath issue; "
+            "reusing existing .architect provider setup"
+        )
+
+
+def _existing_review_setup_is_usable(provider: ArchitectProvider, project_dir: Path) -> bool:
+    """Return True when existing review prompts/config are complete enough to reuse."""
+    prompts_dir = project_dir / ".architect" / "prompts"
+    if not prompts_dir.is_dir():
+        return False
+    for filename in _REQUIRED_PROMPT_FILES:
+        prompt_file = prompts_dir / filename
+        try:
+            if not prompt_file.is_file() or not prompt_file.read_text(encoding="utf-8").strip():
+                return False
+        except OSError:
+            return False
+
+    if not _provider_uses_architect_config(provider):
+        return True
+
+    architect_config = project_dir / ".architect" / "architect.json"
+    try:
+        data = json.loads(architect_config.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    agents = data.get("agent")
+    if not isinstance(agents, dict):
+        return False
+    for agent_name in ("architect", "reviewer"):
+        agent_cfg = agents.get(agent_name)
+        if not isinstance(agent_cfg, dict):
+            return False
+        prompt_value = agent_cfg.get("prompt")
+        if not isinstance(prompt_value, str) or not prompt_value.strip():
+            return False
+    return True
+
+
+def _provider_uses_architect_config(provider: ArchitectProvider) -> bool:
+    """Return True when review routing depends on .architect/architect.json."""
+    return getattr(provider, "name", "") == "opencode"
+
+
+def _prepend_provider_prompt(
+    provider: ArchitectProvider,
+    instruction: str,
+    prompt_getter_name: str,
+) -> str:
+    """Prepend a packaged provider role prompt when named agents are not used."""
+    if prompt_getter_name not in dir(provider):
+        return instruction
+    getter = getattr(provider, prompt_getter_name, None)
+    if not callable(getter):
+        return instruction
+    prompt = str(getter()).strip()
+    if not prompt:
+        return instruction
+    return f"{prompt}\n\n---\n\n{instruction}"
 
 
 # ---------------------------------------------------------------------------
@@ -470,19 +555,11 @@ async def run_retrospective(
     tasks_before = {t.name for t in discover_tasks(tasks_dir)}
 
     # Ensure prompts (and provider-specific planning config) are written
-    provider.ensure_setup(project_dir, config)
+    _ensure_provider_setup_for_review(provider, project_dir, config)
 
     # Build the instruction with review context embedded
     context = _gather_review_context(project_dir, request.original_goal)
     instruction = build_retrospective_instruction(request, context)
-
-    # For Claude Code: prepend the reviewer prompt since there are no named agents
-    if not provider.supports_agents():
-        from the_architect.core.claude_code_provider import ClaudeCodeProvider
-
-        if isinstance(provider, ClaudeCodeProvider):
-            reviewer_prompt = provider.get_reviewer_prompt()
-            instruction = f"{reviewer_prompt}\n\n---\n\n{instruction}"
 
     logger.info(
         f"Running retrospective round {request.round_number} via reviewer agent "
@@ -494,9 +571,11 @@ async def run_retrospective(
     # Config override for OpenCode (points to .architect/architect.json)
     config_override: Path | None = None
     agent_override: str | None = None
-    if provider.supports_agents():
+    if provider.supports_agents() and _provider_uses_architect_config(provider):
         config_override = project_dir / ".architect" / "architect.json"
         agent_override = "reviewer"
+    else:
+        instruction = _prepend_provider_prompt(provider, instruction, "get_reviewer_prompt")
 
     stream_result = await stream_provider(
         instruction=instruction,
@@ -582,7 +661,7 @@ async def run_task_reassessment(
         return ReassessmentResult(summary="No reassessment needed.")
 
     tasks_dir = project_dir / "tasks"
-    provider.ensure_setup(project_dir, config)
+    _ensure_provider_setup_for_review(provider, project_dir, config)
 
     pending_tasks = discover_tasks(tasks_dir)
     before_contents: dict[str, str] = {}
@@ -680,10 +759,13 @@ async def run_task_reassessment(
         ]
     )
 
-    config_override = (
-        project_dir / ".architect" / "architect.json" if provider.supports_agents() else None
-    )
-    agent_override = "architect" if provider.supports_agents() else None
+    config_override = None
+    agent_override = None
+    if provider.supports_agents() and _provider_uses_architect_config(provider):
+        config_override = project_dir / ".architect" / "architect.json"
+        agent_override = "architect"
+    else:
+        instruction = _prepend_provider_prompt(provider, instruction, "get_architect_prompt")
 
     stream_result = await stream_provider(
         instruction=instruction,

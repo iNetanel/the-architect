@@ -14,6 +14,7 @@ from the_architect.core.retrospective import (
     RetrospectiveFailedError,
     RetrospectiveRequest,
     RetrospectiveResult,
+    _ensure_provider_setup_for_review,
     _gather_review_context,
     _next_r_task_number,
     _update_progress_with_retrospective_tasks,
@@ -363,6 +364,73 @@ class TestRetrospectiveEdgeCases:
         assert result.tasks_updated == ["T02"]
         provider.ensure_setup.assert_called_once()
 
+    def test_provider_setup_reuses_existing_files_after_multiplexed_path_error(
+        self, tmp_path: Path, config: ArchitectConfig
+    ) -> None:
+        """Review stages should not fail if package resource setup glitches after setup exists."""
+        architect_dir = tmp_path / ".architect"
+        prompts_dir = architect_dir / "prompts"
+        prompts_dir.mkdir(parents=True)
+        for filename in (
+            "architect.md",
+            "intelligence.md",
+            "reviewer.md",
+            "execution-protocol.md",
+        ):
+            (prompts_dir / filename).write_text(f"{filename} prompt\n", encoding="utf-8")
+        (architect_dir / "architect.json").write_text(
+            '{"agent":{"architect":{"prompt":"architect.md"},'
+            '"reviewer":{"prompt":"reviewer.md"}}}\n',
+            encoding="utf-8",
+        )
+
+        provider = MagicMock()
+        provider.name = "opencode"
+        provider.ensure_setup.side_effect = NotADirectoryError(
+            "MultiplexedPath only supports directories"
+        )
+
+        _ensure_provider_setup_for_review(provider, tmp_path, config)
+
+        provider.ensure_setup.assert_called_once_with(tmp_path, config)
+
+    def test_provider_setup_reraises_without_existing_files(
+        self, tmp_path: Path, config: ArchitectConfig
+    ) -> None:
+        """Initial setup failures must still surface when no reusable provider setup exists."""
+        provider = MagicMock()
+        provider.ensure_setup.side_effect = NotADirectoryError(
+            "MultiplexedPath only supports directories"
+        )
+
+        with pytest.raises(NotADirectoryError):
+            _ensure_provider_setup_for_review(provider, tmp_path, config)
+
+    def test_provider_setup_rejects_corrupt_existing_opencode_config(
+        self, tmp_path: Path, config: ArchitectConfig
+    ) -> None:
+        """The fallback must not hide stale or corrupt OpenCode review setup."""
+        architect_dir = tmp_path / ".architect"
+        prompts_dir = architect_dir / "prompts"
+        prompts_dir.mkdir(parents=True)
+        for filename in (
+            "architect.md",
+            "intelligence.md",
+            "reviewer.md",
+            "execution-protocol.md",
+        ):
+            (prompts_dir / filename).write_text(f"{filename} prompt\n", encoding="utf-8")
+        (architect_dir / "architect.json").write_text("{}\n", encoding="utf-8")
+
+        provider = MagicMock()
+        provider.name = "opencode"
+        provider.ensure_setup.side_effect = NotADirectoryError(
+            "MultiplexedPath only supports directories"
+        )
+
+        with pytest.raises(NotADirectoryError):
+            _ensure_provider_setup_for_review(provider, tmp_path, config)
+
     @pytest.mark.asyncio
     async def test_run_retrospective_claude_code_provider(
         self, tmp_path: Path, config: ArchitectConfig
@@ -388,21 +456,63 @@ class TestRetrospectiveEdgeCases:
             original_goal="test",
         )
 
-        # Create a mock ClaudeCodeProvider
         mock_provider = MagicMock(spec=ClaudeCodeProvider)
+        mock_provider.name = "claude-code"
         mock_provider.display_name = "Claude Code"
-        mock_provider.supports_agents.return_value = False
+        mock_provider.supports_agents.return_value = True
         mock_provider.get_reviewer_prompt.return_value = "Review prompt"
+        captured: dict[str, object] = {}
 
-        # Mock stream_provider to return a simple result
         async def fake_stream(**kwargs: object) -> StreamResult:
+            captured.update(kwargs)
             return StreamResult(exit_code=0, tokens=TokenUsage())
 
         with patch("the_architect.core.retrospective.stream_provider", side_effect=fake_stream):
             result = await run_retrospective(request, config, provider=mock_provider)
 
         assert isinstance(result, RetrospectiveResult)
-        # Should complete without errors even with Claude Code provider
+        assert str(captured["instruction"]).startswith("Review prompt\n\n---\n\n")
+        assert captured["agent_override"] is None
+        assert captured["config_override"] is None
+
+    @pytest.mark.asyncio
+    async def test_run_task_reassessment_prepends_architect_prompt_for_claude(
+        self, tmp_path: Path, config: ArchitectConfig
+    ) -> None:
+        """Claude reassessment should inject the architect prompt instead of --agent."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        (tasks_dir / "T02_followup.md").write_text("# T02\n", encoding="utf-8")
+        (tasks_dir / "PROGRESS.md").write_text(
+            "| Task | Title | Status | Completed |\n"
+            "|------|-------|--------|-----------|\n"
+            "| T02 | Follow up | Pending | — |\n",
+            encoding="utf-8",
+        )
+
+        mock_provider = MagicMock(spec=ClaudeCodeProvider)
+        mock_provider.name = "claude-code"
+        mock_provider.supports_agents.return_value = True
+        mock_provider.get_architect_prompt.return_value = "Architect prompt"
+        captured: dict[str, object] = {}
+
+        async def fake_stream(**kwargs: object) -> StreamResult:
+            captured.update(kwargs)
+            return StreamResult(exit_code=0, tokens=TokenUsage())
+
+        with patch("the_architect.core.retrospective.stream_provider", side_effect=fake_stream):
+            await run_task_reassessment(
+                project_dir=tmp_path,
+                provider=mock_provider,
+                config=config,
+                completed_task="T01",
+                outcome_summary="Downstream impact: possible",
+                original_goal="test goal",
+            )
+
+        assert str(captured["instruction"]).startswith("Architect prompt\n\n---\n\n")
+        assert captured["agent_override"] is None
+        assert captured["config_override"] is None
 
     @pytest.mark.asyncio
     async def test_run_retrospective_nonzero_exit_code(

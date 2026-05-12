@@ -29,6 +29,8 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 - Non-loop planning with an empty or derived goal now removes stale `tasks/GOAL.md` instead of accidentally inheriting the previous completed goal; Infinite Loop still preserves it across iterations (build 10344).
 - Git-installed builds now ship and display the build counter in `architect --version`, `architect version`, and the TUI header (build 10345).
 - Formatted the new SuccessScreen test module so CI's `ruff format --check .` gate passes (build 10346).
+- Infinite Loop now treats clean post-task false-negative failures as successful before summary/monitor finalization, reuses existing review provider setup after transient `MultiplexedPath` resource-loader errors, and always disables terminal mouse reporting during persistent TUI cleanup so raw mouse escape fragments do not leak into the shell after unexpected exits (build 10348).
+- Hardened Infinite Loop/TUI recovery further: clean-state continuation now requires real completed task state, monitor finalization preserves terminal `FAILED` runs, unexpected Textual exits cannot hang indefinitely, alternate-screen cleanup is explicit, and retrospective/reassessment prompt routing works safely across OpenCode, Claude, Gemini, and Codex (build 10349).
 
 <!--
 Every completed task appends a bullet here and bumps __build__ in /version.py.
