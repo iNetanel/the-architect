@@ -18,7 +18,7 @@ empty [Unreleased] above it. Use Keep a Changelog section headings:
 Added / Changed / Deprecated / Removed / Fixed / Security.
 -->
 
-## [1.2.7] (build 10389) — 2026-05-13
+## [1.2.7] (build 10390) — 2026-05-13
 
 ### Added
 

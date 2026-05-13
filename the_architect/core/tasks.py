@@ -240,4 +240,4 @@ def duplicate_task_prefixes(tasks: Sequence[Task]) -> dict[str, list[str]]:
     names_by_prefix: dict[str, list[str]] = {}
     for task in tasks:
         names_by_prefix.setdefault(task.prefix, []).append(task.name)
-    return {prefix: names for prefix, names in names_by_prefix.items() if len(names) > 1}
+    return {prefix: sorted(names) for prefix, names in names_by_prefix.items() if len(names) > 1}
