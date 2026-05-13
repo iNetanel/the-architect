@@ -23,6 +23,7 @@ from unittest.mock import MagicMock, patch
 from click.testing import CliRunner
 
 from the_architect.cli import main
+from the_architect.core.provider import ProviderNotFoundError
 
 # ---------------------------------------------------------------------------
 # init
@@ -569,3 +570,55 @@ class TestListCmd:
         assert result.exit_code == 0, result.output
         assert "T01" in result.output
         assert "T02" in result.output
+
+
+# ---------------------------------------------------------------------------
+# doctor
+# ---------------------------------------------------------------------------
+
+
+class TestDoctorCmd:
+    """Exercise the ``doctor`` sub-command branches."""
+
+    def test_doctor_all_pass(self, tmp_path: Path) -> None:
+        """When provider is detected and installed, all checks pass."""
+        fake = MagicMock()
+        fake.name = "opencode"
+        fake.display_name = "OpenCode"
+        fake.is_installed.return_value = True
+        fake.get_version.return_value = "0.6.12"
+        fake.has_any_models.return_value = True
+        fake.check_update_available.return_value = ""
+
+        with patch("the_architect.cli.detect_provider", return_value=fake):
+            result = CliRunner().invoke(main, ["doctor"])
+
+        assert result.exit_code == 0, result.output
+        assert "All checks passed" in result.output or "Environment Diagnostics" in result.output
+
+    def test_doctor_provider_not_found(self, tmp_path: Path) -> None:
+        """When no provider is detected, exit code is 1."""
+        with patch(
+            "the_architect.cli.detect_provider",
+            side_effect=ProviderNotFoundError("none found"),
+        ):
+            result = CliRunner().invoke(main, ["doctor"])
+
+        assert result.exit_code == 1, result.output
+        assert "No provider detected" in result.output
+
+    def test_doctor_python_version_shown(self, tmp_path: Path) -> None:
+        """Python version row appears in output."""
+        fake = MagicMock()
+        fake.name = "opencode"
+        fake.display_name = "OpenCode"
+        fake.is_installed.return_value = True
+        fake.get_version.return_value = "0.6.12"
+        fake.has_any_models.return_value = True
+        fake.check_update_available.return_value = ""
+
+        with patch("the_architect.cli.detect_provider", return_value=fake):
+            result = CliRunner().invoke(main, ["doctor"])
+
+        assert result.exit_code == 0, result.output
+        assert "Python version" in result.output

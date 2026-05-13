@@ -20,11 +20,17 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from the_architect.config import ArchitectConfig
-from the_architect.core.progress import reconcile_task_status, task_is_done, task_is_resolved
-from the_architect.core.tasks import Task, TaskPlan
+from the_architect.core.progress import (
+    reconcile_progress_with_task_files,
+    reconcile_task_status,
+    task_is_done,
+    task_is_resolved,
+)
+from the_architect.core.tasks import Task, TaskPlan, discover_tasks
 
 _STREAM_LEFT_PAD = "  "
 _STREAM_RIGHT_GAP = 2
+_PROVIDER_IDLE_TIMEOUT_SECONDS = 900.0
 _OUTCOME_SECTION_MARKER = "=== TASK OUTCOME ==="
 _OUTCOME_FIELD_LABELS = {
     "summary": "Summary",
@@ -757,6 +763,22 @@ def kill_active_subprocesses() -> int:
     return len(procs)
 
 
+def _provider_idle_timeout_seconds() -> float:
+    """Return provider stdout idle timeout, allowing env override for long runs."""
+    raw = os.environ.get("ARCHITECT_PROVIDER_IDLE_TIMEOUT_SECONDS", "").strip()
+    if not raw:
+        return _PROVIDER_IDLE_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid ARCHITECT_PROVIDER_IDLE_TIMEOUT_SECONDS value "
+            f"{raw!r}; using default {int(_PROVIDER_IDLE_TIMEOUT_SECONDS)}s"
+        )
+        return _PROVIDER_IDLE_TIMEOUT_SECONDS
+    return max(0.0, value)
+
+
 async def stream_provider(
     instruction: str,
     project_dir: Path,
@@ -842,6 +864,7 @@ async def stream_provider(
     process: asyncio.subprocess.Process | None = None
     exit_code: int = -1
     first_output_fired: bool = False
+    idle_timeout_seconds = _provider_idle_timeout_seconds()
 
     def _fire_first_output() -> None:
         """Fire the on_first_output callback exactly once, swallowing errors."""
@@ -896,7 +919,24 @@ async def stream_provider(
 
             try:
                 while True:
-                    line_bytes = await stdout_reader.readline()
+                    try:
+                        if idle_timeout_seconds > 0:
+                            line_bytes = await asyncio.wait_for(
+                                stdout_reader.readline(),
+                                timeout=idle_timeout_seconds,
+                            )
+                        else:
+                            line_bytes = await stdout_reader.readline()
+                    except TimeoutError:
+                        message = (
+                            f"Provider produced no stdout for {int(idle_timeout_seconds)}s; "
+                            "terminating stalled subprocess."
+                        )
+                        accumulated_text_parts.append(message)
+                        logger.warning(message)
+                        if process is not None and process.returncode is None:
+                            _kill_process_tree(process)
+                        break
                     if not line_bytes:
                         break
                     line = line_bytes.decode("utf-8", errors="replace").rstrip("\n").rstrip("\r")
@@ -2091,6 +2131,17 @@ def _extract_task_outcome_summary(text: str) -> str:
     return "\n".join(lines[:4])
 
 
+def _task_outcome_summary_for_exit(text: str, exit_code: int | None) -> str:
+    """Return a task outcome summary with explicit killed-process diagnostics."""
+    summary = _extract_task_outcome_summary(text)
+    if exit_code == -signal.SIGKILL:
+        killed = (
+            "Provider process killed (SIGKILL / exit -9); no reliable task output was produced."
+        )
+        return f"{summary}\n{killed}" if summary else killed
+    return summary
+
+
 # ---------------------------------------------------------------------------
 # Single attempt
 # ---------------------------------------------------------------------------
@@ -2209,6 +2260,11 @@ async def run_task_once(
             logger.warning(
                 f"Task {task.prefix} attempt {attempt} exited with code {stream_result.exit_code}"
             )
+            if stream_result.exit_code == -signal.SIGKILL:
+                logger.warning(
+                    f"Task {task.prefix} provider process was killed with SIGKILL; "
+                    "treating output as interrupted"
+                )
             # Also check for rate-limit or model-not-found in the accumulated text
             # (belt-and-suspenders with the mid-stream detection — some errors
             # only appear in text output)
@@ -2231,7 +2287,10 @@ async def run_task_once(
                 accumulated_text=stream_result.accumulated_text,
                 exit_code=stream_result.exit_code,
                 cooldown_until=stream_result.cooldown_until,
-                outcome_summary=_extract_task_outcome_summary(stream_result.accumulated_text),
+                outcome_summary=_task_outcome_summary_for_exit(
+                    stream_result.accumulated_text,
+                    stream_result.exit_code,
+                ),
             )
 
         # Multi-signal completion check (IMP-01 + IMP-06):
@@ -2957,10 +3016,25 @@ def _reconcile_progress_after_attempt(
                 "Failed",
                 completed=annotation,
             ):
-                logger.warning(
-                    f"PROGRESS.md has no row for {task_result.prefix} — "
-                    "cannot persist Failed status"
+                tasks_dir = progress_file.parent
+                repaired = reconcile_progress_with_task_files(
+                    progress_file, discover_tasks(tasks_dir)
                 )
+                if repaired and reconcile_task_status(
+                    progress_file,
+                    task_result.prefix,
+                    "Failed",
+                    completed=annotation,
+                ):
+                    logger.info(
+                        f"Repaired missing PROGRESS.md row and persisted Failed status for "
+                        f"{task_result.prefix} ({annotation})"
+                    )
+                else:
+                    logger.warning(
+                        f"PROGRESS.md has no row for {task_result.prefix} — "
+                        "cannot persist Failed status"
+                    )
             else:
                 logger.info(
                     f"Persisted Failed status for {task_result.prefix} "

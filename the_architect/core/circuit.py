@@ -932,7 +932,9 @@ class CircuitBreaker:
 
         # ── Call the architect via the active provider ──────────────────
         try:
-            provider.ensure_setup(self._project_root, self._config)
+            from the_architect.core.provider_setup import ensure_provider_setup
+
+            ensure_provider_setup(provider, self._project_root, self._config)
             model_override = self._config.standalone_mode or None
 
             # Config override and agent override only apply to OpenCode

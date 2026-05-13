@@ -158,6 +158,7 @@ class TestMoreHelperFunctions:
             )
             is True
         )
+        assert (tasks_dir / "SUMMARY.md").exists()
 
     def test_infinite_loop_dirty_failure_stays_failed(self, tmp_path: Path) -> None:
         """Pending task state must not be hidden by loop continuation handling."""
@@ -524,6 +525,21 @@ class TestMoreHelperFunctions:
                 pass
             # Should not write any ANSI codes
             mock_write.assert_not_called()
+
+    def test_alternate_screen_restores_terminal_modes(self) -> None:
+        """TTY alternate-screen cleanup should disable leaked mouse modes."""
+        from the_architect.cli import alternate_screen
+
+        with (
+            patch("sys.stdout.isatty", return_value=True),
+            patch("sys.stdout.write"),
+            patch("sys.stdout.flush"),
+            patch("the_architect.tui.terminal.restore_terminal_input_modes") as mock_restore,
+        ):
+            with alternate_screen():
+                pass
+
+        mock_restore.assert_called_once()
 
     def test_countdown_zero_seconds(self) -> None:
         """_countdown was removed — placeholder kept as documentation."""
@@ -926,6 +942,49 @@ class TestRunMain:
                     _pre_loaded_config=config,
                 )
             assert exc_info.value.code == 0
+
+    def test_run_main_all_done_recovers_missing_summary(self, tmp_path: Path) -> None:
+        """Interrupted finalization should regenerate SUMMARY.md on resume."""
+        from the_architect.cli import _run_main
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        progress_file = tasks_dir / "PROGRESS.md"
+        progress_file.write_text(
+            "# Progress\n\n"
+            "**Tasks completed:** 1\n"
+            "**Next task to run:** none\n\n"
+            "| Task | Title | Status | Completed |\n"
+            "|------|-------|--------|-----------|\n"
+            "| T01 | Test task | Done | 2026-05-13 |\n",
+            encoding="utf-8",
+        )
+        task_path = tasks_dir / "T01_test.md"
+        task_path.write_text("# T01 — Test task\n", encoding="utf-8")
+        task = Task(
+            name="T01_test",
+            prefix="T01",
+            number=1,
+            path=task_path,
+            title="Test task",
+            status=TaskStatus.DONE,
+        )
+        config = ArchitectConfig().resolve(tmp_path)
+
+        with (
+            patch("the_architect.cli.discover_tasks", return_value=[task]),
+            patch("the_architect.cli._filter_and_set_status", return_value=[task]),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                _run_main(
+                    project=tmp_path,
+                    plan=False,
+                    headless=True,
+                    _pre_loaded_config=config,
+                )
+
+        assert exc_info.value.code == 0
+        assert (tasks_dir / "SUMMARY.md").exists()
 
     def test_run_main_no_tasks_runs_planning(self, tmp_path: Path) -> None:
         """Should run planning mode when no tasks exist."""
@@ -2688,6 +2747,7 @@ class TestMainDeeper:
             runner = CliRunner()
             result = runner.invoke(main, ["--headless", "-p", str(tmp_path)])
             assert "All tasks complete" in result.output
+            assert (tmp_path / "tasks" / "SUMMARY.md").exists()
 
     def test_main_standalone_mode_incompatible_opencode(self, tmp_path: Path) -> None:
         """Should clear OpenRouter standalone_mode when using Claude Code provider."""

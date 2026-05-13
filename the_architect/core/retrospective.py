@@ -13,7 +13,6 @@ it reviews what was built, verifies quality, and prescribes targeted fixes.
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -23,20 +22,17 @@ from pydantic import BaseModel, Field
 
 from the_architect.config import ArchitectConfig
 from the_architect.core.planner import _rescue_stray_tasks, _summarize_progress_historical
-from the_architect.core.progress import task_is_done
+from the_architect.core.progress import reconcile_progress_with_task_files, task_is_done
+from the_architect.core.provider_setup import (
+    ensure_provider_setup,
+    existing_provider_setup_is_usable,
+    provider_uses_architect_config,
+)
 from the_architect.core.runner import StreamRenderer, stream_provider
 from the_architect.core.tasks import Task, discover_tasks
 
 if TYPE_CHECKING:
     from the_architect.core.provider import ArchitectProvider
-
-
-_REQUIRED_PROMPT_FILES = (
-    "architect.md",
-    "intelligence.md",
-    "reviewer.md",
-    "execution-protocol.md",
-)
 
 
 # ---------------------------------------------------------------------------
@@ -108,57 +104,17 @@ def _ensure_provider_setup_for_review(
     config: ArchitectConfig,
 ) -> None:
     """Ensure review provider setup, reusing existing setup after resource-loader glitches."""
-    try:
-        provider.ensure_setup(project_dir, config)
-        return
-    except NotADirectoryError as exc:
-        if "MultiplexedPath" not in str(exc):
-            raise
-        if not _existing_review_setup_is_usable(provider, project_dir):
-            raise
-        logger.warning(
-            "Provider setup hit importlib.resources MultiplexedPath issue; "
-            "reusing existing .architect provider setup"
-        )
+    ensure_provider_setup(provider, project_dir, config)
 
 
 def _existing_review_setup_is_usable(provider: ArchitectProvider, project_dir: Path) -> bool:
     """Return True when existing review prompts/config are complete enough to reuse."""
-    prompts_dir = project_dir / ".architect" / "prompts"
-    if not prompts_dir.is_dir():
-        return False
-    for filename in _REQUIRED_PROMPT_FILES:
-        prompt_file = prompts_dir / filename
-        try:
-            if not prompt_file.is_file() or not prompt_file.read_text(encoding="utf-8").strip():
-                return False
-        except OSError:
-            return False
-
-    if not _provider_uses_architect_config(provider):
-        return True
-
-    architect_config = project_dir / ".architect" / "architect.json"
-    try:
-        data = json.loads(architect_config.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    agents = data.get("agent")
-    if not isinstance(agents, dict):
-        return False
-    for agent_name in ("architect", "reviewer"):
-        agent_cfg = agents.get(agent_name)
-        if not isinstance(agent_cfg, dict):
-            return False
-        prompt_value = agent_cfg.get("prompt")
-        if not isinstance(prompt_value, str) or not prompt_value.strip():
-            return False
-    return True
+    return existing_provider_setup_is_usable(provider, project_dir)
 
 
 def _provider_uses_architect_config(provider: ArchitectProvider) -> bool:
     """Return True when review routing depends on .architect/architect.json."""
-    return getattr(provider, "name", "") == "opencode"
+    return provider_uses_architect_config(provider)
 
 
 def _prepend_provider_prompt(
@@ -469,10 +425,17 @@ def _update_progress_with_retrospective_tasks(
 
     existing_rows = match.group(2)
 
-    # Build new rows
+    # Build new rows. Preserve existing rows/statuses; repeated reviews and
+    # interrupted runs must not duplicate R-task entries.
     new_rows = ""
     for task in new_tasks:
+        if re.search(rf"^\|\s*{re.escape(task.prefix)}\s+\|", content, re.MULTILINE):
+            continue
         new_rows += f"| {task.prefix} | {task.name} | Pending | — |\n"
+
+    if not new_rows:
+        logger.info("PROGRESS.md already contained retrospective task row(s)")
+        return
 
     # Insert new rows after existing ones
     updated_rows = existing_rows + new_rows
@@ -617,6 +580,9 @@ async def run_retrospective(
     if new_r_tasks:
         progress_md = project_dir / "tasks" / "PROGRESS.md"
         _update_progress_with_retrospective_tasks(progress_md, new_r_tasks)
+        repaired = reconcile_progress_with_task_files(progress_md, tasks_after)
+        if repaired:
+            logger.info("Reconciled PROGRESS.md rows after retrospective: " + ", ".join(repaired))
 
     # Count issues from the log if possible (heuristic: count R-tasks created)
     fixes_planned = len(new_r_tasks)

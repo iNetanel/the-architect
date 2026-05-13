@@ -15,6 +15,7 @@ from the_architect.core.retrospective import (
     RetrospectiveRequest,
     RetrospectiveResult,
     _ensure_provider_setup_for_review,
+    _find_eval_snapshot_files,
     _gather_review_context,
     _next_r_task_number,
     _update_progress_with_retrospective_tasks,
@@ -770,6 +771,96 @@ class TestRetrospectiveCoverage:
             # Should not crash and should skip the external symlink
             assert "Original Goal" in context
 
+    def test_task_file_listing_skips_architect_eval_files(self, tmp_path: Path) -> None:
+        """Line 269: architect_eval_ files in tasks/ are skipped during task file listing."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01_init.md").write_text("# T01 — Init\n", encoding="utf-8")
+        (tasks_dir / "architect_eval_T01_init.md").write_text(
+            "# T01 — Init (backup)\n", encoding="utf-8"
+        )
+
+        context = _gather_review_context(tmp_path, "test goal")
+
+        assert "## Task Files" in context
+        assert "T01_init.md" in context
+        # The architect_eval_ file must NOT appear in the Task Files section
+        task_files_section = context.split("## Task Files")[1].split("\n\n")[0]
+        assert "architect_eval_T01_init.md" not in task_files_section
+
+    def test_eval_snapshot_stat_oserror(self, tmp_path: Path) -> None:
+        """Lines 316-317, 320-321: OSError on .stat() for eval snapshots and originals
+        returns 0 for size rather than crashing."""
+        # Create an eval snapshot file and its original
+        (tmp_path / "app.py").write_text("real content\n", encoding="utf-8")
+        eval_file = tmp_path / "architect_eval_app.py"
+        eval_file.write_text("backup content\n", encoding="utf-8")
+
+        # Create tasks dir so context is valid
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01_init.md").write_text("# T01\n", encoding="utf-8")
+
+        # Save the real stat for fallback
+        real_stat = Path.stat
+
+        # Phase control: allow discovery phase, then fail on eval/original files
+        discovery_done = False
+
+        def fake_stat(self, *args, **kwargs):
+            """Raise OSError for .stat() on eval files and originals during eval section.
+
+            Discovery phase (_find_eval_snapshot_files, file tree) must succeed.
+            Eval snapshot section (lines 315, 319) should hit OSError.
+            We use a flag set after _find_eval_snapshot_files returns.
+            """
+            nonlocal discovery_done
+            if not discovery_done:
+                return real_stat(self, *args, **kwargs)
+            if self.name in ("architect_eval_app.py", "app.py"):
+                raise OSError("Device or resource busy")
+            return real_stat(self, *args, **kwargs)
+
+        # Patch _find_eval_snapshot_files to set the flag after discovery
+        original_find = _find_eval_snapshot_files
+
+        def find_with_flag(project_dir):
+            nonlocal discovery_done
+            result = original_find(project_dir)
+            discovery_done = True
+            return result
+
+        with patch.object(Path, "stat", fake_stat):
+            with patch(
+                "the_architect.core.retrospective._find_eval_snapshot_files", find_with_flag
+            ):
+                context = _gather_review_context(tmp_path, "test goal")
+
+        # Should not crash; should include the eval snapshot warning with 0 sizes
+        assert "## Leftover Eval Snapshot Files" in context
+        assert "architect_eval_app.py" in context
+        # Both sizes should be 0 because stat() raised OSError
+        assert "snapshot: 0B" in context
+        assert "current: 0B" in context
+
+    def test_build_retrospective_instruction_includes_validation_feedback(
+        self, tmp_path: Path
+    ) -> None:
+        """Line 370: Non-empty validation_feedback includes the validation failure section."""
+        request = RetrospectiveRequest(
+            round_number=2,
+            project_dir=tmp_path,
+            original_goal="Build a pipeline",
+            validation_feedback="T01's tests are flaky under concurrency.",
+        )
+
+        context = "some project context"
+        instruction = build_retrospective_instruction(request, context)
+
+        assert "=== VALIDATION FAILURE FROM PREVIOUS ROUND ===" in instruction
+        assert "T01's tests are flaky under concurrency." in instruction
+        assert "Your next fix-up tasks must directly address this validation failure" in instruction
+
     @pytest.mark.asyncio
     async def test_run_retrospective_no_new_r_tasks(
         self, tmp_path: Path, config: ArchitectConfig
@@ -978,3 +1069,316 @@ class TestProviderFailureHandling:
             )
 
         assert captured.get("renderer") is renderer
+
+
+class TestReassessmentErrorBranches:
+    """Coverage for uncovered error-handling branches in run_task_reassessment."""
+
+    @pytest.mark.asyncio
+    async def test_reassessment_skips_done_tasks_and_handles_task_read_oserror(
+        self, tmp_path: Path, config: ArchitectConfig
+    ) -> None:
+        """Lines 671, 674-675: done tasks skipped; OSError on task file read continues."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        # T02 is Pending, T03 is Done
+        task_pending = tasks_dir / "T02_next.md"
+        task_pending.write_text("# T02\n", encoding="utf-8")
+        task_done = tasks_dir / "T03_done.md"
+        task_done.write_text("# T03\n", encoding="utf-8")
+        (tasks_dir / "PROGRESS.md").write_text(
+            "**Tasks completed:** 1\n"
+            "**Next task to run:** T02\n"
+            "## Task Log\n"
+            "| Task | Title | Status | Completed |\n"
+            "|------|-------|--------|-----------|\n"
+            "| T01 | Done thing | Done | 2026-04-29 |\n"
+            "| T02 | Next | Pending | — |\n"
+            "| T03 | Done task | Done | 2026-04-29 |\n",
+            encoding="utf-8",
+        )
+
+        provider = MagicMock()
+        provider.supports_agents.return_value = False
+        provider.name = "claude-code"
+
+        async def fake_stream(**kwargs: object) -> StreamResult:
+            return StreamResult(exit_code=0, tokens=TokenUsage())
+
+        # Make T03 appear as done (line 671 continue), and T02 raise OSError on read (line 674-675)
+        original_read_text = Path.read_text
+
+        def selective_read_text(self: Path, *args, **kwargs):
+            if self.name == "T02_next.md":
+                raise OSError("Permission denied")
+            return original_read_text(self, *args, **kwargs)
+
+        with patch("the_architect.core.retrospective.stream_provider", side_effect=fake_stream):
+            with patch.object(Path, "read_text", selective_read_text):
+                result = await run_task_reassessment(
+                    project_dir=tmp_path,
+                    provider=provider,
+                    config=config,
+                    completed_task="T01",
+                    outcome_summary="Downstream impact: possible",
+                    original_goal="test goal",
+                )
+
+        assert isinstance(result, ReassessmentResult)
+        # Both T02 (OSError skip) and T03 (done skip) should not appear in updated
+        assert result.tasks_updated == []
+
+    @pytest.mark.asyncio
+    async def test_reassessment_progress_read_oserror(
+        self, tmp_path: Path, config: ArchitectConfig
+    ) -> None:
+        """Lines 681-682: OSError on PROGRESS.md read sets empty string."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        task_file = tasks_dir / "T02_next.md"
+        task_file.write_text("# T02\n", encoding="utf-8")
+        progress_file = tasks_dir / "PROGRESS.md"
+        progress_file.write_text("progress content", encoding="utf-8")
+
+        provider = MagicMock()
+        provider.supports_agents.return_value = False
+        provider.name = "claude-code"
+
+        async def fake_stream(**kwargs: object) -> StreamResult:
+            return StreamResult(exit_code=0, tokens=TokenUsage())
+
+        original_read_text = Path.read_text
+
+        def selective_read_text(self: Path, *args, **kwargs):
+            # Let the task file read succeed, but fail on PROGRESS.md
+            if self.name == "PROGRESS.md":
+                raise OSError("Permission denied")
+            return original_read_text(self, *args, **kwargs)
+
+        with patch("the_architect.core.retrospective.stream_provider", side_effect=fake_stream):
+            with patch.object(Path, "read_text", selective_read_text):
+                result = await run_task_reassessment(
+                    project_dir=tmp_path,
+                    provider=provider,
+                    config=config,
+                    completed_task="T01",
+                    outcome_summary="Downstream impact: possible",
+                    original_goal="test goal",
+                )
+
+        assert isinstance(result, ReassessmentResult)
+
+    @pytest.mark.asyncio
+    async def test_reassessment_architect_md_import_exception(
+        self, tmp_path: Path, config: ArchitectConfig
+    ) -> None:
+        """Lines 691-692: Exception on read_architect_md import is caught silently."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        task_file = tasks_dir / "T02_next.md"
+        task_file.write_text("# T02\n", encoding="utf-8")
+        (tasks_dir / "PROGRESS.md").write_text("progress", encoding="utf-8")
+
+        provider = MagicMock()
+        provider.supports_agents.return_value = False
+        provider.name = "claude-code"
+
+        async def fake_stream(**kwargs: object) -> StreamResult:
+            return StreamResult(exit_code=0, tokens=TokenUsage())
+
+        with patch("the_architect.core.retrospective.stream_provider", side_effect=fake_stream):
+            with patch(
+                "the_architect.core.architect_md.read_architect_md",
+                side_effect=ImportError("no module"),
+            ):
+                result = await run_task_reassessment(
+                    project_dir=tmp_path,
+                    provider=provider,
+                    config=config,
+                    completed_task="T01",
+                    outcome_summary="Downstream impact: possible",
+                    original_goal="test goal",
+                )
+
+        assert isinstance(result, ReassessmentResult)
+
+    @pytest.mark.asyncio
+    async def test_reassessment_eval_snapshot_stat_oserror(
+        self, tmp_path: Path, config: ArchitectConfig
+    ) -> None:
+        """Lines 711-712, 715-716: OSError on eval_file.stat() and original_path.stat()."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        task_file = tasks_dir / "T02_next.md"
+        task_file.write_text("# T02\n", encoding="utf-8")
+        (tasks_dir / "PROGRESS.md").write_text("progress", encoding="utf-8")
+
+        # Create eval snapshot and original
+        (tmp_path / "app.py").write_text("real content\n", encoding="utf-8")
+        eval_file = tmp_path / "architect_eval_app.py"
+        eval_file.write_text("backup content\n", encoding="utf-8")
+
+        provider = MagicMock()
+        provider.supports_agents.return_value = False
+        provider.name = "claude-code"
+
+        async def fake_stream(**kwargs: object) -> StreamResult:
+            return StreamResult(exit_code=0, tokens=TokenUsage())
+
+        original_stat = Path.stat
+        original_find = _find_eval_snapshot_files
+
+        # Phase control: allow discovery phase (is_file checks), then fail on eval files
+        discovery_done = False
+
+        def fake_stat(self: Path, *args, **kwargs):
+            if not discovery_done:
+                return original_stat(self, *args, **kwargs)
+            if self.name in ("architect_eval_app.py", "app.py"):
+                raise OSError("Device busy")
+            return original_stat(self, *args, **kwargs)
+
+        def find_with_flag(project_dir):
+            nonlocal discovery_done
+            result = original_find(project_dir)
+            discovery_done = True
+            return result
+
+        with patch("the_architect.core.retrospective.stream_provider", side_effect=fake_stream):
+            with patch.object(Path, "stat", fake_stat):
+                with patch(
+                    "the_architect.core.retrospective._find_eval_snapshot_files",
+                    find_with_flag,
+                ):
+                    result = await run_task_reassessment(
+                        project_dir=tmp_path,
+                        provider=provider,
+                        config=config,
+                        completed_task="T01",
+                        outcome_summary="Downstream impact: none",
+                        original_goal="test goal",
+                    )
+
+        assert isinstance(result, ReassessmentResult)
+
+    @pytest.mark.asyncio
+    async def test_reassessment_provider_error_raises(
+        self, tmp_path: Path, config: ArchitectConfig
+    ) -> None:
+        """Lines 765-766, 789-791: Provider errors (UPDATE_REQUIRED, MISCONFIGURED,
+        QUOTA_EXHAUSTED) raise RetrospectiveFailedError."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        task_file = tasks_dir / "T02_next.md"
+        task_file.write_text("# T02\n", encoding="utf-8")
+        (tasks_dir / "PROGRESS.md").write_text("progress", encoding="utf-8")
+
+        provider = MagicMock()
+        provider.supports_agents.return_value = False
+        provider.name = "claude-code"
+
+        # Simulate QUOTA_EXHAUSTED error
+        async def fake_stream_quota(**kwargs: object) -> StreamResult:
+            return StreamResult(
+                exit_code=1,
+                tokens=TokenUsage(),
+                accumulated_text="RESOURCE_EXHAUSTED: quota exceeded; billing not enabled",
+                rate_limit_hit=True,
+            )
+
+        with patch(
+            "the_architect.core.retrospective.stream_provider", side_effect=fake_stream_quota
+        ):
+            with pytest.raises(RetrospectiveFailedError, match="quota"):
+                await run_task_reassessment(
+                    project_dir=tmp_path,
+                    provider=provider,
+                    config=config,
+                    completed_task="T01",
+                    outcome_summary="Downstream impact: possible",
+                    original_goal="test goal",
+                )
+
+    @pytest.mark.asyncio
+    async def test_reassessment_post_stream_task_read_oserror(
+        self, tmp_path: Path, config: ArchitectConfig
+    ) -> None:
+        """Lines 797, 800-801: OSError on post-stream task file read skips gracefully;
+        tasks not in before_contents are skipped (line 797)."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        task_file = tasks_dir / "T02_next.md"
+        task_file.write_text("# T02\n", encoding="utf-8")
+        (tasks_dir / "PROGRESS.md").write_text("progress", encoding="utf-8")
+
+        provider = MagicMock()
+        provider.supports_agents.return_value = False
+        provider.name = "claude-code"
+
+        original_read_text = Path.read_text
+        stream_called = False
+
+        def selective_read_text(self: Path, *args, **kwargs):
+            # After stream_provider returns, fail on T02 task file reads
+            if stream_called and self.name == "T02_next.md":
+                raise OSError("File vanished after stream")
+            return original_read_text(self, *args, **kwargs)
+
+        async def fake_stream(**kwargs: object) -> StreamResult:
+            nonlocal stream_called
+            stream_called = True
+            return StreamResult(exit_code=0, tokens=TokenUsage())
+
+        with patch("the_architect.core.retrospective.stream_provider", side_effect=fake_stream):
+            with patch.object(Path, "read_text", selective_read_text):
+                result = await run_task_reassessment(
+                    project_dir=tmp_path,
+                    provider=provider,
+                    config=config,
+                    completed_task="T01",
+                    outcome_summary="Downstream impact: possible",
+                    original_goal="test goal",
+                )
+
+        assert isinstance(result, ReassessmentResult)
+        # T02 should not appear in updated because OSError on post-stream read
+        assert result.tasks_updated == []
+
+    @pytest.mark.asyncio
+    async def test_reassessment_agent_override_path(
+        self, tmp_path: Path, config: ArchitectConfig
+    ) -> None:
+        """Lines 765-766: when provider supports agents and uses architect config,
+        config_override and agent_override are set."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        task_file = tasks_dir / "T02_next.md"
+        task_file.write_text("# T02\n", encoding="utf-8")
+        (tasks_dir / "PROGRESS.md").write_text("progress", encoding="utf-8")
+
+        provider = MagicMock()
+        provider.supports_agents.return_value = True
+        provider.name = "opencode"
+
+        captured: dict[str, object] = {}
+
+        async def fake_stream(**kwargs: object) -> StreamResult:
+            captured.update(kwargs)
+            return StreamResult(exit_code=0, tokens=TokenUsage())
+
+        with patch("the_architect.core.retrospective.stream_provider", side_effect=fake_stream):
+            with patch(
+                "the_architect.core.retrospective._provider_uses_architect_config",
+                return_value=True,
+            ):
+                await run_task_reassessment(
+                    project_dir=tmp_path,
+                    provider=provider,
+                    config=config,
+                    completed_task="T01",
+                    outcome_summary="Downstream impact: possible",
+                    original_goal="test goal",
+                )
+
+        assert captured.get("agent_override") == "architect"
+        assert captured.get("config_override") == tmp_path / ".architect" / "architect.json"

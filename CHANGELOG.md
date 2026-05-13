@@ -18,7 +18,11 @@ empty [Unreleased] above it. Use Keep a Changelog section headings:
 Added / Changed / Deprecated / Removed / Fixed / Security.
 -->
 
-## [1.2.6] (build 10362) — 2026-05-12
+## [1.2.6] (build 10370) — 2026-05-13
+
+### Added
+
+- `architect doctor` command for static pre-flight diagnostics (build 10367)
 
 ### Fixed
 
@@ -27,6 +31,9 @@ Added / Changed / Deprecated / Removed / Fixed / Security.
 - **TUI recovery diagnostics.** The app now repairs an empty screen stack during active transitions and records structured lifecycle logs for screen changes, making future terminal/UI issues easier to diagnose.
 - **Terminal cleanup.** Fixed leaked mouse-tracking mode after TUI exits, preventing raw `35;...M` mouse-event text from appearing at the shell prompt.
 - **Release workflow.** Simplified releases so SemVer updates create the real GitHub release, while build-only pushes run CI without publishing noise.
+- Hardened failed Infinite Loop recovery by reusing verified provider setup after `MultiplexedPath` resource glitches, reconciling missing R-task progress rows, classifying killed provider processes, and restoring terminal mouse modes on all CLI exit paths (build 10368).
+- Added Infinite Loop safeguards for clean false-negative exits and stalled provider subprocesses so unattended runs recover missing summaries and fail/retry instead of hanging indefinitely (build 10369).
+- Fixed the release workflow so an already-bumped SemVer that is still missing from PyPI can create the canonical release and publish instead of being treated as build-only (build 10370).
 
 ## [1.2.5] (build 10354) — 2026-05-12
 

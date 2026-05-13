@@ -973,13 +973,15 @@ def check_pending_tasks(tasks_dir: Path, progress_file: Path) -> list[str]:
         List of task names (e.g. ``["T03_api", "T04_tests"]``) whose
         PROGRESS.md row is missing or non-terminal.
     """
-    from the_architect.core.progress import task_is_resolved
+    from the_architect.core.progress import reconcile_progress_with_task_files, task_is_resolved
 
     if not tasks_dir.exists():
         return []
 
     pending: list[str] = []
-    for task in discover_tasks(tasks_dir):
+    discovered = discover_tasks(tasks_dir)
+    reconcile_progress_with_task_files(progress_file, discovered)
+    for task in discovered:
         if not task_is_resolved(progress_file, task.prefix):
             pending.append(task.name)
 
@@ -1178,7 +1180,9 @@ async def run_planner(
     tasks_before = {s.name for s in discover_tasks(tasks_dir)}
 
     # Ensure prompts (and provider-specific planning config) are written
-    provider.ensure_setup(project_dir, config)
+    from the_architect.core.provider_setup import ensure_provider_setup
+
+    ensure_provider_setup(provider, project_dir, config)
 
     # Build the instruction with project context embedded
     context = gather_project_context(project_dir, provider=provider)

@@ -26,9 +26,14 @@ i.e. the task is resolved and the main execution loop will not re-run it.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from the_architect.core.tasks import Task
 
 # ---------------------------------------------------------------------------
 # Canonical PROGRESS.md regex helpers
@@ -508,6 +513,59 @@ def task_status(progress_file: Path | str, prefix: str) -> str | None:
         if _task_status_pattern(prefix, status).search(content) is not None:
             return status
     return None
+
+
+def reconcile_progress_with_task_files(
+    progress_file: Path | str,
+    tasks: Sequence[Task],
+) -> list[str]:
+    """Ensure every discovered task file has a conservative PROGRESS.md row.
+
+    The runner is authoritative for terminal states, but interrupted recovery
+    cycles can leave ``Rxx_*.md`` files on disk without matching rows in the
+    Task Log. Missing rows make later status persistence impossible and cause
+    validation to report confusing ``Missing`` tasks. This helper repairs only
+    absent rows by appending ``Pending`` entries; it never rewrites existing
+    statuses or marks work complete.
+    """
+    if isinstance(progress_file, str):
+        progress_file = Path(progress_file)
+    if not tasks or not progress_file.exists():
+        return []
+
+    try:
+        content = progress_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
+
+    task_log_pattern = re.compile(
+        r"(## Task Log\s*\n\s*\|.*\n\|[-\s|]+\|\n)((?:\|.*\|\n)*)",
+        re.MULTILINE,
+    )
+    match = task_log_pattern.search(content)
+    if not match:
+        return []
+
+    rows_to_add: list[str] = []
+    added: list[str] = []
+    for task in tasks:
+        if _task_any_status_pattern(task.prefix).search(content):
+            continue
+        title = (task.title or task.name).replace("|", "/").strip() or task.name
+        rows_to_add.append(f"| {task.prefix} | {title} | Pending | — |\n")
+        added.append(task.prefix)
+
+    if not rows_to_add:
+        return []
+
+    updated_rows = match.group(2) + "".join(rows_to_add)
+    updated = content[: match.start(2)] + updated_rows + content[match.end(2) :]
+
+    try:
+        progress_file.write_text(updated, encoding="utf-8")
+    except OSError:
+        return []
+    return added
 
 
 def get_next_task(progress_file: Path | str) -> str:

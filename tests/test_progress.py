@@ -14,12 +14,14 @@ from the_architect.core.progress import (
     get_next_task,
     init_progress,
     read_progress,
+    reconcile_progress_with_task_files,
     reconcile_task_status,
     replace_task_status,
     task_is_done,
     task_is_resolved,
     task_status,
 )
+from the_architect.core.tasks import Task
 
 
 class TestInitProgress:
@@ -193,6 +195,56 @@ class TestProgressTemplate:
         assert "## Task Outcomes" in PROGRESS_TEMPLATE
         assert "## Lessons Learned" in PROGRESS_TEMPLATE
         assert "## Missing / Follow-up Notes" in PROGRESS_TEMPLATE
+
+
+class TestReconcileProgressWithTaskFiles:
+    """Tests for repairing missing task rows after interrupted recovery cycles."""
+
+    def test_appends_missing_task_rows_as_pending(self, tmp_path: Path) -> None:
+        """A task file without a PROGRESS row should be made executable again."""
+        progress_file = tmp_path / "PROGRESS.md"
+        progress_file.write_text(
+            PROGRESS_TEMPLATE.format(
+                tasks_completed=1,
+                next_task="T02",
+                task_rows="| T01 | First | Done | 2026-05-13 |\n",
+                current_state="State",
+                last_summary="Summary",
+            ),
+            encoding="utf-8",
+        )
+        task_path = tmp_path / "R01_fix.md"
+        task_path.write_text("# R01 — Fix\n", encoding="utf-8")
+        task = Task(name="R01_fix", prefix="R01", number=1, path=task_path, title="Fix")
+
+        added = reconcile_progress_with_task_files(progress_file, [task])
+
+        assert added == ["R01"]
+        assert "| R01 | Fix | Pending | — |" in progress_file.read_text(encoding="utf-8")
+
+    def test_preserves_existing_terminal_rows(self, tmp_path: Path) -> None:
+        """Existing terminal rows must not be overwritten or duplicated."""
+        progress_file = tmp_path / "PROGRESS.md"
+        progress_file.write_text(
+            PROGRESS_TEMPLATE.format(
+                tasks_completed=1,
+                next_task="—",
+                task_rows="| R01 | Fix | Failed | 3 attempts |\n",
+                current_state="State",
+                last_summary="Summary",
+            ),
+            encoding="utf-8",
+        )
+        task_path = tmp_path / "R01_fix.md"
+        task_path.write_text("# R01 — Fix\n", encoding="utf-8")
+        task = Task(name="R01_fix", prefix="R01", number=1, path=task_path, title="Fix")
+
+        added = reconcile_progress_with_task_files(progress_file, [task])
+        content = progress_file.read_text(encoding="utf-8")
+
+        assert added == []
+        assert content.count("| R01 |") == 1
+        assert "| R01 | Fix | Failed | 3 attempts |" in content
 
 
 # ---------------------------------------------------------------------------

@@ -23,6 +23,7 @@ from the_architect.core.runner import (
     _determine_self_assessment,
     _is_lock_stale,
     _parse_opencode_event,
+    _task_outcome_summary_for_exit,
     _tool_result_lines,
     acquire_lock,
     analyze_output,
@@ -612,6 +613,28 @@ class TestStreamProviderSubprocess:
                 result = await stream_provider("test", Path("/tmp"), provider)
                 assert isinstance(result, StreamResult)
 
+    @pytest.mark.asyncio
+    async def test_idle_provider_output_is_terminated(self, monkeypatch: pytest.MonkeyPatch):
+        """A provider that stops producing stdout must not hang the run forever."""
+        provider = _make_mock_provider()
+        mock_process = _make_mock_process(stdout_lines=[], exit_code=0)
+
+        async def _never_returns():
+            await asyncio.sleep(60)
+            return b""
+
+        mock_process.stdout.readline = _never_returns
+        mock_process.returncode = None
+        mock_process.kill = MagicMock()
+        monkeypatch.setenv("ARCHITECT_PROVIDER_IDLE_TIMEOUT_SECONDS", "0.01")
+        with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = mock_process
+            with patch("sys.stdout"):
+                result = await stream_provider("test", Path("/tmp"), provider)
+
+        assert "Provider produced no stdout" in result.accumulated_text
+        assert mock_process.kill.called
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 4. _tool_result_lines
@@ -713,6 +736,17 @@ class TestToolResultLines:
     def test_edit_done(self):
         lines = _tool_result_lines("edit", "other", {}, "")
         assert lines == ["done"]
+
+
+class TestTaskOutcomeSummaryForExit:
+    """Tests for interrupted provider diagnostics."""
+
+    def test_includes_sigkill_diagnostic(self) -> None:
+        """Exit -9 should be explicit, not hidden as generic no-progress."""
+        summary = _task_outcome_summary_for_exit("", -9)
+
+        assert "Provider process killed" in summary
+        assert "exit -9" in summary
 
 
 # ═══════════════════════════════════════════════════════════════════════════

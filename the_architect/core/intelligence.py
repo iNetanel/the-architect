@@ -154,9 +154,10 @@ async def refresh_project_intelligence(
         return assessment
 
     from the_architect.core.planner import gather_project_context
+    from the_architect.core.provider_setup import ensure_provider_setup
 
     logger.info(f"Running project intelligence pass: {', '.join(assessment.reasons)}")
-    provider.ensure_setup(project_dir, config)
+    ensure_provider_setup(provider, project_dir, config)
     project_context = gather_project_context(project_dir, provider=provider)
     instruction = build_intelligence_instruction(
         project_dir=project_dir,

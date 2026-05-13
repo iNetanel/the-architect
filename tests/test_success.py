@@ -690,3 +690,77 @@ class TestPrintSuccessSummary:
         success_path = Path("/tmp/project/tasks/SUMMARY.md")
         # Should not raise — covers lines 379-380
         print_success_summary(results, 60.0, total_tokens, success_md_path=success_path)
+
+
+# ---------------------------------------------------------------------------
+# T01.1 — validation_passed=True branch (line 224)
+# ---------------------------------------------------------------------------
+
+
+class TestWriteSuccessMdValidationPassed:
+    """Tests for the validation_passed=True branch in SUMMARY.md."""
+
+    def test_validation_passed_shows_checkmark(self, tmp_path: Path) -> None:
+        """Should show '✓ Passed' when validation_passed=True."""
+        results = [
+            TaskResult(
+                prefix="T01",
+                title="Test task",
+                status="done",
+                duration_seconds=60.0,
+                attempts=1,
+                tokens=TokenUsage(input_tokens=5000, output_tokens=500),
+                model="test-model",
+            ),
+        ]
+        total_tokens = TokenUsage(input_tokens=5000, output_tokens=500)
+        retro_rounds = [
+            RetrospectiveRound(
+                round_number=1,
+                issues_found=0,
+                fixes_planned=0,
+                tasks_created=[],
+                duration_seconds=30.0,
+                validation_passed=True,
+            ),
+        ]
+        path = write_success_md(
+            tmp_path, results, 60.0, total_tokens, retrospective_rounds=retro_rounds
+        )
+        content = path.read_text(encoding="utf-8")
+
+        assert "## Retrospective" in content
+        assert "\u2713 Passed" in content
+
+
+# ---------------------------------------------------------------------------
+# T01.2 — write_summary_md wrapper (line 306)
+# ---------------------------------------------------------------------------
+
+
+class TestWriteSummaryMd:
+    """Tests for write_summary_md() wrapper function."""
+
+    def test_write_summary_md_calls_write_success_md(self, tmp_path: Path) -> None:
+        """Should call write_summary_md directly and produce a valid SUMMARY.md."""
+        from the_architect.core.success import write_summary_md
+
+        results = [
+            TaskResult(
+                prefix="T01",
+                title="Test task",
+                status="done",
+                duration_seconds=60.0,
+                attempts=1,
+                tokens=TokenUsage(input_tokens=5000, output_tokens=500),
+                model="test-model",
+            ),
+        ]
+        total_tokens = TokenUsage(input_tokens=5000, output_tokens=500)
+        path = write_summary_md(tmp_path, results, 60.0, total_tokens)
+
+        assert path == tmp_path / "tasks" / "SUMMARY.md"
+        assert path.exists()
+        content = path.read_text(encoding="utf-8")
+        assert "# The Architect — Run Summary" in content
+        assert "T01" in content

@@ -41,6 +41,7 @@ from the_architect.core.planner import (
     run_planner,
 )
 from the_architect.core.progress import (
+    reconcile_progress_with_task_files,
     reconcile_task_status,
     replace_task_status,
     task_is_done,
@@ -53,6 +54,7 @@ from the_architect.core.provider import (
     detect_available_providers,
     detect_provider,
 )
+from the_architect.core.provider_setup import ensure_provider_setup
 from the_architect.core.retrospective import (
     RetrospectiveRequest,
     run_retrospective,
@@ -126,9 +128,16 @@ def alternate_screen() -> Generator[None, None, None]:
     try:
         yield
     finally:
-        # Exit alternate screen buffer + restore cursor
+        # Exit alternate screen and disable any terminal input modes a nested
+        # TUI/provider may have left enabled.
         sys.stdout.write("\033[?1049l")
         sys.stdout.flush()
+        try:
+            from the_architect.tui.terminal import restore_terminal_input_modes
+
+            restore_terminal_input_modes()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -287,6 +296,9 @@ def _infinite_loop_success_after_clean_failure(
         return False
     try:
         if _infinite_loop_has_clean_exit_state(project, config):
+            tasks_dir = project / config.tasks_dir.name
+            tasks = _filter_and_set_status(discover_tasks(tasks_dir), config.progress_file)
+            _recover_missing_summary_for_terminal_tasks(project, tasks, tasks_dir, config)
             logger.warning(
                 "Infinite Loop: nested run reported failure after clean task state; "
                 "treating cycle as successful so the loop can continue"
@@ -362,6 +374,9 @@ def _validate_cycle(tasks_dir: Path, progress_file: Path) -> CycleValidationResu
         return CycleValidationResult(True)
 
     discovered = discover_tasks(tasks_dir)
+    repaired = reconcile_progress_with_task_files(progress_file, discovered)
+    if repaired:
+        logger.info("Reconciled missing PROGRESS.md task rows: " + ", ".join(repaired))
     if not discovered:
         return CycleValidationResult(False, "No task files were found after execution.")
 
@@ -457,6 +472,41 @@ def _write_cycle_validation_to_progress(
         progress_file.write_text(updated, encoding="utf-8")
     except OSError:
         return
+
+
+def _recover_missing_summary_for_terminal_tasks(
+    project: Path,
+    tasks: list[Task],
+    tasks_dir: Path,
+    config: ArchitectConfig,
+) -> None:
+    """Write a best-effort SUMMARY.md when interrupted finalization left it missing."""
+    summary_file = tasks_dir / "SUMMARY.md"
+    if summary_file.exists():
+        return
+    recovered_results = [
+        TaskResult(
+            prefix=task.prefix,
+            title=task.title or task.name,
+            status="done" if task.status == TaskStatus.DONE else "failed",
+            duration_seconds=0.0,
+            attempts=0,
+            tokens=TokenUsage(),
+            model="",
+        )
+        for task in tasks
+    ]
+    try:
+        write_success_md(
+            project,
+            recovered_results,
+            0.0,
+            TokenUsage(),
+            original_goal=_resolve_infinite_loop_goal("", config, tasks_dir),
+        )
+        logger.info("Recovered missing tasks/SUMMARY.md for all-terminal task state")
+    except Exception as exc:
+        logger.warning(f"Failed to recover missing SUMMARY.md: {exc!r}")
 
 
 _FORBIDDEN_RETROSPECTIVE_TASK_PATTERNS: tuple[str, ...] = (
@@ -2191,7 +2241,7 @@ def run_planning_mode(
     # Write/update the structure section in ARCHITECT.md
     write_or_update_architect_md(project, structure_report)
 
-    provider.ensure_setup(project, config)
+    ensure_provider_setup(provider, project, config)
 
     # Log files for pre-planning and planning sessions
     log_dir = config.log_dir
@@ -3709,6 +3759,12 @@ def main(
     # here ensures the dashboard shows the right screen immediately.
     if _needs_planning:
         if _all_done_pre and not plan and not only_task and not from_task and headless:
+            _recover_missing_summary_for_terminal_tasks(
+                resolved_project,
+                _tasks_pre,
+                tasks_dir,
+                config,
+            )
             console.print(
                 "[#7cc800]✓ All tasks complete.[/#7cc800]  "
                 "[dim]Use --plan to start a new goal.[/dim]"
@@ -4210,6 +4266,17 @@ def main(
                 _tui_flow()
 
     finally:
+        # ── Terminal mode cleanup ──────────────────────────────────────────
+        # Belt-and-braces restore for failed Infinite Loop / TUI exits. Textual
+        # and the runner also restore modes, but the outer Click boundary is the
+        # last reliable place before tmux teardown to disable leaked mouse input.
+        try:
+            from the_architect.tui.terminal import restore_terminal_input_modes
+
+            restore_terminal_input_modes()
+        except Exception:
+            pass
+
         # ── Monitor state cleanup ──────────────────────────────────────────
         # If the process exits while the state file still says PLANNING or
         # RUNNING (e.g. Ctrl+C during prompts, crash before execution),
@@ -4457,6 +4524,7 @@ def _run_main(
 
     if plan or no_tasks or (all_done and not only_task and not from_task):
         if all_done and not plan and not only_task and not from_task:
+            _recover_missing_summary_for_terminal_tasks(project, tasks, tasks_dir, config)
             console.print(
                 "[#7cc800]✓ All tasks complete.[/#7cc800]  "
                 "[dim]Use --plan to start a new goal.[/dim]"
@@ -4716,7 +4784,7 @@ def _run_main(
     # Some test and headless control-flow paths intentionally run without a
     # real provider object and should not auto-detect local CLIs here.
     if provider is not None:
-        provider.ensure_setup(project, config)
+        ensure_provider_setup(provider, project, config)
     setup_logging(config.log_dir)
 
     # ── Monitor state writer (feeds the tmux dashboard) ─────────────────
@@ -5190,7 +5258,7 @@ def retry(task: str, project: Path | None) -> None:
     except ProviderNotFoundError:
         console.print("[red]Error: No supported AI CLI found.[/red]")
         raise SystemExit(1)
-    _run_provider.ensure_setup(proj, config)
+    ensure_provider_setup(_run_provider, proj, config)
     setup_logging(config.log_dir)
     asyncio.run(run_task(task_obj, config))
 
@@ -6080,6 +6148,93 @@ def circuit_cmd(project: Path | None, reset_task: str, use_tui: bool) -> None:
 def version() -> None:
     """Show The Architect version."""
     click.echo(f"architect v{__full_version__}")
+
+
+@main.command()
+def doctor_cmd() -> None:
+    """Run static pre-flight diagnostics."""
+    from rich.table import Table
+
+    from the_architect.config import load_config
+
+    checks: list[tuple[str, str, str]] = []
+    any_failed = False
+
+    py_ok = sys.version_info >= (3, 11)
+    py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    checks.append(("Python version", "✓" if py_ok else "✗", py_ver))
+    if not py_ok:
+        any_failed = True
+
+    try:
+        provider = detect_provider("auto")
+        p_name = provider.display_name
+        checks.append(("Provider", "✓", f"{p_name} ({provider.name})"))
+
+        installed = provider.is_installed()
+        checks.append(
+            (
+                "Installation",
+                "✓" if installed else "✗",
+                f"{provider.name} {'found' if installed else 'not found'} on PATH",
+            )
+        )
+        if not installed:
+            any_failed = True
+
+        p_ver = provider.get_version()
+        checks.append(("Version", "✓", p_ver))
+
+        has_models = provider.has_any_models()
+        checks.append(
+            ("Models configured", "✓" if has_models else "✗", "Yes" if has_models else "No")
+        )
+        if not has_models:
+            any_failed = True
+
+        update_msg = provider.check_update_available()
+        checks.append(
+            ("Update available", "-" if not update_msg else "✓", update_msg or "Up to date")
+        )
+
+    except ProviderNotFoundError:
+        checks.append(("Provider", "✗", "No provider detected"))
+        checks.append(("Installation", "✗", "N/A"))
+        checks.append(("Version", "✗", "N/A"))
+        checks.append(("Models configured", "✗", "N/A"))
+        checks.append(("Update available", "-", "N/A"))
+        any_failed = True
+
+    project = Path.cwd()
+    config_file = project / "architect.toml"
+    if config_file.exists():
+        try:
+            load_config(project)
+            checks.append(("Config", "✓", "architect.toml valid"))
+        except Exception as e:
+            checks.append(("Config", "✗", f"Invalid: {e}"))
+            any_failed = True
+    else:
+        checks.append(("Config", "-", "No architect.toml (using defaults)"))
+
+    table = Table(show_header=False, box=None, padding=(0, 1))
+    table.add_column("Check", style="bold")
+    table.add_column("Status", width=3)
+    table.add_column("Detail")
+    for name, status, detail in checks:
+        table.add_row(name, status, detail)
+
+    console.print()
+    console.print("[bold]The Architect — Environment Diagnostics[/bold]")
+    console.print()
+    console.print(table)
+    console.print()
+
+    if any_failed:
+        console.print("[red]Some checks failed.[/red]")
+        raise SystemExit(1)
+    console.print("[green]All checks passed.[/green]")
+    raise SystemExit(0)
 
 
 @main.command(name="tui")

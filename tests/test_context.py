@@ -379,6 +379,29 @@ class TestReadContextDirectoryUnreadableFile:
 
 
 # ---------------------------------------------------------------------------
+# T01.3 — architect_eval_ skip guard (line 161)
+# ---------------------------------------------------------------------------
+
+
+class TestReadContextDirectoryEvalSkip:
+    """Tests for the architect_eval_ filename skip in read_context_directory()."""
+
+    def test_skips_architect_eval_files(self, tmp_path: Path) -> None:
+        """Should exclude files starting with architect_eval_ from results."""
+        (tmp_path / "normal.md").write_text("normal content", encoding="utf-8")
+        (tmp_path / "architect_eval_snapshot.md").write_text("eval content", encoding="utf-8")
+        (tmp_path / "architect_eval_another.py").write_text("eval py", encoding="utf-8")
+
+        results = read_context_directory(tmp_path)
+        labels = [r[0] for r in results]
+
+        assert "normal.md" in labels
+        assert "architect_eval_snapshot.md" not in labels
+        assert "architect_eval_another.py" not in labels
+        assert len(results) == 1
+
+
+# ---------------------------------------------------------------------------
 # T02.4 — OSError warning in load_context_paths (lines 243–244)
 # ---------------------------------------------------------------------------
 

@@ -140,7 +140,30 @@ jobs:
             PREVIOUS_VERSION=$(git show "$BEFORE_SHA:pyproject.toml" | python3 -c 'import sys, tomllib; print(tomllib.loads(sys.stdin.read())["project"]["version"])')
           fi
 
+          PYPI_VERSION_EXISTS=$(VERSION="$VERSION" python3 - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          version = os.environ["VERSION"]
+          url = "https://pypi.org/pypi/the-architect/json"
+          try:
+              with urllib.request.urlopen(url, timeout=15) as response:
+                  releases = json.load(response).get("releases", {})
+          except (OSError, urllib.error.URLError, TimeoutError):
+              # Network uncertainty must not create a release by accident.
+              print("unknown")
+          else:
+              print("true" if version in releases else "false")
+          PY
+          )
+
           if [[ -n "$PREVIOUS_VERSION" && "$PREVIOUS_VERSION" != "$VERSION" ]]; then
+            echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+            echo "is_release=true" >> "$GITHUB_OUTPUT"
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$PYPI_VERSION_EXISTS" == "false" ]]; then
             echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
             echo "is_release=true" >> "$GITHUB_OUTPUT"
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
