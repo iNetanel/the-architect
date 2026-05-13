@@ -837,44 +837,104 @@ class TestListCmd:
 class TestDoctorCmd:
     """Exercise the ``doctor`` sub-command branches."""
 
+    def _fake_provider(
+        self,
+        *,
+        name: str,
+        display_name: str,
+        installed: bool,
+        models: bool,
+    ) -> MagicMock:
+        """Create a provider mock with the fields doctor uses."""
+        fake = MagicMock()
+        fake.name = name
+        fake.display_name = display_name
+        fake.is_installed.return_value = installed
+        fake.get_version.return_value = "0.6.12" if installed else "unknown"
+        fake.has_any_models.return_value = models
+        fake.check_update_available.return_value = ""
+        fake.install_hint.return_value = f"install {name}"
+        return fake
+
     def test_doctor_all_pass(self, tmp_path: Path) -> None:
         """When provider is detected and installed, all checks pass."""
-        fake = MagicMock()
-        fake.name = "opencode"
-        fake.display_name = "OpenCode"
-        fake.is_installed.return_value = True
-        fake.get_version.return_value = "0.6.12"
-        fake.has_any_models.return_value = True
-        fake.check_update_available.return_value = ""
+        fake = self._fake_provider(
+            name="opencode", display_name="OpenCode", installed=True, models=True
+        )
 
-        with patch("the_architect.cli.detect_provider", return_value=fake):
+        with (
+            patch("the_architect.cli.detect_provider", return_value=fake),
+            patch("the_architect.cli.supported_providers", return_value=[fake]),
+        ):
             result = CliRunner().invoke(main, ["doctor"])
 
         assert result.exit_code == 0, result.output
         assert "All checks passed" in result.output or "Environment Diagnostics" in result.output
+        assert "Providers" in result.output
 
     def test_doctor_provider_not_found(self, tmp_path: Path) -> None:
         """When no provider is detected, exit code is 1."""
-        with patch(
-            "the_architect.cli.detect_provider",
-            side_effect=ProviderNotFoundError("none found"),
+        fake = self._fake_provider(
+            name="opencode", display_name="OpenCode", installed=False, models=False
+        )
+        with (
+            patch(
+                "the_architect.cli.detect_provider",
+                side_effect=ProviderNotFoundError("none found"),
+            ),
+            patch("the_architect.cli.supported_providers", return_value=[fake]),
         ):
             result = CliRunner().invoke(main, ["doctor"])
 
         assert result.exit_code == 1, result.output
-        assert "No provider detected" in result.output
+        assert "No installed provider detected" in result.output
+
+    def test_doctor_reports_unconfigured_optional_provider_without_failing(
+        self, tmp_path: Path
+    ) -> None:
+        """Optional unconfigured providers are reported but do not fail doctor."""
+        selected = self._fake_provider(
+            name="opencode", display_name="OpenCode", installed=True, models=True
+        )
+        optional = self._fake_provider(
+            name="codex", display_name="Codex CLI", installed=True, models=False
+        )
+
+        with (
+            patch("the_architect.cli.detect_provider", return_value=selected),
+            patch("the_architect.cli.supported_providers", return_value=[selected, optional]),
+        ):
+            result = CliRunner().invoke(main, ["doctor"])
+
+        assert result.exit_code == 0, result.output
+        assert "Codex CLI" in result.output
+        assert "no models/API key detected" in result.output
+
+    def test_doctor_fails_when_selected_provider_is_unconfigured(self, tmp_path: Path) -> None:
+        """The selected provider must be installed and configured."""
+        selected = self._fake_provider(
+            name="opencode", display_name="OpenCode", installed=True, models=False
+        )
+
+        with (
+            patch("the_architect.cli.detect_provider", return_value=selected),
+            patch("the_architect.cli.supported_providers", return_value=[selected]),
+        ):
+            result = CliRunner().invoke(main, ["doctor"])
+
+        assert result.exit_code == 1, result.output
+        assert "Some required checks failed" in result.output
 
     def test_doctor_python_version_shown(self, tmp_path: Path) -> None:
         """Python version row appears in output."""
-        fake = MagicMock()
-        fake.name = "opencode"
-        fake.display_name = "OpenCode"
-        fake.is_installed.return_value = True
-        fake.get_version.return_value = "0.6.12"
-        fake.has_any_models.return_value = True
-        fake.check_update_available.return_value = ""
+        fake = self._fake_provider(
+            name="opencode", display_name="OpenCode", installed=True, models=True
+        )
 
-        with patch("the_architect.cli.detect_provider", return_value=fake):
+        with (
+            patch("the_architect.cli.detect_provider", return_value=fake),
+            patch("the_architect.cli.supported_providers", return_value=[fake]),
+        ):
             result = CliRunner().invoke(main, ["doctor"])
 
         assert result.exit_code == 0, result.output

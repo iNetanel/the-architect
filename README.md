@@ -29,6 +29,7 @@ It wraps your agentic AI coding tool and adds everything it lacks out of the box
 |---|---|
 | You manage the task list manually | Tasks planned automatically from your goal |
 | Agent loses context between sessions | Persistent memory via `ARCHITECT.md` |
+| Setup issues discovered mid-run | `architect doctor` checks all providers before you start |
 | No recovery when agent gets stuck | Circuit breaker + smart retry + model fallback |
 | You babysit every run | Fully unattended — fire and forget |
 | No audit trail of what changed | Build counter tracks every completed task/change |
@@ -101,6 +102,9 @@ If all tasks are complete, The Architect shows the menu unless you explicitly st
 ```bash
 # Fresh planning flow or resume pending tasks
 architect
+
+# Check setup before a run
+architect doctor
 
 # Force a new plan sequence
 architect --plan
@@ -275,6 +279,7 @@ Everything below is what you get on top of your AI coding CLI — none of it exi
 |---|---|---|
 | Setup | Configure CLI manually | `architect init` — creates `AGENTS.md` and `architect.toml` |
 | Config | Edit files manually | `architect config --set key=value` |
+| Pre-flight diagnostics | Discover issues mid-run | `architect doctor` checks every supported provider and project health before execution; only runnable providers appear in provider selection |
 | CI/headless | Manual scripting | `--headless` + env vars, no interactive prompts |
 | Self-update | Manual `pip install` | Checks PyPI on startup, one keypress to update and re-exec |
 | Provider lock-in | One CLI | Switch provider per run, or lock one in config |
@@ -312,6 +317,9 @@ architect --free
 # Headless / CI mode — no interactive prompts
 architect --headless --goal "fix mypy errors" --scope simple
 
+# Check project and provider setup before running
+architect doctor
+
 # Standalone mode — bypass provider config, use this model directly
 architect --standalone openrouter/anthropic/claude-sonnet-4.5
 
@@ -345,6 +353,9 @@ architect cancel
 
 # Initialise a project (creates AGENTS.md and architect.toml)
 architect init
+
+# Run pre-flight diagnostics for project and provider setup
+architect doctor
 
 # Show or update configuration
 architect config

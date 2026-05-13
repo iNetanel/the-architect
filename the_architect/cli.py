@@ -54,6 +54,7 @@ from the_architect.core.provider import (
     ProviderNotFoundError,
     detect_available_providers,
     detect_provider,
+    supported_providers,
 )
 from the_architect.core.provider_setup import ensure_provider_setup
 from the_architect.core.retrospective import (
@@ -2480,8 +2481,8 @@ def _collect_planning_prompts(
         try:
             from the_architect.tui.screens.pre_run_tabbed import run_pre_run_tabbed
 
-            # Collect all installed providers for the Provider tab
-            _all_providers = detect_available_providers()
+            # Collect only runnable providers for the Provider tab.
+            _all_providers = detect_available_providers(require_models=True)
             if not _all_providers:
                 _all_providers = [provider]
 
@@ -3671,25 +3672,27 @@ def main(
             # Already selected in a previous Phase 2 run (forwarded via env var)
             _active_provider = detect_provider(_provider_env)
         else:
-            # Auto mode — just check that something is installed
-            _available_pre = detect_available_providers()
+            # Auto mode — check that at least one provider is installed and configured.
+            _available_pre = detect_available_providers(require_models=True)
             if not _available_pre:
-                from the_architect.core.claude_code_provider import ClaudeCodeProvider
-                from the_architect.core.codex_cli_provider import CodexCliProvider
-                from the_architect.core.gemini_cli_provider import GeminiCliProvider
-                from the_architect.core.opencode_provider import OpenCodeProvider
+                installed_pre = detect_available_providers()
+                if installed_pre:
+                    console.print("[red]Error: No configured AI CLI provider found.[/red]")
+                    console.print()
+                    console.print(
+                        "[dim]Installed providers were found, but none reported usable "
+                        "models/API credentials. Run [bold]architect doctor[/bold] "
+                        "for details.[/dim]"
+                    )
+                    raise SystemExit(1)
 
-                oc = OpenCodeProvider()
-                codex = CodexCliProvider()
-                cc = ClaudeCodeProvider()
-                gem = GeminiCliProvider()
                 console.print("[red]Error: No supported AI CLI found.[/red]")
                 console.print()
                 console.print("[dim]Install one of:[/dim]")
-                console.print(f"[dim]  OpenCode:    {oc.install_hint()}[/dim]")
-                console.print(f"[dim]  Codex CLI:   {codex.install_hint()}[/dim]")
-                console.print(f"[dim]  Claude Code: {cc.install_hint()}[/dim]")
-                console.print(f"[dim]  Gemini CLI:  {gem.install_hint()}[/dim]")
+                for candidate in supported_providers():
+                    console.print(
+                        f"[dim]  {candidate.display_name}: {candidate.install_hint()}[/dim]"
+                    )
                 raise SystemExit(1)
             elif len(_available_pre) == 1:
                 # Only one provider — resolve now, no prompt needed
@@ -3914,9 +3917,10 @@ def main(
     # provider selection and the next prompt.
     _needs_interactive_provider_selection = False
     if _active_provider is None:
-        _available_post = detect_available_providers()
+        _available_post = detect_available_providers(require_models=True)
         if not _available_post:
-            console.print("[red]Error: No supported AI CLI found.[/red]")
+            console.print("[red]Error: No configured AI CLI provider found.[/red]")
+            console.print("[dim]Run [bold]architect doctor[/bold] for provider diagnostics.[/dim]")
             raise SystemExit(1)
         elif len(_available_post) == 1:
             _active_provider = _available_post[0]
@@ -4617,7 +4621,7 @@ def _run_main(
             if (use_tui or _tui_mode_enabled()) and provider is not None:
                 from the_architect.tui.screens.pre_run_tabbed import run_pre_run_tabbed
 
-                _all_providers = detect_available_providers()
+                _all_providers = detect_available_providers(require_models=True)
                 if not _all_providers:
                     _all_providers = [provider]
 
@@ -6320,43 +6324,18 @@ def doctor_cmd() -> None:
     if not py_ok:
         any_failed = True
 
+    selected_provider: ArchitectProvider | None = None
     try:
-        provider = detect_provider("auto")
-        p_name = provider.display_name
-        checks.append(("Provider", "✓", f"{p_name} ({provider.name})"))
-
-        installed = provider.is_installed()
+        selected_provider = detect_provider("auto")
         checks.append(
             (
-                "Installation",
-                "✓" if installed else "✗",
-                f"{provider.name} {'found' if installed else 'not found'} on PATH",
+                "Selected provider",
+                "✓",
+                f"{selected_provider.display_name} ({selected_provider.name})",
             )
         )
-        if not installed:
-            any_failed = True
-
-        p_ver = provider.get_version()
-        checks.append(("Version", "✓", p_ver))
-
-        has_models = provider.has_any_models()
-        checks.append(
-            ("Models configured", "✓" if has_models else "✗", "Yes" if has_models else "No")
-        )
-        if not has_models:
-            any_failed = True
-
-        update_msg = provider.check_update_available()
-        checks.append(
-            ("Update available", "-" if not update_msg else "✓", update_msg or "Up to date")
-        )
-
     except ProviderNotFoundError:
-        checks.append(("Provider", "✗", "No provider detected"))
-        checks.append(("Installation", "✗", "N/A"))
-        checks.append(("Version", "✗", "N/A"))
-        checks.append(("Models configured", "✗", "N/A"))
-        checks.append(("Update available", "-", "N/A"))
+        checks.append(("Selected provider", "✗", "No installed provider detected"))
         any_failed = True
 
     project = Path.cwd()
@@ -6371,6 +6350,48 @@ def doctor_cmd() -> None:
     else:
         checks.append(("Config", "-", "No architect.toml (using defaults)"))
 
+    provider_rows: list[tuple[str, str, str]] = []
+    for provider in supported_providers():
+        selected_marker = (
+            " (selected)" if selected_provider and provider.name == selected_provider.name else ""
+        )
+        try:
+            installed = provider.is_installed()
+        except Exception as exc:
+            provider_rows.append((provider.display_name, "✗", f"install check failed: {exc}"))
+            if selected_provider and provider.name == selected_provider.name:
+                any_failed = True
+            continue
+
+        if not installed:
+            provider_rows.append(
+                (
+                    provider.display_name,
+                    "-",
+                    f"not installed; install with `{provider.install_hint()}`",
+                )
+            )
+            continue
+
+        version_text = provider.get_version()
+        try:
+            has_models = provider.has_any_models()
+        except Exception as exc:
+            has_models = False
+            model_detail = f"model/config check failed: {exc}"
+        else:
+            model_detail = "models configured" if has_models else "no models/API key detected"
+
+        update_msg = provider.check_update_available()
+        detail_parts = [f"installed, {version_text}", model_detail]
+        if update_msg:
+            detail_parts.append(f"update: {update_msg}")
+        detail = "; ".join(detail_parts) + selected_marker
+        status = "✓" if has_models else "✗"
+        provider_rows.append((provider.display_name, status, detail))
+        if selected_provider and provider.name == selected_provider.name and not has_models:
+            any_failed = True
+
     table = Table(show_header=False, box=None, padding=(0, 1))
     table.add_column("Check", style="bold")
     table.add_column("Status", width=3)
@@ -6383,9 +6404,22 @@ def doctor_cmd() -> None:
     console.print()
     console.print(table)
     console.print()
+    provider_table = Table(show_header=True, box=None, padding=(0, 1))
+    provider_table.add_column("Provider", style="bold")
+    provider_table.add_column("Status", width=3)
+    provider_table.add_column("Detail")
+    for name, status, detail in provider_rows:
+        provider_table.add_row(name, status, detail)
+    console.print("[bold]Providers[/bold]")
+    console.print(provider_table)
+    console.print()
 
     if any_failed:
-        console.print("[red]Some checks failed.[/red]")
+        console.print("[red]Some required checks failed.[/red]")
+        console.print(
+            "[dim]Unavailable or unconfigured optional providers are hidden from provider "
+            "selection lists.[/dim]"
+        )
         raise SystemExit(1)
     console.print("[green]All checks passed.[/green]")
     raise SystemExit(0)

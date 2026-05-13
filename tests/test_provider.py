@@ -29,6 +29,8 @@ from the_architect.core.provider import (
     ProviderNotFoundError,
     detect_available_providers,
     detect_provider,
+    provider_is_usable,
+    supported_providers,
 )
 
 # ---------------------------------------------------------------------------
@@ -981,6 +983,35 @@ class TestDetectAvailableProviders:
         ):
             available = detect_available_providers()
         assert [p.name for p in available] == ["opencode", "codex", "claude-code", "gemini-cli"]
+
+    def test_supported_providers_returns_all_known_providers(self) -> None:
+        """Doctor uses all supported providers, not only installed providers."""
+        assert [p.name for p in supported_providers()] == [
+            "opencode",
+            "codex",
+            "claude-code",
+            "gemini-cli",
+        ]
+
+    def test_require_models_filters_unconfigured_providers(self) -> None:
+        """Provider selection should include only installed, configured providers."""
+        with (
+            patch.object(OpenCodeProvider, "is_installed", return_value=True),
+            patch.object(OpenCodeProvider, "has_any_models", return_value=False),
+            patch.object(CodexCliProvider, "is_installed", return_value=True),
+            patch.object(CodexCliProvider, "has_any_models", return_value=True),
+            patch.object(ClaudeCodeProvider, "is_installed", return_value=False),
+            patch.object(GeminiCliProvider, "is_installed", return_value=False),
+        ):
+            available = detect_available_providers(require_models=True)
+
+        assert [p.name for p in available] == ["codex"]
+
+    def test_provider_is_usable_handles_provider_exceptions(self) -> None:
+        """Selection filtering treats provider health exceptions as unusable."""
+        provider = OpenCodeProvider()
+        with patch.object(provider, "is_installed", side_effect=RuntimeError("boom")):
+            assert provider_is_usable(provider) is False
 
 
 # ---------------------------------------------------------------------------

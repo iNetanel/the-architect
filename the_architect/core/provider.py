@@ -359,35 +359,58 @@ def detect_provider(preference: str = "auto") -> ArchitectProvider:
     )
 
 
-def detect_available_providers() -> list[ArchitectProvider]:
-    """Return all installed providers, in preference order.
-
-    Used by the CLI when it needs to offer the user a choice between
-    multiple installed providers.
+def supported_providers() -> list[ArchitectProvider]:
+    """Return all provider implementations in preference order.
 
     Returns:
-        List of installed :class:`ArchitectProvider` instances.
-        OpenCode comes first when present, followed by Codex, then Claude Code,
-        then Gemini CLI.  Empty list when nothing is installed.
+        List of all supported :class:`ArchitectProvider` instances, regardless
+        of whether their binaries are installed or configured.
     """
     from the_architect.core.claude_code_provider import ClaudeCodeProvider
     from the_architect.core.codex_cli_provider import CodexCliProvider
     from the_architect.core.gemini_cli_provider import GeminiCliProvider
     from the_architect.core.opencode_provider import OpenCodeProvider
 
-    available: list[ArchitectProvider] = []
-    oc = OpenCodeProvider()
-    cc = ClaudeCodeProvider()
-    codex = CodexCliProvider()
-    gemini = GeminiCliProvider()
+    return [OpenCodeProvider(), CodexCliProvider(), ClaudeCodeProvider(), GeminiCliProvider()]
 
-    if oc.is_installed():
-        available.append(oc)
-    if codex.is_installed():
-        available.append(codex)
-    if cc.is_installed():
-        available.append(cc)
-    if gemini.is_installed():
-        available.append(gemini)
+
+def provider_is_usable(provider: ArchitectProvider) -> bool:
+    """Return True when a provider is installed and has usable model configuration.
+
+    Provider methods are expected to be defensive, but this helper is used in
+    pre-run UI paths where a provider-specific exception should hide that
+    provider from selection rather than crash the whole startup flow.
+    """
+    try:
+        return provider.is_installed() and provider.has_any_models()
+    except Exception:
+        return False
+
+
+def detect_available_providers(*, require_models: bool = False) -> list[ArchitectProvider]:
+    """Return available providers, in preference order.
+
+    Used by the CLI when it needs to offer the user a choice between
+    multiple providers.
+
+    Args:
+        require_models: When true, return only providers that are installed and
+            appear configured with usable models/API credentials.  This is what
+            provider-selection screens should use so broken providers are not
+            offered as runnable choices.
+
+    Returns:
+        List of :class:`ArchitectProvider` instances.
+        OpenCode comes first when present, followed by Codex, then Claude Code,
+        then Gemini CLI.  Empty list when nothing matches the requested filter.
+    """
+    available: list[ArchitectProvider] = []
+    for provider in supported_providers():
+        if require_models:
+            if provider_is_usable(provider):
+                available.append(provider)
+            continue
+        if provider.is_installed():
+            available.append(provider)
 
     return available
