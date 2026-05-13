@@ -16,6 +16,7 @@ from the_architect.core.retrospective import (
     RetrospectiveResult,
     _ensure_provider_setup_for_review,
     _find_eval_snapshot_files,
+    _gather_baseline_evidence,
     _gather_review_context,
     _next_r_task_number,
     _update_progress_with_retrospective_tasks,
@@ -381,6 +382,7 @@ class TestRetrospectiveEdgeCases:
             (prompts_dir / filename).write_text(f"{filename} prompt\n", encoding="utf-8")
         (architect_dir / "architect.json").write_text(
             '{"agent":{"architect":{"prompt":"architect.md"},'
+            '"intelligence":{"prompt":"intelligence.md"},'
             '"reviewer":{"prompt":"reviewer.md"}}}\n',
             encoding="utf-8",
         )
@@ -943,6 +945,46 @@ class TestRetrospectiveCoverage:
                 # Should have created one task
                 assert "R01_fix" in result.tasks_created
 
+    @pytest.mark.asyncio
+    async def test_run_retrospective_rejects_new_non_r_tasks(
+        self, tmp_path: Path, config: ArchitectConfig
+    ) -> None:
+        """Reviewer-created task files must be R-prefixed."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "PROGRESS.md").write_text(
+            "**Tasks completed:** 1\n**Next task to run:** —\n",
+            encoding="utf-8",
+        )
+
+        request = RetrospectiveRequest(
+            round_number=1,
+            project_dir=tmp_path,
+            original_goal="test",
+        )
+
+        async def fake_stream(**kwargs: object) -> StreamResult:
+            return StreamResult(exit_code=0, tokens=TokenUsage())
+
+        with patch("the_architect.core.retrospective.stream_provider", side_effect=fake_stream):
+            with patch("the_architect.core.retrospective.discover_tasks") as mock_discover:
+                mock_discover.side_effect = [
+                    [],
+                    [
+                        Task(
+                            name="T02_wrong",
+                            prefix="T02",
+                            number=2,
+                            path=tasks_dir / "T02_wrong.md",
+                            status=TaskStatus.PENDING,
+                            title="Wrong",
+                        )
+                    ],
+                ]
+
+                with pytest.raises(RetrospectiveFailedError, match="non-R task files"):
+                    await run_retrospective(request, config)
+
 
 class TestRendererPassthrough:
     """TUI callers must be able to forward a ``WaitLogRenderer`` through
@@ -1382,3 +1424,94 @@ class TestReassessmentErrorBranches:
 
         assert captured.get("agent_override") == "architect"
         assert captured.get("config_override") == tmp_path / ".architect" / "architect.json"
+
+
+class TestGatherBaselineEvidence:
+    """Tests for _gather_baseline_evidence and baseline-aware review context."""
+
+    def test_baseline_evidence_with_data(self, tmp_path: Path) -> None:
+        """Baseline evidence section is included when baselines exist."""
+        from the_architect.core.baseline import capture_baseline, write_baseline
+
+        # Create a baseline file
+        baselines_dir = tmp_path / ".architect" / "baselines"
+        baselines_dir.mkdir(parents=True, exist_ok=True)
+
+        baseline = capture_baseline(tmp_path, task_prefix="T01")
+        write_baseline(baseline, baselines_dir / "T01.json")
+
+        evidence = _gather_baseline_evidence(tmp_path)
+
+        assert evidence is not None
+        assert "## Task Baseline Evidence" not in evidence  # evidence is the body, not the header
+        assert "T01 Baseline" in evidence
+        assert "Created" in evidence
+        assert "Modified" in evidence
+        assert "Deleted" in evidence
+
+    def test_baseline_evidence_missing_dir(self, tmp_path: Path) -> None:
+        """Returns None when .architect/baselines/ directory does not exist."""
+        evidence = _gather_baseline_evidence(tmp_path)
+        assert evidence is None
+
+    def test_baseline_evidence_empty_dir(self, tmp_path: Path) -> None:
+        """Returns None when .architect/baselines/ directory is empty."""
+        baselines_dir = tmp_path / ".architect" / "baselines"
+        baselines_dir.mkdir(parents=True, exist_ok=True)
+
+        evidence = _gather_baseline_evidence(tmp_path)
+        assert evidence is None
+
+    def test_baseline_evidence_unreadable_file(self, tmp_path: Path) -> None:
+        """Skips unreadable baseline files and logs warning."""
+        baselines_dir = tmp_path / ".architect" / "baselines"
+        baselines_dir.mkdir(parents=True, exist_ok=True)
+        # Write invalid JSON
+        (baselines_dir / "T01.json").write_text("not-json{{", encoding="utf-8")
+
+        evidence = _gather_baseline_evidence(tmp_path)
+        # All files skipped → None
+        assert evidence is None
+
+    def test_gather_review_context_includes_baseline_evidence(self, tmp_path: Path) -> None:
+        """_gather_review_context includes baseline evidence section when data exists."""
+        from the_architect.core.baseline import capture_baseline, write_baseline
+
+        # Create baseline
+        baselines_dir = tmp_path / ".architect" / "baselines"
+        baselines_dir.mkdir(parents=True, exist_ok=True)
+        baseline = capture_baseline(tmp_path, task_prefix="T01")
+        write_baseline(baseline, baselines_dir / "T01.json")
+
+        # Create PROGRESS.md so context is non-empty
+        progress_file = tmp_path / "tasks" / "PROGRESS.md"
+        progress_file.parent.mkdir(parents=True, exist_ok=True)
+        progress_file.write_text("# Progress\n", encoding="utf-8")
+
+        context = _gather_review_context(tmp_path, "test goal")
+
+        assert "## Task Baseline Evidence" in context
+        assert "T01 Baseline" in context
+
+    def test_gather_review_context_no_baseline_section_when_missing(self, tmp_path: Path) -> None:
+        """No baseline section added when .architect/baselines/ is missing."""
+        progress_file = tmp_path / "tasks" / "PROGRESS.md"
+        progress_file.parent.mkdir(parents=True, exist_ok=True)
+        progress_file.write_text("# Progress\n", encoding="utf-8")
+
+        context = _gather_review_context(tmp_path, "test goal")
+
+        assert "## Task Baseline Evidence" not in context
+
+    def test_gather_review_context_no_baseline_section_when_empty(self, tmp_path: Path) -> None:
+        """No baseline section added when .architect/baselines/ is empty."""
+        baselines_dir = tmp_path / ".architect" / "baselines"
+        baselines_dir.mkdir(parents=True, exist_ok=True)
+
+        progress_file = tmp_path / "tasks" / "PROGRESS.md"
+        progress_file.parent.mkdir(parents=True, exist_ok=True)
+        progress_file.write_text("# Progress\n", encoding="utf-8")
+
+        context = _gather_review_context(tmp_path, "test goal")
+
+        assert "## Task Baseline Evidence" not in context

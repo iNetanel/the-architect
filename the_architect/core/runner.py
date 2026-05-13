@@ -151,6 +151,7 @@ def _write_stream_line(line: str) -> None:
 
 
 if TYPE_CHECKING:
+    from the_architect.core.baseline import WorkspaceBaseline
     from the_architect.core.circuit import AttemptSummary
     from the_architect.core.provider import ArchitectProvider
 
@@ -214,6 +215,14 @@ class TaskResult(BaseModel):
     outcome_summary: str = Field(
         default="",
         description="Structured task outcome summary extracted after the final attempt",
+    )
+    baseline_path: str = Field(
+        default="",
+        description=(
+            "Absolute path to the baseline JSON file for this task "
+            "(.architect/baselines/<task_name>.json). Empty string when "
+            "baseline capture is disabled or failed."
+        ),
     )
 
 
@@ -1906,6 +1915,10 @@ def build_instruction(
 
     lines.append(f"PROJECT ROOT: {project_root}")
     lines.append(
+        f"TASK PREFIX: {task.prefix} — when complete, output exactly "
+        f"<promise>{task.prefix}_COMPLETE</promise>."
+    )
+    lines.append(
         "BOUNDARY: You MUST NOT read, write, or modify any file outside this project root. "
         "Do not use absolute paths that point outside this directory. "
         "Do not `cd` above this directory. All work must stay within the project root."
@@ -2237,6 +2250,34 @@ async def run_task_once(
         ),
     )
 
+    # ── Workspace baseline capture ──────────────────────────────────────────
+    baseline_path_str = ""
+    captured_baseline: WorkspaceBaseline | None = None
+    if config.workspace_baseline:
+        try:
+            from the_architect.core.baseline import (  # noqa: I001
+                capture_baseline as _capture_baseline,
+                write_baseline as _write_baseline,
+            )
+
+            baselines_dir = config.project_root / ".architect" / "baselines"
+            baselines_dir.mkdir(parents=True, exist_ok=True)
+            baseline_file = baselines_dir / f"{task.name}.json"
+
+            captured_baseline = _capture_baseline(config.project_root, task.prefix)
+            _write_baseline(captured_baseline, baseline_file)
+            baseline_path_str = str(baseline_file.resolve())
+            logger.info(
+                f"Task {task.prefix}: baseline captured with "
+                f"{len(captured_baseline.files)} files → {baseline_file.name}"
+            )
+        except Exception as baseline_exc:
+            logger.warning(
+                f"Task {task.prefix}: baseline capture failed — "
+                f"continuing without baseline: {baseline_exc!r}"
+            )
+            captured_baseline = None
+
     start_time = time.monotonic()
 
     try:
@@ -2291,6 +2332,7 @@ async def run_task_once(
                     stream_result.accumulated_text,
                     stream_result.exit_code,
                 ),
+                baseline_path=baseline_path_str,
             )
 
         # Multi-signal completion check (IMP-01 + IMP-06):
@@ -2328,6 +2370,40 @@ async def run_task_once(
             or is_model_not_found_error(stream_result.accumulated_text, stream_result.exit_code)
         )
 
+        # ── Detect baseline changes ──────────────────────────────────────
+        outcome_summary = _extract_task_outcome_summary(stream_result.accumulated_text)
+        if captured_baseline is not None and baseline_path_str:
+            try:
+                from the_architect.core.baseline import (
+                    detect_changes as _detect_changes,
+                )
+
+                changes = _detect_changes(captured_baseline, config.project_root)
+                created = changes.get("created", [])
+                modified = changes.get("modified", [])
+                deleted = changes.get("deleted", [])
+                change_parts: list[str] = []
+                if created:
+                    change_parts.append(f"created: {len(created)} file(s)")
+                if modified:
+                    change_parts.append(f"modified: {len(modified)} file(s)")
+                if deleted:
+                    change_parts.append(f"deleted: {len(deleted)} file(s)")
+                if change_parts:
+                    baseline_summary = "Baseline changes: " + ", ".join(change_parts)
+                    outcome_summary = (
+                        f"{outcome_summary}\n{baseline_summary}"
+                        if outcome_summary
+                        else baseline_summary
+                    )
+                    logger.info(f"Task {task.prefix}: {baseline_summary}")
+                else:
+                    logger.info(f"Task {task.prefix}: baseline — no changes detected")
+            except Exception as change_exc:
+                logger.warning(
+                    f"Task {task.prefix}: baseline change detection failed: {change_exc!r}"
+                )
+
         return TaskResult(
             prefix=task.prefix,
             title=task.title or task.name,
@@ -2340,7 +2416,8 @@ async def run_task_once(
             accumulated_text=stream_result.accumulated_text,
             exit_code=stream_result.exit_code,
             cooldown_until=stream_result.cooldown_until,
-            outcome_summary=_extract_task_outcome_summary(stream_result.accumulated_text),
+            outcome_summary=outcome_summary,
+            baseline_path=baseline_path_str,
         )
 
     except Exception as exc:
@@ -2358,6 +2435,7 @@ async def run_task_once(
             tokens=TokenUsage(),
             model=model or "",
             outcome_summary="Downstream impact: none",
+            baseline_path=baseline_path_str,
         )
 
 

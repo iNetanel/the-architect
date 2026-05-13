@@ -10,6 +10,10 @@ from loguru import logger
 
 from the_architect.config import ArchitectConfig
 from the_architect.core.architect_md import read_architect_md
+from the_architect.core.project_intelligence import (
+    format_project_intelligence_for_prompt,
+    read_project_intelligence,
+)
 from the_architect.core.provider import ArchitectProvider
 from the_architect.core.runner import StreamRenderer, stream_provider
 from the_architect.core.structure import StructureReport, format_structure_for_prompt
@@ -77,6 +81,7 @@ def build_intelligence_instruction(
     project_context: str,
     architect_md_content: str,
     reasons: list[str],
+    structured_intelligence_content: str = "",
 ) -> str:
     """Build the instruction sent to the project intelligence curator.
 
@@ -86,6 +91,7 @@ def build_intelligence_instruction(
         project_context: Bounded project context from the normal planner gatherer.
         architect_md_content: Current durable memory content.
         reasons: Quality-gate reasons that triggered the pass.
+        structured_intelligence_content: Validated deterministic structured intelligence summary.
 
     Returns:
         Provider instruction string.
@@ -100,7 +106,9 @@ The deterministic pre-planning quality gate found these issues:
 
 {reason_block}
 
-Update `ARCHITECT.md` so the next planner run starts with accurate durable project knowledge.
+Update `ARCHITECT.md` only for new durable project-level knowledge, or to resolve a
+conflict with existing project knowledge, so the next planner run starts with
+accurate durable project memory. Do not add current goal, task, or run details.
 
 ## Current ARCHITECT.md
 
@@ -112,11 +120,16 @@ Update `ARCHITECT.md` so the next planner run starts with accurate durable proje
 
 {structure_prompt}
 
+## Structured Project Intelligence
+
+{structured_intelligence_content or "No validated structured intelligence cache is available."}
+
 ## Bounded Project Context
 
 {project_context}
 
 Remember: edit only `ARCHITECT.md`; do not create task files or implementation changes.
+If no durable project knowledge or conflict is found, leave `ARCHITECT.md` unchanged.
 """
 
 
@@ -159,12 +172,16 @@ async def refresh_project_intelligence(
     logger.info(f"Running project intelligence pass: {', '.join(assessment.reasons)}")
     ensure_provider_setup(provider, project_dir, config)
     project_context = gather_project_context(project_dir, provider=provider)
+    structured_intelligence_content = format_project_intelligence_for_prompt(
+        read_project_intelligence(project_dir)
+    )
     instruction = build_intelligence_instruction(
         project_dir=project_dir,
         structure_report=structure_report,
         project_context=project_context,
         architect_md_content=architect_md_content,
         reasons=assessment.reasons,
+        structured_intelligence_content=structured_intelligence_content,
     )
 
     config_override: Path | None = None

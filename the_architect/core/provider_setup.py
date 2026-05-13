@@ -71,7 +71,7 @@ def existing_provider_setup_is_usable(provider: ArchitectProvider, project_dir: 
     agents = data.get("agent")
     if not isinstance(agents, dict):
         return False
-    for agent_name in ("architect", "reviewer"):
+    for agent_name in ("architect", "intelligence", "reviewer"):
         agent_cfg = agents.get(agent_name)
         if not isinstance(agent_cfg, dict):
             return False

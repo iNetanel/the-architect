@@ -1214,7 +1214,25 @@ class TestBuildInstruction:
     def test_basic_instruction(self, task, config):
         result = build_instruction(task, attempt=1, config=config)
         assert "T01" in result
+        assert "TASK PREFIX: T01" in result
+        assert "<promise>T01_COMPLETE</promise>" in result
         assert task.path.name in result
+
+    def test_instruction_uses_r_task_prefix_for_promise(self, config):
+        path = config.tasks_dir / "R01_fix.md"
+        path.write_text("# R01 - Fix Task\n", encoding="utf-8")
+        r_task = Task(
+            name="R01_fix",
+            prefix="R01",
+            number=1,
+            path=path,
+            status=TaskStatus.PENDING,
+        )
+
+        result = build_instruction(r_task, attempt=1, config=config)
+
+        assert "TASK PREFIX: R01" in result
+        assert "<promise>R01_COMPLETE</promise>" in result
 
     def test_with_architect_md_content(self, task, config):
         result = build_instruction(
@@ -4336,3 +4354,279 @@ class TestRunAllTerminalSkip:
         # After run_all, the runner has reconciled PROGRESS.md to Done.
         assert task_is_done(progress_file, "T01") is True
         assert result is True
+
+
+# ── Baseline integration tests ──────────────────────────────────────────────
+
+
+class TestBaselineRunnerIntegration:
+    """Tests for workspace baseline capture integrated into run_task_once."""
+
+    def test_baseline_path_empty_when_disabled(self, tmp_path: Path):
+        """When workspace_baseline=False, baseline_path stays empty."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        progress_file = tasks_dir / "PROGRESS.md"
+        progress_file.write_text("test", encoding="utf-8")
+        log_dir = tmp_path / ".architect" / "logs"
+        log_dir.mkdir(parents=True)
+
+        config = ArchitectConfig(
+            progress_file=progress_file,
+            tasks_dir=tasks_dir,
+            log_dir=log_dir,
+            workspace_baseline=False,
+            max_retries=3,
+            retry_pause=0,
+            pause_between_tasks=0,
+        )
+
+        assert config.workspace_baseline is False
+
+    def test_baseline_path_default_true(self, tmp_path: Path):
+        """workspace_baseline defaults to True."""
+        config = ArchitectConfig()
+        assert config.workspace_baseline is True
+
+    def test_task_result_baseline_path_default_empty(self):
+        """TaskResult.baseline_path defaults to empty string."""
+        result = TaskResult(prefix="T01", status="done")
+        assert result.baseline_path == ""
+
+    def test_task_result_baseline_path_settable(self):
+        """TaskResult.baseline_path can be set to an absolute path."""
+        result = TaskResult(
+            prefix="T01",
+            status="done",
+            baseline_path="/some/path/baseline.json",
+        )
+        assert result.baseline_path == "/some/path/baseline.json"
+
+    @pytest.mark.asyncio
+    async def test_run_task_once_baseline_enabled(self, tmp_path: Path):
+        """run_task_once captures baseline when workspace_baseline=True."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        progress_file = tasks_dir / "PROGRESS.md"
+        progress_file.write_text("test", encoding="utf-8")
+        log_dir = tmp_path / ".architect" / "logs"
+        log_dir.mkdir(parents=True)
+
+        task_file = tasks_dir / "T01_test_baseline.md"
+        task_file.write_text("# T01 - Test\n", encoding="utf-8")
+
+        config = ArchitectConfig(
+            progress_file=progress_file,
+            tasks_dir=tasks_dir,
+            log_dir=log_dir,
+            workspace_baseline=True,
+            max_retries=3,
+            retry_pause=0,
+            pause_between_tasks=0,
+        )
+
+        task = Task(
+            name="T01_test_baseline",
+            prefix="T01",
+            number=1,
+            path=task_file,
+            status=TaskStatus.PENDING,
+        )
+
+        # Mock stream_provider to return success with completion promise
+        fake_stream = StreamResult(
+            exit_code=0,
+            tokens=TokenUsage(input_tokens=100, output_tokens=50),
+            accumulated_text="<promise>T01_COMPLETE</promise>\nall tests pass",
+        )
+
+        with patch(
+            "the_architect.core.runner.stream_provider",
+            new_callable=AsyncMock,
+            return_value=fake_stream,
+        ):
+            result = await run_task_once(
+                task=task,
+                attempt=1,
+                config=config,
+            )
+
+        # Baseline should have been captured
+        assert result.baseline_path != ""
+        assert "T01_test_baseline.json" in result.baseline_path
+
+        # Baseline file should exist
+        baseline_file = Path(result.baseline_path)
+        assert baseline_file.exists()
+
+        # Baseline JSON should be valid
+        data = json.loads(baseline_file.read_text(encoding="utf-8"))
+        assert "timestamp" in data
+        assert data["task_prefix"] == "T01"
+        assert "files" in data
+
+    @pytest.mark.asyncio
+    async def test_run_task_once_baseline_disabled(self, tmp_path: Path):
+        """run_task_once skips baseline when workspace_baseline=False."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        progress_file = tasks_dir / "PROGRESS.md"
+        progress_file.write_text("test", encoding="utf-8")
+        log_dir = tmp_path / ".architect" / "logs"
+        log_dir.mkdir(parents=True)
+
+        task_file = tasks_dir / "T01_no_baseline.md"
+        task_file.write_text("# T01 - Test\n", encoding="utf-8")
+
+        config = ArchitectConfig(
+            progress_file=progress_file,
+            tasks_dir=tasks_dir,
+            log_dir=log_dir,
+            workspace_baseline=False,
+            max_retries=3,
+            retry_pause=0,
+            pause_between_tasks=0,
+        )
+
+        task = Task(
+            name="T01_no_baseline",
+            prefix="T01",
+            number=1,
+            path=task_file,
+            status=TaskStatus.PENDING,
+        )
+
+        fake_stream = StreamResult(
+            exit_code=0,
+            tokens=TokenUsage(input_tokens=100, output_tokens=50),
+            accumulated_text="<promise>T01_COMPLETE</promise>\nall tests pass",
+        )
+
+        with patch(
+            "the_architect.core.runner.stream_provider",
+            new_callable=AsyncMock,
+            return_value=fake_stream,
+        ):
+            result = await run_task_once(
+                task=task,
+                attempt=1,
+                config=config,
+            )
+
+        # Baseline should NOT have been captured
+        assert result.baseline_path == ""
+
+    @pytest.mark.asyncio
+    async def test_run_task_once_baseline_on_failed_task(self, tmp_path: Path):
+        """Baseline path is set even when the task fails (non-zero exit)."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        progress_file = tasks_dir / "PROGRESS.md"
+        progress_file.write_text("test", encoding="utf-8")
+        log_dir = tmp_path / ".architect" / "logs"
+        log_dir.mkdir(parents=True)
+
+        task_file = tasks_dir / "T01_failed_baseline.md"
+        task_file.write_text("# T01 - Test\n", encoding="utf-8")
+
+        config = ArchitectConfig(
+            progress_file=progress_file,
+            tasks_dir=tasks_dir,
+            log_dir=log_dir,
+            workspace_baseline=True,
+            max_retries=3,
+            retry_pause=0,
+            pause_between_tasks=0,
+        )
+
+        task = Task(
+            name="T01_failed_baseline",
+            prefix="T01",
+            number=1,
+            path=task_file,
+            status=TaskStatus.PENDING,
+        )
+
+        fake_stream = StreamResult(
+            exit_code=1,
+            tokens=TokenUsage(input_tokens=100, output_tokens=50),
+            accumulated_text="I'm stuck on this task",
+        )
+
+        with patch(
+            "the_architect.core.runner.stream_provider",
+            new_callable=AsyncMock,
+            return_value=fake_stream,
+        ):
+            result = await run_task_once(
+                task=task,
+                attempt=1,
+                config=config,
+            )
+
+        # Baseline should have been captured even though task failed
+        assert result.baseline_path != ""
+        assert result.status == "failed"
+
+    @pytest.mark.asyncio
+    async def test_run_task_once_baseline_changes_detected(self, tmp_path: Path):
+        """Change detection appends baseline summary to outcome_summary."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        progress_file = tasks_dir / "PROGRESS.md"
+        progress_file.write_text("test", encoding="utf-8")
+        log_dir = tmp_path / ".architect" / "logs"
+        log_dir.mkdir(parents=True)
+
+        # Create a file that will be captured by the baseline
+        new_file = tmp_path / "new_module.py"
+        new_file.write_text("# new file\n", encoding="utf-8")
+
+        task_file = tasks_dir / "T01_changes.md"
+        task_file.write_text("# T01 - Test\n", encoding="utf-8")
+
+        config = ArchitectConfig(
+            progress_file=progress_file,
+            tasks_dir=tasks_dir,
+            log_dir=log_dir,
+            workspace_baseline=True,
+            max_retries=3,
+            retry_pause=0,
+            pause_between_tasks=0,
+        )
+
+        task = Task(
+            name="T01_changes",
+            prefix="T01",
+            number=1,
+            path=task_file,
+            status=TaskStatus.PENDING,
+        )
+
+        # During the mocked stream_provider call, create a new file
+        # so that change detection finds it
+        async def fake_stream_with_change(*args, **kwargs):
+            # Create a new tracked file during the "execution"
+            changed_file = tmp_path / "changed_file.py"
+            changed_file.write_text("# changed\n", encoding="utf-8")
+            return StreamResult(
+                exit_code=0,
+                tokens=TokenUsage(input_tokens=100, output_tokens=50),
+                accumulated_text="<promise>T01_COMPLETE</promise>\nall tests pass",
+            )
+
+        with patch(
+            "the_architect.core.runner.stream_provider",
+            new_callable=AsyncMock,
+            side_effect=fake_stream_with_change,
+        ):
+            result = await run_task_once(
+                task=task,
+                attempt=1,
+                config=config,
+            )
+
+        # Outcome should mention baseline changes
+        assert result.baseline_path != ""
+        assert "Baseline changes" in result.outcome_summary
+        assert "created" in result.outcome_summary

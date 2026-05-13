@@ -13,6 +13,11 @@ from the_architect.core.intelligence import (
     build_intelligence_instruction,
     refresh_project_intelligence,
 )
+from the_architect.core.project_intelligence import (
+    format_project_intelligence_for_prompt,
+    read_project_intelligence,
+    write_project_intelligence,
+)
 from the_architect.core.structure import Component, RepoType, StructureReport
 
 
@@ -217,8 +222,54 @@ This is a well-documented project with enough content to pass the quality gate.
 def _make_structure_report() -> StructureReport:
     return StructureReport(
         repo_type=RepoType.SINGLE_REPO,
-        components=[Component(path="./", language="Python")],
+        components=[
+            Component(
+                path="./",
+                language="Python",
+                role="CLI tool",
+                description="Autonomous planning CLI",
+                test_command="pytest tests/ -v --tb=short",
+                lint_command="ruff check .",
+            )
+        ],
     )
+
+
+def test_write_project_intelligence_creates_valid_cache(tmp_path: Path) -> None:
+    """Structured intelligence should be generated from deterministic structure signals."""
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname = 'demo-cli'\n[project.scripts]\ndemo = 'demo:main'\n",
+        encoding="utf-8",
+    )
+
+    path = write_project_intelligence(tmp_path, _make_structure_report())
+    data = read_project_intelligence(tmp_path)
+
+    assert path == tmp_path / ".architect" / "intelligence.json"
+    assert data is not None
+    assert data["project"]["name"] == "demo-cli"
+    assert data["project"]["type"] == "CLI tool"
+    assert data["commands"]["test"] == "pytest tests/ -v --tb=short"
+    assert data["nodes"][0]["id"] == "root"
+
+
+def test_read_project_intelligence_ignores_invalid_cache(tmp_path: Path) -> None:
+    """Invalid structured intelligence should be ignored instead of injected."""
+    cache = tmp_path / ".architect" / "intelligence.json"
+    cache.parent.mkdir(parents=True)
+    cache.write_text('{"version": "0.1"}', encoding="utf-8")
+
+    assert read_project_intelligence(tmp_path) is None
+
+
+def test_format_project_intelligence_for_prompt_is_compact(tmp_path: Path) -> None:
+    """Validated structured intelligence should format as planner context."""
+    write_project_intelligence(tmp_path, _make_structure_report())
+    summary = format_project_intelligence_for_prompt(read_project_intelligence(tmp_path))
+
+    assert "Project:" in summary
+    assert "Key components:" in summary
+    assert "pytest tests/ -v --tb=short" in summary
 
 
 async def test_refresh_skips_when_quality_gate_passes(tmp_path: Path) -> None:

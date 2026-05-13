@@ -23,7 +23,9 @@ def _write_existing_setup(project: Path) -> None:
     ):
         (prompts_dir / filename).write_text(f"{filename} prompt\n", encoding="utf-8")
     (architect_dir / "architect.json").write_text(
-        '{"agent":{"architect":{"prompt":"architect.md"},"reviewer":{"prompt":"reviewer.md"}}}\n',
+        '{"agent":{"architect":{"prompt":"architect.md"},'
+        '"intelligence":{"prompt":"intelligence.md"},'
+        '"reviewer":{"prompt":"reviewer.md"}}}\n',
         encoding="utf-8",
     )
 

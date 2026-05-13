@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from the_architect.config import ArchitectConfig
 from the_architect.core.progress import PROGRESS_TEMPLATE
 from the_architect.core.runner import StreamRenderer, stream_provider
-from the_architect.core.tasks import Task, TaskScope, discover_tasks
+from the_architect.core.tasks import Task, TaskScope, discover_tasks, duplicate_task_prefixes
 
 if TYPE_CHECKING:
     from the_architect.core.provider import ArchitectProvider
@@ -64,6 +64,10 @@ class PlanningRequest(BaseModel):
     architect_md_content: str = Field(
         default="",
         description="Full ARCHITECT.md content for prompt injection",
+    )
+    structured_intelligence_content: str = Field(
+        default="",
+        description="Compact .architect/intelligence.json summary for prompt injection",
     )
 
     model_config = {"frozen": True}
@@ -470,10 +474,11 @@ def build_planning_instruction(request: PlanningRequest, context: str) -> str:
 
     The instruction is structured with context in priority order:
         1. ARCHITECT.md (persistent project intelligence)
-        2. Structure report (auto-detected project structure)
-        3. Additional context files (user-provided)
-        4. Project context (file tree, PROGRESS.md history)
-        5. User's goal
+        2. Structured project intelligence (validated machine-readable cache)
+        3. Structure report (auto-detected project structure)
+        4. Additional context files (user-provided)
+        5. Project context (file tree, PROGRESS.md history)
+        6. User's goal
 
     Args:
         request: The planning request with goal and model size.
@@ -508,7 +513,17 @@ def build_planning_instruction(request: PlanningRequest, context: str) -> str:
             ]
         )
 
-    # 2. Project structure report
+    # 2. Structured project intelligence — compact validated cache.
+    if request.structured_intelligence_content:
+        lines.extend(
+            [
+                "=== STRUCTURED PROJECT INTELLIGENCE ===",
+                request.structured_intelligence_content,
+                "",
+            ]
+        )
+
+    # 3. Project structure report
     if request.structure_report:
         lines.extend(
             [
@@ -518,7 +533,7 @@ def build_planning_instruction(request: PlanningRequest, context: str) -> str:
             ]
         )
 
-    # 3. Additional context files (user-provided via --context)
+    # 4. Additional context files (user-provided via --context)
     if request.context_content:
         lines.extend(
             [
@@ -528,7 +543,7 @@ def build_planning_instruction(request: PlanningRequest, context: str) -> str:
             ]
         )
 
-    # 4. Project context (file tree, PROGRESS.md history, etc.)
+    # 5. Project context (file tree, PROGRESS.md history, etc.)
     lines.extend(
         [
             "=== PROJECT CONTEXT ===",
@@ -537,7 +552,7 @@ def build_planning_instruction(request: PlanningRequest, context: str) -> str:
         ]
     )
 
-    # 5. User's goal
+    # 6. User's goal
     lines.extend(
         [
             "=== USER REQUEST ===",
@@ -565,8 +580,11 @@ def build_planning_instruction(request: PlanningRequest, context: str) -> str:
             "You are creating a NEW plan for a NEW goal. Do NOT continue the old plan.",
             "The Architect tool will write fresh PROGRESS.md after you create task files.",
             "",
-            "YOUR REQUIRED OUTPUTS: write task files, write goal-specific tasks/INSTRUCTIONS.md, "
-            "and curate ARCHITECT.md durable project intelligence.",
+            "YOUR REQUIRED OUTPUTS: write task files and write goal-specific "
+            "tasks/INSTRUCTIONS.md.",
+            "CONDITIONAL OUTPUT: pre-planning normally creates ARCHITECT.md before you "
+            "run; create it only if it is still missing, and update it only for new "
+            "durable project knowledge or conflicts with existing project knowledge.",
             "Do NOT write PROGRESS.md.",
             "IMPORTANT EXECUTION LIFECYCLE: task agents, not the planner, must update "
             "tasks/PROGRESS.md when they complete work.",
@@ -580,12 +598,14 @@ def build_planning_instruction(request: PlanningRequest, context: str) -> str:
             "PROGRESS.md. Do NOT duplicate ARCHITECT.md project-level knowledge there.",
             "",
             "ABOUT ARCHITECT.md:",
-            "  ARCHITECT.md is durable project intelligence, not run history.",
+            "  ARCHITECT.md is durable project intelligence, not run history, goal memory, "
+            "or task memory.",
             "  Use it for repo knowledge, stack, architecture, contracts, constraints, "
             "decisions, lessons, and best practices only.",
             "  Do NOT append the current goal, task list, or planning history there; "
             "run history belongs in tasks/SUMMARY.md.",
-            "  When you update it, append durable rows/entries only — "
+            "  If it does not exist, create it. When you update it, append durable "
+            "rows/entries only — "
             "no extra --- dividers, no blank lines between rows.",
             "",
             "ABOUT tasks/ AND tasks/archive/:",
@@ -608,6 +628,8 @@ def build_planning_instruction(request: PlanningRequest, context: str) -> str:
             f"{next_prefix[0]}{next_num + 2:02d}, etc.",
             "Do NOT skip numbers. Do NOT continue numbering from previous plan history or "
             "archive entries.",
+            "Create exactly one task file per TXX prefix. Before finishing, verify no TXX "
+            "prefix appears on more than one task file.",
             "Do NOT read, write, or modify AGENTS.md or CLAUDE.md — "
             "those files belong to the user.",
         ]
@@ -802,6 +824,14 @@ def _write_progress_md(progress_file: Path, tasks: list[Task]) -> None:
     logger.info(f"Written PROGRESS.md with {len(tasks)} tasks, starting at {first_prefix}")
 
 
+def _format_duplicate_task_prefixes(tasks: list[Task]) -> str:
+    """Return a readable duplicate-prefix diagnostic for task lists."""
+    duplicates = duplicate_task_prefixes(tasks)
+    return "; ".join(
+        f"{prefix}: {', '.join(names)}" for prefix, names in sorted(duplicates.items())
+    )
+
+
 # ---------------------------------------------------------------------------
 # tasks/INSTRUCTIONS.md writer
 # ---------------------------------------------------------------------------
@@ -876,8 +906,9 @@ def _write_instructions_md(
         "- Each task must run the most relevant checks for its changed area.\n"
         "- Cross-task or integration changes must include broader validation once the "
         "dependent pieces exist.\n"
-        "- If verification discovers a project-level command or constraint missing from "
-        "ARCHITECT.md, update ARCHITECT.md before marking the task Done.\n\n"
+        "- If verification discovers new durable project-level knowledge, or a conflict "
+        "with existing project knowledge, update ARCHITECT.md before marking the task "
+        "Done.\n\n"
         "## Execution Contract\n"
         "- Read `ARCHITECT.md` for durable project intelligence before making changes.\n"
         "- Read `PROGRESS.md` at the start of every task to understand current state, "
@@ -887,8 +918,8 @@ def _write_instructions_md(
         "the current task explicitly requires a correction.\n"
         "- When a task changes architecture, contracts, or assumptions for later tasks, "
         "record that clearly in `PROGRESS.md` so follow-up planning can adjust.\n"
-        "- If you discover durable repo knowledge, add it to `ARCHITECT.md` before "
-        "marking the task Done.\n"
+        "- If you discover new durable project knowledge, or a conflict with existing "
+        "project knowledge, update `ARCHITECT.md` before marking the task Done.\n"
         "- Verify the task with the smallest correct set of checks before marking it done.\n\n"
         "## Reassessment Rules\n"
         "- Remaining tasks may be refined after each completed task when new facts "
@@ -1261,6 +1292,12 @@ async def run_planner(
 
         # Discover tasks — now guaranteed to be in the canonical tasks_dir.
         tasks_after = discover_tasks(tasks_dir)
+        duplicates = _format_duplicate_task_prefixes(tasks_after)
+        if duplicates:
+            raise PlanningFailedError(
+                "Planning created duplicate task prefixes. Task prefixes are the runtime "
+                f"identity and must be unique: {duplicates}"
+            )
         task_names = [s.name for s in tasks_after]
 
         if task_names:

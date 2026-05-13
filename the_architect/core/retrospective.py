@@ -21,6 +21,7 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from the_architect.config import ArchitectConfig
+from the_architect.core.baseline import detect_changes, read_baseline
 from the_architect.core.planner import _rescue_stray_tasks, _summarize_progress_historical
 from the_architect.core.progress import reconcile_progress_with_task_files, task_is_done
 from the_architect.core.provider_setup import (
@@ -29,7 +30,7 @@ from the_architect.core.provider_setup import (
     provider_uses_architect_config,
 )
 from the_architect.core.runner import StreamRenderer, stream_provider
-from the_architect.core.tasks import Task, discover_tasks
+from the_architect.core.tasks import Task, discover_tasks, duplicate_task_prefixes
 
 if TYPE_CHECKING:
     from the_architect.core.provider import ArchitectProvider
@@ -163,6 +164,87 @@ def _next_r_task_number(tasks_dir: Path) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Baseline evidence gathering
+# ---------------------------------------------------------------------------
+
+
+def _gather_baseline_evidence(project_dir: Path) -> str | None:
+    """Read workspace baselines and produce a review-context section.
+
+    Discovers JSON baseline files in ``.architect/baselines/``, runs
+    :func:`baseline.detect_changes` for each, and formats a per-task
+    summary of created/modified/deleted files.  Returns ``None`` when
+    the directory is missing or empty so that the caller can skip adding
+    a baseline section to the review context.
+
+    Errors during baseline reading or change detection are logged as
+    warnings and the offending file is silently skipped.
+
+    Args:
+        project_dir: The project root directory.
+
+    Returns:
+        A markdown-formatted string for the review context, or ``None``
+        when no baseline data is available.
+    """
+    baselines_dir = project_dir / ".architect" / "baselines"
+    if not baselines_dir.is_dir():
+        return None
+
+    json_files = sorted(baselines_dir.glob("*.json"))
+    if not json_files:
+        return None
+
+    lines: list[str] = []
+    for json_file in json_files:
+        try:
+            baseline = read_baseline(json_file)
+        except (OSError, ValueError) as exc:
+            logger.warning(f"Baseline: cannot read {json_file.name}: {exc!r}")
+            continue
+
+        try:
+            changes = detect_changes(baseline, project_dir)
+        except OSError as exc:
+            logger.warning(f"Baseline: cannot detect changes for {json_file.name}: {exc!r}")
+            continue
+
+        created = changes.get("created", [])
+        modified = changes.get("modified", [])
+        deleted = changes.get("deleted", [])
+        task_prefix = baseline.task_prefix or json_file.stem
+
+        lines.append(f"### {task_prefix} Baseline")
+        lines.append(
+            f"- **Created:** {len(created)} file(s)" if created else "- **Created:** 0 file(s)"
+        )
+        lines.append(
+            f"- **Modified:** {len(modified)} file(s)" if modified else "- **Modified:** 0 file(s)"
+        )
+        lines.append(
+            f"- **Deleted:** {len(deleted)} file(s)" if deleted else "- **Deleted:** 0 file(s)"
+        )
+        if created:
+            lines.append("- Created files:")
+            for p in created:
+                lines.append(f"  - {p}")
+        if modified:
+            lines.append("- Modified files:")
+            for p in modified:
+                lines.append(f"  - {p}")
+        if deleted:
+            lines.append("- Deleted files:")
+            for p in deleted:
+                lines.append(f"  - {p}")
+        lines.append("")
+
+    if not lines:
+        return None
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Context gathering for reviewer
 # ---------------------------------------------------------------------------
 
@@ -282,6 +364,11 @@ def _gather_review_context(project_dir: Path, original_goal: str) -> str:
             )
         add_part("## Leftover Eval Snapshot Files", "\n".join(eval_lines))
 
+    # Baseline evidence — per-task file change summaries
+    baseline_evidence = _gather_baseline_evidence(project_dir)
+    if baseline_evidence:
+        add_part("## Task Baseline Evidence", baseline_evidence)
+
     return "\n\n".join(parts)
 
 
@@ -368,11 +455,13 @@ def build_retrospective_instruction(request: RetrospectiveRequest, context: str)
             "",
             "CRITICAL — WHERE TO WRITE TASK FILES:",
             f"  Task files MUST go in: {abs_tasks_dir}/",
-            "  Use the R prefix for all fix-up tasks — never T or S.",
+            "  Use only the R prefix for all fix-up task files.",
             f"  First fix-up task: {abs_tasks_dir}/{next_prefix}_<descriptive_name>.md",
             f"  Number subsequent tasks R{next_num + 1:02d}, R{next_num + 2:02d}, etc.",
             "  Do NOT skip numbers. Do NOT reuse numbers from existing task files.",
-            "  Do NOT modify existing T or S task files.",
+            "  Create exactly one fix-up task file per RXX prefix. Before finishing, "
+            "verify no RXX prefix appears on more than one task file.",
+            "  Do NOT modify existing non-R task files.",
             "  Do NOT write PROGRESS.md or INSTRUCTIONS.md — The Architect handles those.",
             "",
             "IMPORTANT: Do NOT write any task files if your review finds no issues.",
@@ -573,8 +662,23 @@ async def run_retrospective(
 
     # Discover tasks — find new R-prefixed ones
     tasks_after = discover_tasks(tasks_dir)
+    duplicates = duplicate_task_prefixes(tasks_after)
+    if duplicates:
+        details = "; ".join(
+            f"{prefix}: {', '.join(names)}" for prefix, names in sorted(duplicates.items())
+        )
+        raise RetrospectiveFailedError(
+            "Retrospective created duplicate task prefixes. Task prefixes are the runtime "
+            f"identity and must be unique: {details}"
+        )
     new_task_names = [t.name for t in tasks_after if t.name not in tasks_before]
     new_r_tasks = [t for t in tasks_after if t.name in new_task_names]
+    invalid_new_tasks = [t.name for t in new_r_tasks if not t.prefix.startswith("R")]
+    if invalid_new_tasks:
+        raise RetrospectiveFailedError(
+            "Retrospective created non-R task files. Reviewers may create only "
+            f"R-prefixed fix-up tasks: {', '.join(sorted(invalid_new_tasks))}"
+        )
 
     # Update PROGRESS.md with any new R-prefixed tasks
     if new_r_tasks:

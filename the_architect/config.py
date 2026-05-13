@@ -149,6 +149,17 @@ class ArchitectConfig(BaseModel):
         ),
     )
 
+    workspace_baseline: bool = Field(
+        default=True,
+        description=(
+            "When True, The Architect captures a workspace baseline before each "
+            "task execution — recording SHA-256 checksums of key project files. "
+            "After the task completes, it detects which files were created, "
+            "modified, or deleted. This provides concrete evidence for "
+            "retrospective review. Set to False to disable baseline capture."
+        ),
+    )
+
     force_reassessment: bool = Field(
         default=True,
         description=(
@@ -290,6 +301,7 @@ class ArchitectConfig(BaseModel):
             circuit_enable_replan=self.circuit_enable_replan,
             cooldown_detection=self.cooldown_detection,
             token_budget_per_hour=self.token_budget_per_hour,
+            workspace_baseline=self.workspace_baseline,
         )
 
 

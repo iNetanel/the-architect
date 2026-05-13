@@ -18,6 +18,22 @@ empty [Unreleased] above it. Use Keep a Changelog section headings:
 Added / Changed / Deprecated / Removed / Fixed / Security.
 -->
 
+## [1.2.7] (build 10389) — 2026-05-13
+
+### Added
+
+- **Smarter project understanding before planning.** The Architect now builds a structured `.architect/intelligence.json` cache from deterministic repository signals and injects it into planning alongside `ARCHITECT.md`, giving planners better context about project type, components, commands, relationships, and known gaps before task files are written (build 10388).
+- **Workspace change evidence for every task.** The Architect can now capture a workspace baseline before execution and compare it afterward, giving each task concrete created/modified/deleted file evidence instead of relying only on provider summaries (builds 10378, 10385).
+- **Evidence-backed retrospective review.** Retrospectives now include task baseline evidence so reviewers can see exactly what changed during execution and create more targeted fix-up tasks when work is incomplete, risky, or unexpectedly broad (build 10386).
+- **Machine-readable status output.** `architect status --json` now returns a deterministic JSON snapshot of project state, including lock state, task statuses, summary counts, circuit breakers, token budget, and log files for dashboards, scripts, and automation (build 10387).
+
+### Fixed
+
+- **Cleaner long-term memory.** Planning, execution, learning, and review prompts now consistently keep `ARCHITECT.md` limited to durable project knowledge instead of goal-specific task notes, run history, or temporary implementation details (builds 10376-10382).
+- **Safer retrospective task creation.** Retrospective reviewers are now constrained to R-prefixed fix-up task files, and The Architect refuses unsafe or malformed retrospective output before it can pollute the task queue (builds 10374-10375).
+- **Duplicate task protection.** Plans and retrospectives with duplicate task prefixes are now rejected so the TUI, `PROGRESS.md`, and execution engine always agree on which task is running or complete (builds 10372-10373).
+- **More reliable recovery prompts.** Executor guidance for R-prefixed recovery tasks now uses the correct task identity and keeps memory updates durable, reducing confusion during follow-up fix rounds (build 10377).
+
 ## [1.2.6] (build 10370) — 2026-05-13
 
 ### Added

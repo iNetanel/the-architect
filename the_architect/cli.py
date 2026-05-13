@@ -8,6 +8,7 @@ Results are written to tasks/SUMMARY.md and printed as a terminal summary.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import shlex
@@ -68,7 +69,14 @@ from the_architect.core.runner import (
     setup_logging,
 )
 from the_architect.core.success import RetrospectiveRound, print_success_summary, write_success_md
-from the_architect.core.tasks import Task, TaskPlan, TaskScope, TaskStatus, discover_tasks
+from the_architect.core.tasks import (
+    Task,
+    TaskPlan,
+    TaskScope,
+    TaskStatus,
+    discover_tasks,
+    duplicate_task_prefixes,
+)
 from the_architect.core.tmux import PaddedConsole
 from the_architect.tui.screens.pre_run import BACK_SENTINEL
 
@@ -2232,6 +2240,11 @@ def run_planning_mode(
         read_architect_md,
         write_or_update_architect_md,
     )
+    from the_architect.core.project_intelligence import (
+        format_project_intelligence_for_prompt,
+        read_project_intelligence,
+        write_project_intelligence,
+    )
     from the_architect.core.structure import detect_structure, format_structure_for_prompt
 
     # The Textual splash / planning wait screen is the loading indicator.
@@ -2240,6 +2253,10 @@ def run_planning_mode(
 
     # Write/update the structure section in ARCHITECT.md
     write_or_update_architect_md(project, structure_report)
+    try:
+        write_project_intelligence(project, structure_report)
+    except Exception as exc:
+        logger.warning(f"Structured project intelligence write failed; continuing: {exc!r}")
 
     ensure_provider_setup(provider, project, config)
 
@@ -2288,6 +2305,9 @@ def run_planning_mode(
 
     # Read full ARCHITECT.md content for prompt injection after all memory refreshes.
     architect_md_content = read_architect_md(project) or ""
+    structured_intelligence_content = format_project_intelligence_for_prompt(
+        read_project_intelligence(project)
+    )
 
     request = PlanningRequest(
         goal=goal,
@@ -2297,6 +2317,7 @@ def run_planning_mode(
         context_content=context_content,
         structure_report=structure_prompt,
         architect_md_content=architect_md_content,
+        structured_intelligence_content=structured_intelligence_content,
     )
 
     try:
@@ -2682,6 +2703,19 @@ async def _run_tasks_raw(
     Returns:
         Tuple of (all_succeeded, results, total_duration).
     """
+    duplicates = duplicate_task_prefixes(tasks)
+    if duplicates:
+        details = "; ".join(
+            f"{prefix}: {', '.join(names)}" for prefix, names in sorted(duplicates.items())
+        )
+        console.print(
+            "[red]Duplicate task prefixes found; refusing to start execution.[/red]\n"
+            f"[dim]{details}[/dim]\n"
+            "[dim]Task prefixes are the runtime identity used by PROGRESS.md and the TUI, "
+            "so each prefix must appear once.[/dim]"
+        )
+        return False, [], 0.0
+
     plan = TaskPlan(tasks=tasks)
     results: list[TaskResult] = []
     run_start = time.time()
@@ -5427,6 +5461,115 @@ def cancel(project: Path | None) -> None:
         raise SystemExit(1)
 
 
+def _format_status_json(project: Path, config: ArchitectConfig) -> str:
+    """Gather status data and return deterministic JSON string.
+
+    Mirrors the same data displayed by the Rich ``status`` output:
+    lock state, task list, circuit breakers, token budget, and log files.
+    Handles missing files gracefully — no exceptions for absent directories.
+    """
+    result: dict[str, Any] = {
+        "project": str(project),
+        "running": False,
+        "pid": None,
+        "tasks": [],
+        "task_summary": {"total": 0, "done": 0, "failed": 0, "pending": 0, "blocked": 0},
+        "circuit_breakers": [],
+        "token_budget": None,
+        "log_dir": None,
+        "log_files": None,
+    }
+
+    # ── Lock file ────────────────────────────────────────────────────────
+    lock_path = project / ".architect" / "runner.lock"
+    if lock_path.exists():
+        try:
+            pid = int(lock_path.read_text(encoding="utf-8").strip())
+            try:
+                os.kill(pid, 0)
+                result["running"] = True
+                result["pid"] = pid
+            except (ProcessLookupError, PermissionError, OSError):
+                # Stale lock — process is gone.
+                result["running"] = False
+                result["pid"] = pid
+        except (OSError, ValueError):
+            pass
+
+    # ── Tasks ────────────────────────────────────────────────────────────
+    tasks_dir = project / config.tasks_dir.name
+    progress_file = config.progress_file
+
+    if tasks_dir.exists():
+        tasks = discover_tasks(tasks_dir)
+        summary = {"total": 0, "done": 0, "failed": 0, "pending": 0, "blocked": 0}
+        task_list = []
+        for task in tasks:
+            status = task_status(progress_file, task.prefix)
+            task_list.append(
+                {"prefix": task.prefix, "title": task.title or task.name, "status": status}
+            )
+            summary["total"] += 1
+            if status == "Done":
+                summary["done"] += 1
+            elif status == "Failed":
+                summary["failed"] += 1
+            elif status == "Blocked":
+                summary["blocked"] += 1
+            else:
+                summary["pending"] += 1
+        result["tasks"] = task_list
+        result["task_summary"] = summary
+
+    # ── Circuit breaker ──────────────────────────────────────────────────
+    circuit_file = project / ".architect" / "circuit.json"
+    if circuit_file.exists():
+        try:
+            circuit_data = json.loads(circuit_file.read_text(encoding="utf-8"))
+            circuit_list = []
+            for tid, s in circuit_data.items():
+                if s.get("state") in ("OPEN", "HALF_OPEN"):
+                    circuit_list.append(
+                        {
+                            "task": tid,
+                            "state": s.get("state", "?"),
+                            "no_progress": s.get("consecutive_no_progress", 0),
+                            "same_error": s.get("consecutive_same_error", 0),
+                        }
+                    )
+            result["circuit_breakers"] = circuit_list
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    # ── Token budget ─────────────────────────────────────────────────────
+    if config.token_budget_per_hour > 0:
+        result["token_budget"] = {
+            "limit": config.token_budget_per_hour,
+            "description": "tracked per run",
+        }
+
+    # ── Logs ─────────────────────────────────────────────────────────────
+    log_dir = config.log_dir
+    if log_dir.exists():
+        result["log_dir"] = str(log_dir)
+        try:
+            log_files = sorted(
+                log_dir.glob("*.log"),
+                key=lambda f: f.stat().st_mtime,
+                reverse=True,
+            )
+            if log_files:
+                file_list = []
+                for lf in log_files[:5]:
+                    size_kb = lf.stat().st_size // 1024
+                    file_list.append({"name": lf.name, "size_kb": size_kb})
+                result["log_files"] = file_list
+        except OSError:
+            pass
+
+    return json.dumps(result, indent=2, sort_keys=True)
+
+
 @main.command(name="status")
 @click.option(
     "--project",
@@ -5440,7 +5583,13 @@ def cancel(project: Path | None) -> None:
     is_flag=True,
     help="Render status in the Textual TUI",
 )
-def status_cmd(project: Path | None, use_tui: bool) -> None:
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Output status as machine-readable JSON",
+)
+def status_cmd(project: Path | None, use_tui: bool, as_json: bool) -> None:
     """Show current run state, circuit breaker, and token budget.
 
     Displays:
@@ -5451,9 +5600,14 @@ def status_cmd(project: Path | None, use_tui: bool) -> None:
     - Log directory location
     """
     _setup_loguru()
-    import json as _json
 
     proj = (project or Path.cwd()).resolve()
+
+    # ── JSON output path ─────────────────────────────────────────────────
+    if as_json:
+        config = load_config(proj)
+        click.echo(_format_status_json(proj, config))
+        return
 
     if use_tui or _tui_mode_enabled():
         try:
@@ -5539,7 +5693,7 @@ def status_cmd(project: Path | None, use_tui: bool) -> None:
     circuit_file = proj / ".architect" / "circuit.json"
     if circuit_file.exists():
         try:
-            circuit_data = _json.loads(circuit_file.read_text(encoding="utf-8"))
+            circuit_data = json.loads(circuit_file.read_text(encoding="utf-8"))
             open_tasks = [
                 (tid, s)
                 for tid, s in circuit_data.items()
@@ -5556,7 +5710,7 @@ def status_cmd(project: Path | None, use_tui: bool) -> None:
                         f"[dim]no_progress={no_prog}  same_error={same_err}[/dim]"
                     )
                 console.print()
-        except (OSError, _json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError):
             pass
 
     # ── Token budget ─────────────────────────────────────────────────────

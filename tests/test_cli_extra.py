@@ -5,6 +5,7 @@ pre-existing suite did not exercise:
 
     - ``status`` command against realistic fixtures (running / stale lock /
       circuit data / token budget / logs present).
+    - ``status --json`` command — JSON output structure and edge cases.
     - ``config`` command with invalid KEY=VALUE input, boolean and int
       coercion paths.
     - ``init`` command with existing files (skip branch) and ``--force``.
@@ -17,6 +18,7 @@ pre-existing suite did not exercise:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -261,6 +263,261 @@ class TestStatusCmd:
         assert result.exit_code == 0, result.output
         assert "Logs" in result.output
         assert "T01.log" in result.output
+
+
+class TestStatusJsonCmd:
+    """Cover the ``status --json`` machine-readable output path."""
+
+    def test_status_json_basic_structure(self, tmp_path: Path) -> None:
+        """JSON output contains all required top-level keys."""
+        result = CliRunner().invoke(main, ["status", "-p", str(tmp_path), "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        expected_keys = {
+            "project",
+            "running",
+            "pid",
+            "tasks",
+            "task_summary",
+            "circuit_breakers",
+            "token_budget",
+            "log_dir",
+            "log_files",
+        }
+        assert set(data.keys()) == expected_keys
+
+    def test_status_json_not_running(self, tmp_path: Path) -> None:
+        """No lock file means running=False, pid=null."""
+        result = CliRunner().invoke(main, ["status", "-p", str(tmp_path), "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["running"] is False
+        assert data["pid"] is None
+
+    def test_status_json_stale_lock(self, tmp_path: Path) -> None:
+        """Stale lock (non-existent PID) reports running=False with pid."""
+        arch_dir = tmp_path / ".architect"
+        arch_dir.mkdir()
+        (arch_dir / "runner.lock").write_text("999999999", encoding="utf-8")
+
+        result = CliRunner().invoke(main, ["status", "-p", str(tmp_path), "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["running"] is False
+        assert data["pid"] == 999999999
+
+    def test_status_json_tasks_and_summary(self, tmp_path: Path) -> None:
+        """Task list and summary are correctly populated."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01_first.md").write_text("# T01 First\n", encoding="utf-8")
+        (tasks_dir / "T02_second.md").write_text("# T02 Second\n", encoding="utf-8")
+        (tasks_dir / "PROGRESS.md").write_text(
+            "# The Architect — Progress Tracker\n\n"
+            "| Task | Title | Status | Completed |\n"
+            "|------|-------|--------|-----------|\n"
+            "| T01  | First  | Done    | 2024-01-01 |\n"
+            "| T02  | Second | Pending | — |\n",
+            encoding="utf-8",
+        )
+
+        result = CliRunner().invoke(main, ["status", "-p", str(tmp_path), "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert len(data["tasks"]) == 2
+        assert data["task_summary"]["total"] == 2
+        assert data["task_summary"]["done"] == 1
+        assert data["task_summary"]["pending"] == 1
+        # Verify task entries
+        prefixes = {t["prefix"] for t in data["tasks"]}
+        assert prefixes == {"T01", "T02"}
+
+    def test_status_json_circuit_breakers(self, tmp_path: Path) -> None:
+        """Circuit breakers in OPEN/HALF_OPEN state appear in JSON."""
+        arch_dir = tmp_path / ".architect"
+        arch_dir.mkdir()
+        (arch_dir / "circuit.json").write_text(
+            '{"T01": {"state": "OPEN", "consecutive_no_progress": 3, '
+            '"consecutive_same_error": 1}, '
+            '"T02": {"state": "CLOSED", "consecutive_no_progress": 0, '
+            '"consecutive_same_error": 0}}',
+            encoding="utf-8",
+        )
+
+        result = CliRunner().invoke(main, ["status", "-p", str(tmp_path), "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert len(data["circuit_breakers"]) == 1
+        cb = data["circuit_breakers"][0]
+        assert cb["task"] == "T01"
+        assert cb["state"] == "OPEN"
+        assert cb["no_progress"] == 3
+        assert cb["same_error"] == 1
+
+    def test_status_json_token_budget(self, tmp_path: Path) -> None:
+        """Token budget appears when configured, null when not."""
+        result = CliRunner().invoke(main, ["status", "-p", str(tmp_path), "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["token_budget"] is None
+
+        (tmp_path / "architect.toml").write_text(
+            "[architect]\ntoken_budget_per_hour = 500000\n",
+            encoding="utf-8",
+        )
+        result = CliRunner().invoke(main, ["status", "-p", str(tmp_path), "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["token_budget"] is not None
+        assert data["token_budget"]["limit"] == 500000
+        assert "tracked per run" in data["token_budget"]["description"]
+
+    def test_status_json_log_files(self, tmp_path: Path) -> None:
+        """Log files appear when log dir exists, null when it does not."""
+        result = CliRunner().invoke(main, ["status", "-p", str(tmp_path), "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["log_files"] is None
+
+        log_dir = tmp_path / ".architect" / "logs"
+        log_dir.mkdir(parents=True)
+        (log_dir / "T01.log").write_text("x" * 2048, encoding="utf-8")
+        (log_dir / "T02.log").write_text("y" * 1024, encoding="utf-8")
+
+        result = CliRunner().invoke(main, ["status", "-p", str(tmp_path), "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["log_dir"] is not None
+        assert len(data["log_files"]) == 2
+        names = {f["name"] for f in data["log_files"]}
+        assert names == {"T01.log", "T02.log"}
+
+    def test_status_json_no_rich_markup(self, tmp_path: Path) -> None:
+        """JSON output contains no Rich escape sequences."""
+        result = CliRunner().invoke(main, ["status", "-p", str(tmp_path), "--json"])
+        assert result.exit_code == 0, result.output
+        # Should not contain Rich markup brackets
+        assert "[" not in result.output.strip().split("\n")[0] or result.output.strip().startswith(
+            "{"
+        )
+        # Should be valid JSON (no Rich ANSI codes)
+        assert "\x1b" not in result.output
+
+    def test_status_json_deterministic(self, tmp_path: Path) -> None:
+        """JSON output is deterministic — keys are sorted."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01_test.md").write_text("# T01\n", encoding="utf-8")
+
+        result = CliRunner().invoke(main, ["status", "-p", str(tmp_path), "--json"])
+        assert result.exit_code == 0, result.output
+        # Parse and re-dump with sort_keys to compare
+        data = json.loads(result.output)
+        expected = json.dumps(data, indent=2, sort_keys=True)
+        assert result.output.strip() == expected
+
+    def test_status_json_with_project_flag(self, tmp_path: Path) -> None:
+        """JSON output respects --project flag."""
+        result = CliRunner().invoke(main, ["status", "-p", str(tmp_path), "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["project"] == str(tmp_path.resolve())
+
+
+class TestFormatStatusJson:
+    """Direct unit tests for _format_status_json helper."""
+
+    def test_format_json_empty_project(self, tmp_path: Path) -> None:
+        """Formatter handles project with no tasks, no circuit, no logs."""
+        from the_architect.cli import _format_status_json
+        from the_architect.config import load_config
+
+        config = load_config(tmp_path)
+        output = _format_status_json(tmp_path, config)
+        data = json.loads(output)
+
+        assert data["running"] is False
+        assert data["pid"] is None
+        assert data["tasks"] == []
+        assert data["task_summary"] == {
+            "total": 0,
+            "done": 0,
+            "failed": 0,
+            "pending": 0,
+            "blocked": 0,
+        }
+        assert data["circuit_breakers"] == []
+        assert data["token_budget"] is None
+        assert data["log_dir"] is None  # log_dir doesn't exist in empty project
+        assert data["log_files"] is None
+
+    def test_format_json_missing_circuit_file(self, tmp_path: Path) -> None:
+        """No exception when circuit.json is missing."""
+        from the_architect.cli import _format_status_json
+        from the_architect.config import load_config
+
+        config = load_config(tmp_path)
+        # .architect exists but no circuit.json
+        (tmp_path / ".architect").mkdir()
+        output = _format_status_json(tmp_path, config)
+        data = json.loads(output)
+        assert data["circuit_breakers"] == []
+
+    def test_format_json_corrupted_circuit_file(self, tmp_path: Path) -> None:
+        """Corrupted circuit.json does not crash the formatter."""
+        from the_architect.cli import _format_status_json
+        from the_architect.config import load_config
+
+        config = load_config(tmp_path)
+        (tmp_path / ".architect").mkdir()
+        (tmp_path / ".architect" / "circuit.json").write_text("{bad json", encoding="utf-8")
+        output = _format_status_json(tmp_path, config)
+        data = json.loads(output)
+        assert data["circuit_breakers"] == []
+
+    def test_format_json_all_statuses(self, tmp_path: Path) -> None:
+        """Task summary counts all status types correctly."""
+        from the_architect.cli import _format_status_json
+        from the_architect.config import load_config
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        for name in ("T01", "T02", "T03", "T04", "T05"):
+            (tasks_dir / f"{name}_task.md").write_text(f"# {name}\n", encoding="utf-8")
+        (tasks_dir / "PROGRESS.md").write_text(
+            "# The Architect — Progress Tracker\n\n"
+            "| Task | Title | Status | Completed |\n"
+            "|------|-------|--------|-----------|\n"
+            "| T01  | Task  | Done    | 2024-01-01 |\n"
+            "| T02  | Task  | Failed  | — |\n"
+            "| T03  | Task  | Blocked | — |\n"
+            "| T04  | Task  | Pending | — |\n"
+            "| T05  | Task  | Pending | — |\n",
+            encoding="utf-8",
+        )
+
+        config = load_config(tmp_path)
+        output = _format_status_json(tmp_path, config)
+        data = json.loads(output)
+        assert data["task_summary"]["total"] == 5
+        assert data["task_summary"]["done"] == 1
+        assert data["task_summary"]["failed"] == 1
+        assert data["task_summary"]["blocked"] == 1
+        assert data["task_summary"]["pending"] == 2
+
+    def test_format_json_invalid_lock_pid(self, tmp_path: Path) -> None:
+        """Non-numeric lock PID does not crash the formatter."""
+        from the_architect.cli import _format_status_json
+        from the_architect.config import load_config
+
+        config = load_config(tmp_path)
+        arch_dir = tmp_path / ".architect"
+        arch_dir.mkdir()
+        (arch_dir / "runner.lock").write_text("not-a-pid", encoding="utf-8")
+        output = _format_status_json(tmp_path, config)
+        data = json.loads(output)
+        assert data["running"] is False
+        assert data["pid"] is None
 
 
 # ---------------------------------------------------------------------------

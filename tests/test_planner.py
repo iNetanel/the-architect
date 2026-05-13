@@ -201,6 +201,23 @@ class TestBuildPlanningInstructionEdgeCases:
         assert "No explicit goal was provided" in instruction
         assert "Derive the goal from the context files" in instruction
 
+    def test_build_instruction_injects_structured_intelligence(self, tmp_path: Path) -> None:
+        """Structured project intelligence should be injected before generic context."""
+        request = PlanningRequest(
+            goal="Add a feature",
+            scope=TaskScope.STANDARD,
+            project_dir=tmp_path,
+            structured_intelligence_content="Project: demo\nType: CLI tool",
+        )
+
+        instruction = build_planning_instruction(request, "project context")
+
+        assert "=== STRUCTURED PROJECT INTELLIGENCE ===" in instruction
+        assert "Project: demo" in instruction
+        assert instruction.index("STRUCTURED PROJECT INTELLIGENCE") < instruction.index(
+            "PROJECT CONTEXT"
+        )
+
 
 class TestRescueStrayTasksEdgeCases:
     """Edge-case tests for _rescue_stray_tasks()."""
@@ -418,6 +435,35 @@ class TestRunPlannerEdgeCases:
 
         assert result.agents_md_read is True
         assert "T01_test" in result.tasks_created
+
+    @pytest.mark.asyncio
+    async def test_run_planner_rejects_duplicate_task_prefixes(self, tmp_path: Path) -> None:
+        """Planning must not proceed when two task files share one runtime prefix."""
+        from unittest.mock import MagicMock
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        config = ArchitectConfig().resolve(tmp_path)
+
+        provider = MagicMock()
+        provider.name = "opencode"
+        provider.display_name = "OpenCode"
+        provider.supports_agents.return_value = True
+
+        request = PlanningRequest(
+            goal="Test goal",
+            scope=TaskScope.STANDARD,
+            project_dir=tmp_path,
+        )
+
+        async def fake_stream(**kwargs: object) -> StreamResult:  # type: ignore[misc]
+            (tasks_dir / "T01_first.md").write_text("# T01 first", encoding="utf-8")
+            (tasks_dir / "T01_second.md").write_text("# T01 second", encoding="utf-8")
+            return StreamResult(exit_code=0, tokens=TokenUsage(), accumulated_text="")
+
+        with patch("the_architect.core.planner.stream_provider", side_effect=fake_stream):
+            with pytest.raises(PlanningFailedError, match="duplicate task prefixes"):
+                await run_planner(request, config, provider=provider)
 
     @pytest.mark.asyncio
     async def test_run_planner_cooldown_via_cooldown_until(self, tmp_path: Path) -> None:

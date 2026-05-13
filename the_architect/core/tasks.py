@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
 
@@ -221,3 +222,22 @@ def discover_tasks(tasks_dir: Path | str) -> list[Task]:
     _PREFIX_ORDER = {"T": 0, "R": 1}
     tasks.sort(key=lambda t: (t.number, _PREFIX_ORDER.get(t.prefix[0], 2)))
     return tasks
+
+
+def duplicate_task_prefixes(tasks: Sequence[Task]) -> dict[str, list[str]]:
+    """Return task prefixes that are used by more than one task file.
+
+    Task prefixes are the runtime identity used by ``PROGRESS.md`` and the
+    execution UI. Duplicate prefixes are ambiguous because two distinct files
+    would share one progress row and one live status.
+
+    Args:
+        tasks: Discovered tasks to inspect.
+
+    Returns:
+        Mapping of duplicate prefix to task names using that prefix.
+    """
+    names_by_prefix: dict[str, list[str]] = {}
+    for task in tasks:
+        names_by_prefix.setdefault(task.prefix, []).append(task.name)
+    return {prefix: names for prefix, names in names_by_prefix.items() if len(names) > 1}

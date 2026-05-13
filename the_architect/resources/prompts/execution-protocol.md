@@ -20,7 +20,7 @@ override your agent's delegation or orchestration instructions.
 6. Follow the task's Exploration Plan before editing — inspect the smallest relevant code slice first
 7. Complete every item in the task file — work autonomously without asking the human for confirmation
 8. Rewrite `tasks/PROGRESS.md` when done — this is how The Architect knows you finished
-9. Output `<promise>TXX_COMPLETE</promise>` when done — this is the primary completion signal
+9. Output the exact completion promise for your task prefix when done (for example, `<promise>T01_COMPLETE</promise>` or `<promise>R01_COMPLETE</promise>`) — this is the primary completion signal
 
 ---
 
@@ -90,7 +90,7 @@ your task is done. It checks four independent signals and applies these rules:
 
 | Signal | How it fires |
 |--------|-------------|
-| **Promise tag** | Your output contains `<promise>TXX_COMPLETE</promise>` |
+| **Promise tag** | Your output contains the exact `<promise>PREFIX_COMPLETE</promise>` tag for your task prefix |
 | **PROGRESS.md** | PROGRESS.md shows `Done` for your task prefix |
 | **Clean exit** | The AI CLI subprocess exited with code 0 |
 | **Progress phrase** | Your output contains phrases like "all tests pass" or "task complete" |
@@ -117,7 +117,7 @@ your task is done. It checks four independent signals and applies these rules:
 When you have completed ALL items in the task file:
 
 1. Update PROGRESS.md (mark task Done, set next task)
-2. Output the completion promise: `<promise>TXX_COMPLETE</promise>`
+2. Output the exact completion promise for your task prefix, e.g. `<promise>T01_COMPLETE</promise>` or `<promise>R01_COMPLETE</promise>`
 
 ONLY output the promise tag when ALL of these are true:
 
@@ -146,7 +146,7 @@ Do not edit in place — rewrite it completely. Keep this exact structure:
 ## Overall Status
 
 **Tasks completed:** N
-**Next task to run:** TXX
+**Next task to run:** TXX or RXX
 
 ---
 
@@ -214,10 +214,10 @@ What you did, what changed, what decisions you made.
 
 ## Task file format
 
-Your task file is in `tasks/TXX_name.md`. It follows this structure:
+Your task file is in `tasks/TXX_name.md` or `tasks/RXX_name.md`. It follows this structure:
 
 ```markdown
-# TXX — Task Title
+# TXX/RXX — Task Title
 
 ## Goal
 One sentence describing what this task accomplishes.
@@ -231,10 +231,10 @@ starting point for discovery, not as permission to wander through the whole repo
 
 ## Tasks
 
-### TXX.1 — Sub-task title
+### TXX.1 or RXX.1 — Sub-task title
 [Outcome to achieve; discover and follow existing implementation patterns]
 
-### TXX.2 — Sub-task title
+### TXX.2 or RXX.2 — Sub-task title
 [Outcome to achieve; discover and follow existing implementation patterns]
 ```
 
@@ -328,19 +328,23 @@ exhausts retries) will take it from there. Do NOT write `Failed` or
 
 ## Updating ARCHITECT.md — Persistent Project Intelligence
 
-ARCHITECT.md is The Architect's durable project brain. It should contain stable
-project intelligence that future unrelated tasks need: repo responsibilities,
-tech stack, architecture, key flows, shared contracts, code locations,
-verification commands, style standards, agent conventions, data/storage,
-environment rules, operational constraints, permanent decisions, lessons, and
-best practices.
+ARCHITECT.md is The Architect's durable project brain. It is long-term project
+knowledge, not task, goal, or run memory. It should contain stable project
+intelligence that future unrelated tasks need: repo responsibilities, tech stack,
+architecture, key flows, shared contracts, code locations, verification commands,
+style standards, agent conventions, data/storage, environment rules, operational
+constraints, permanent decisions, lessons, and best practices.
 
-It is not run history. Task/package history belongs in PROGRESS.md while running
-and tasks/SUMMARY.md when the package completes.
+It is not run history. Current goal and task state belongs in
+tasks/INSTRUCTIONS.md and tasks/PROGRESS.md while running. Package history
+belongs in tasks/SUMMARY.md when the package completes.
 
 ### When to update ARCHITECT.md
 
-Update ARCHITECT.md **after** completing your task, **before** marking it Done:
+Update ARCHITECT.md **only if** completing your task discovers new durable
+project-level knowledge, or a conflict with existing project knowledge, that
+future unrelated planning and execution sessions should know. If nothing durable
+was discovered, do not edit ARCHITECT.md.
 
 - **Project intelligence** — If you discovered a durable repo/component role,
   important code location, key flow, shared contract, verification command,
@@ -354,9 +358,9 @@ Update ARCHITECT.md **after** completing your task, **before** marking it Done:
   "tests must be run from backend/ not root", "the config parser doesn't handle
   empty strings"), add it to the Known Constraints section.
 
-- **Lessons Learned** — If something went wrong and you had to fix it, record
-  the lesson (e.g. "T03: pydantic v2 uses model_validate not parse_obj"). This
-  prevents future tasks from repeating the same mistake.
+- **Lessons Learned** — If something went wrong because of a durable project
+  rule or constraint, record the project-level lesson. Do not record a lesson
+  just because the current task had a temporary issue.
 
 - **Best Practices** — If a pattern emerged that should be followed going forward
   (e.g. "always add type hints to public functions", "use loguru not print"),
@@ -387,6 +391,6 @@ Update ARCHITECT.md **after** completing your task, **before** marking it Done:
 - Never ask the human for confirmation — proceed autonomously
 - Tests must pass before marking a task Done — run them, do not assume
 - Rewrite PROGRESS.md completely when done — do not skip this step
-- Output `<promise>TXX_COMPLETE</promise>` when all items are complete — this is the primary completion signal
+- Output the exact `<promise>PREFIX_COMPLETE</promise>` tag for your task prefix when all items are complete — this is the primary completion signal
 - If a task is partially done but blocked, set status to `Pending` and explain in Current State — do NOT output the promise tag
 - Stay inside the project directory — never read, write, or modify files outside the project root

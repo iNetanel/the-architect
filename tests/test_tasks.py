@@ -11,6 +11,7 @@ from the_architect.core.tasks import (
     TaskStatus,
     _extract_title,
     discover_tasks,
+    duplicate_task_prefixes,
     task_number,
     task_prefix,
 )
@@ -140,6 +141,18 @@ class TestDiscoverTasks:
             tasks = discover_tasks(tasks_dir)
 
             assert [task.name for task in tasks] == ["T01_first"]
+
+    def test_duplicate_task_prefixes_reports_ambiguous_files(self) -> None:
+        """Duplicate prefixes must be easy to detect before execution."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tasks_dir = Path(tmpdir)
+            (tasks_dir / "T01_first.md").touch()
+            (tasks_dir / "T01_second.md").touch()
+            (tasks_dir / "T02_third.md").touch()
+
+            duplicates = duplicate_task_prefixes(discover_tasks(tasks_dir))
+
+            assert duplicates == {"T01": ["T01_first", "T01_second"]}
 
 
 class TestTaskPlan:
