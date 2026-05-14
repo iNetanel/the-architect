@@ -68,7 +68,7 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Run tests
-        run: pytest tests/ -v --tb=short
+        run: pytest tests/ -v --tb=long
 
   build:
     name: Build sdist and wheel
