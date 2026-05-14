@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from the_architect.core.fileutil import atomic_write_text
+
 if TYPE_CHECKING:
     pass
 
@@ -149,7 +151,7 @@ def capture_baseline(project_dir: Path, task_prefix: str = "") -> WorkspaceBasel
                 result = _hash_file(filepath)
                 if result is None:
                     continue
-                rel = str(filepath.relative_to(project_dir))
+                rel = filepath.relative_to(project_dir).as_posix()
                 files[rel] = FileRecord(path=rel, sha256=result[0], size=result[1])
     except OSError as exc:
         logger.warning(f"Baseline: cannot walk tasks/ directory {tasks_dir}: {exc!r}")
@@ -173,7 +175,7 @@ def capture_baseline(project_dir: Path, task_prefix: str = "") -> WorkspaceBasel
                 result = _hash_file(filepath)
                 if result is None:
                     continue
-                rel = str(filepath.relative_to(project_dir))
+                rel = filepath.relative_to(project_dir).as_posix()
                 files[rel] = FileRecord(path=rel, sha256=result[0], size=result[1])
     except OSError as exc:
         logger.warning(f"Baseline: cannot walk project root {project_dir}: {exc!r}")
@@ -213,20 +215,21 @@ def detect_changes(baseline: WorkspaceBaseline, project_dir: Path) -> dict[str, 
 
 
 def write_baseline(baseline: WorkspaceBaseline, path: Path) -> None:
-    """Serialize a baseline to a JSON file.
+    """Serialize a baseline to a JSON file atomically.
 
     Creates parent directories as needed.  Uses Pydantic's
-    ``model_dump_json`` for clean datetime serialization.  Errors
-    are logged as warnings and do not propagate.
+    ``model_dump_json`` for clean datetime serialization and
+    :func:`~the_architect.core.fileutil.atomic_write_text` for a
+    cross-platform temp-file + rename so the file is never partially
+    written.  Errors are logged as warnings and do not propagate.
 
     Args:
         baseline: The :class:`WorkspaceBaseline` to persist.
         path: Destination file path (will be overwritten if it exists).
     """
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
         content = baseline.model_dump_json(indent=2)
-        path.write_text(content, encoding="utf-8")
+        atomic_write_text(path, content, prefix=".baseline_tmp_")
     except OSError as exc:
         logger.warning(f"Baseline: cannot write baseline to {path}: {exc!r}")
 

@@ -442,3 +442,53 @@ class TestCaptureEdgeCases:
         (arch / "state.json").write_text("{}", encoding="utf-8")
         bl = capture_baseline(tmp_path)
         assert not any(".architect" in p for p in bl.files)
+
+
+# ---------------------------------------------------------------------------
+# Cross-platform path separator invariant
+# ---------------------------------------------------------------------------
+
+
+class TestBaselinePathSeparators:
+    """Baseline file paths must always use forward slashes regardless of OS."""
+
+    def test_capture_baseline_uses_forward_slashes(self, tmp_path: Path) -> None:
+        """FileRecord paths must use forward slashes so comparisons are portable."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01_example.md").write_text("# T01", encoding="utf-8")
+        (tmp_path / "main.py").write_text("pass", encoding="utf-8")
+
+        bl = capture_baseline(tmp_path)
+
+        for rel_path in bl.files:
+            assert "\\" not in rel_path, (
+                f"Backslash found in baseline path {rel_path!r}; "
+                "all stored paths must use forward slashes"
+            )
+
+    def test_detect_changes_uses_forward_slashes(self, tmp_path: Path) -> None:
+        """detect_changes must report created paths with forward slashes."""
+        bl = capture_baseline(tmp_path)
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01.md").write_text("# T01", encoding="utf-8")
+
+        changes = detect_changes(bl, tmp_path)
+
+        for path in changes["created"]:
+            assert "\\" not in path, f"Backslash in created path {path!r}; must be forward slashes"
+
+    def test_write_read_round_trip_uses_forward_slashes(self, tmp_path: Path) -> None:
+        """Paths written to and read back from JSON must stay forward-slash."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01.md").write_text("# T01", encoding="utf-8")
+
+        bl = capture_baseline(tmp_path)
+        out = tmp_path / ".architect" / "baseline.json"
+        write_baseline(bl, out)
+        loaded = read_baseline(out)
+
+        for rel_path in loaded.files:
+            assert "\\" not in rel_path

@@ -603,6 +603,35 @@ _PROMPT_LEFT_PAD = 2
 _PROMPT_RIGHT_PAD = 2
 
 
+def _wait_for_keypress() -> None:
+    """Block until the user presses any key — cross-platform implementation.
+
+    On POSIX systems (Linux, macOS) uses ``termios``/``tty`` to put stdin
+    into raw mode so a single keystroke is read without requiring Enter.
+
+    On Windows uses ``msvcrt.getch()`` which does the same without needing
+    raw-mode setup.
+
+    Raises on non-interactive stdin (pipe, CI, redirect) so callers can
+    wrap in ``except Exception`` to skip silently.
+    """
+    if sys.platform == "win32":
+        import msvcrt
+
+        msvcrt.getch()
+    else:
+        import termios
+        import tty
+
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            sys.stdin.read(1)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
 def _padded_window(content: Any) -> Any:
     """Wrap prompt_toolkit content in a horizontally padded layout."""
     from prompt_toolkit.layout import Layout, VSplit, Window
@@ -5221,17 +5250,7 @@ def _run_main(
             if not headless:
                 try:
                     console.print("[dim]Press any key to exit…[/dim]")
-                    import sys as _sys
-                    import termios as _termios
-                    import tty as _tty
-
-                    fd = _sys.stdin.fileno()
-                    old = _termios.tcgetattr(fd)
-                    try:
-                        _tty.setraw(fd)
-                        _sys.stdin.read(1)
-                    finally:
-                        _termios.tcsetattr(fd, _termios.TCSADRAIN, old)
+                    _wait_for_keypress()
                 except Exception:
                     # Non-interactive terminal (pipe, CI, etc.) — skip silently.
                     pass

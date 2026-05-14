@@ -2009,7 +2009,7 @@ def build_instruction(
 
     # --- Task-specific instruction ---
     project_root = str(config.project_root)
-    progress_rel = str(config.progress_file.relative_to(config.project_root))
+    progress_rel = config.progress_file.relative_to(config.project_root).as_posix()
     task_rel = task.path.name
 
     lines.append(f"PROJECT ROOT: {project_root}")

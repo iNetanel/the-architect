@@ -168,7 +168,7 @@ def read_context_directory(
             except (OSError, ValueError):
                 continue
 
-        rel_path = str(path.relative_to(dir_path))
+        rel_path = path.relative_to(dir_path).as_posix()
         try:
             content, truncated = read_context_file(path, max_chars=max_chars)
             results.append((rel_path, content, truncated))

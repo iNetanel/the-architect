@@ -18,6 +18,14 @@ empty [Unreleased] above it. Use Keep a Changelog section headings:
 Added / Changed / Deprecated / Removed / Fixed / Security.
 -->
 
+### Fixed
+
+- **"Press any key to exit" now works on Windows.** The `termios`/`tty` modules used to read a single keypress are POSIX-only. Replaced with a new cross-platform `_wait_for_keypress()` helper: POSIX uses `termios`/`tty` as before; Windows uses `msvcrt.getch()`. The `except Exception` fallback remains for non-interactive terminals on all platforms (build 10404).
+- **Baseline file paths always use forward slashes.** `capture_baseline` stored relative paths with `str(path.relative_to(base))`, which produces backslash-separated strings on Windows (`tasks\T01.md`). `detect_changes` then compared two sets of strings that could differ only in separator, silently marking every file as created or deleted on Windows. All three path-to-string sites now use `.as_posix()` for consistent cross-platform forward-slash paths (build 10404).
+- **Context file paths injected into prompts use forward slashes.** `context.py` used `str(path.relative_to(dir_path))` to produce the label shown inside the planning prompt. On Windows this produced backslash paths in prompt text. Fixed with `.as_posix()` (build 10404).
+- **Progress file path injected into task instruction uses forward slashes.** `runner.py` injected `config.progress_file.relative_to(config.project_root)` as a raw string into every task instruction. On Windows this produced a backslash path that could confuse providers. Fixed with `.as_posix()` (build 10404).
+- **`write_baseline` now writes atomically.** Previously used a direct `path.write_text()` call that could leave a partially-written file if interrupted. Now uses the shared `atomic_write_text` helper from `fileutil`, consistent with every other persistence operation in the codebase (build 10404).
+
 ### Added
 
 - **Cross-platform atomic file I/O helper (`the_architect.core.fileutil`).** Introduced `atomic_write_text` and `atomic_write_json` with an exponential-backoff retry loop on `PermissionError` so atomic temp-file renames are safe even when a reader process briefly holds the destination file open. All three atomic-write call sites (`monitor_state.py`, `token_ledger.py`, `architect_md.py`) now use this shared helper (build 10403).
