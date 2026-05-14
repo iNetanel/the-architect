@@ -431,6 +431,11 @@ class CodexCliProvider:
 
     # ── Command building.truncated
 
+    @property
+    def instruction_via_stdin(self) -> bool:
+        """Codex CLI receives its instruction as a command-line argument."""
+        return False
+
     def build_command(
         self,
         instruction: str,

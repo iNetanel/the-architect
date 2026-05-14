@@ -478,10 +478,28 @@ class ClaudeCodeProvider:
         if agent_override:
             cmd.extend(["--agent", agent_override])
 
-        # Pass instruction as the final positional argument
-        cmd.append(instruction)
+        # Instruction is NOT appended here — it is delivered via stdin.
+        # See ``instruction_via_stdin`` property.  This avoids the Windows
+        # CreateProcess command-line length limit (32 767 chars) which is
+        # routinely exceeded when planning prompts + ARCHITECT.md +
+        # execution-protocol.md are all concatenated into one argument.
 
         return cmd
+
+    @property
+    def instruction_via_stdin(self) -> bool:
+        """Deliver the instruction via stdin rather than a CLI argument.
+
+        ``claude --print`` reads from stdin when no positional prompt
+        argument is supplied.  This is the preferred delivery mechanism
+        because it bypasses the Windows 32 767-char CreateProcess limit
+        that caused every task attempt to fail with
+        ``FileNotFoundError(206, 'The filename or extension is too long')``.
+
+        Returns:
+            Always ``True`` for Claude Code.
+        """
+        return True
 
     def get_env_overrides(self, config_override: Path | None = None) -> dict[str, str]:
         """Return extra environment variables for this Claude Code run.

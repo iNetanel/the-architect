@@ -892,6 +892,26 @@ async def stream_provider(
 
     cmd = provider.build_command(instruction, model_override, effective_agent)
 
+    # Determine instruction delivery: stdin pipe vs command-line argument.
+    # Providers that set instruction_via_stdin=True do not include the
+    # instruction in the command list — we write it to the process stdin
+    # instead.  This is the correct solution for the Windows CreateProcess
+    # command-line length limit (32 767 chars), which is reliably exceeded
+    # when planning prompts + ARCHITECT.md + execution-protocol.md are all
+    # concatenated into one argument (FileNotFoundError error 206 on Windows).
+    _use_stdin = getattr(provider, "instruction_via_stdin", False)
+    _stdin_mode = asyncio.subprocess.PIPE if _use_stdin else None
+
+    # Warn when passing a large instruction as a command-line argument on any
+    # platform so operators are alerted before hitting OS limits.
+    _WIN_CMDLINE_LIMIT = 32_767
+    if not _use_stdin and len(instruction) > _WIN_CMDLINE_LIMIT // 2:
+        logger.warning(
+            f"Instruction for {provider.display_name} is {len(instruction)} chars — "
+            f"approaching the Windows CreateProcess command-line limit of {_WIN_CMDLINE_LIMIT}. "
+            "Consider enabling instruction_via_stdin on the provider."
+        )
+
     # Build environment: inherit parent env + provider-specific overrides
     env = {
         **os.environ.copy(),
@@ -955,13 +975,26 @@ async def stream_provider(
             *cmd,
             env=env,
             cwd=str(project_dir),
-            stdin=None,
+            stdin=_stdin_mode,
             stdout=asyncio.subprocess.PIPE,
             stderr=None,
             limit=_SUBPROCESS_READ_LIMIT,
             **_spawn_kwargs,
         )
         _register_process(process)
+
+        # When the provider reads from stdin, write the instruction and
+        # close the write end so the CLI sees EOF and starts processing.
+        # asyncio.StreamWriter.write() is synchronous; drain() and
+        # wait_closed() are coroutines.
+        if _use_stdin and process.stdin is not None:
+            try:
+                process.stdin.write(instruction.encode("utf-8"))
+                await process.stdin.drain()
+                process.stdin.close()
+                await process.stdin.wait_closed()
+            except Exception as stdin_exc:
+                logger.debug(f"stdin write failed: {stdin_exc!r}")
 
         if process.stdout is None:
             raise RuntimeError(f"Failed to capture {provider.display_name} stdout")

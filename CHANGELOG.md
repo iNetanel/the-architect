@@ -18,29 +18,37 @@ empty [Unreleased] above it. Use Keep a Changelog section headings:
 Added / Changed / Deprecated / Removed / Fixed / Security.
 -->
 
-### Fixed
-
-- **Task files with uppercase or mixed-case extensions are now discovered correctly.** All file-extension comparisons in `tasks.py`, `planner.py`, `retrospective.py`, and `baseline.py` previously used bare `== ".md"` or `endswith(".md")` which are case-sensitive. On Windows (case-insensitive filesystem) a task file named `T01_example.MD` would be visible in the directory but silently rejected by all discovery passes. All comparisons now use `.suffix.lower() == ".md"` or `.lower().endswith(".md")`, and regex patterns use `re.IGNORECASE`. Five new tests lock in the case-insensitive invariant (build 10405).
-- **Project type detection uses case-insensitive filename comparisons.** `project_intelligence.py` built a set of root filenames and compared them with lowercase literals like `"main.tf"` and `"project.godot"`. On Windows a file named `Main.TF` or `Project.Godot` would not match. The root-file set is now built with `.name.lower()` so comparisons are consistent on all platforms (build 10405).
+## [1.2.10] (build 10406) — 2026-05-14
 
 ### Fixed
 
-- **"Press any key to exit" now works on Windows.** The `termios`/`tty` modules used to read a single keypress are POSIX-only. Replaced with a new cross-platform `_wait_for_keypress()` helper: POSIX uses `termios`/`tty` as before; Windows uses `msvcrt.getch()`. The `except Exception` fallback remains for non-interactive terminals on all platforms (build 10404).
-- **Baseline file paths always use forward slashes.** `capture_baseline` stored relative paths with `str(path.relative_to(base))`, which produces backslash-separated strings on Windows (`tasks\T01.md`). `detect_changes` then compared two sets of strings that could differ only in separator, silently marking every file as created or deleted on Windows. All three path-to-string sites now use `.as_posix()` for consistent cross-platform forward-slash paths (build 10404).
-- **Context file paths injected into prompts use forward slashes.** `context.py` used `str(path.relative_to(dir_path))` to produce the label shown inside the planning prompt. On Windows this produced backslash paths in prompt text. Fixed with `.as_posix()` (build 10404).
-- **Progress file path injected into task instruction uses forward slashes.** `runner.py` injected `config.progress_file.relative_to(config.project_root)` as a raw string into every task instruction. On Windows this produced a backslash path that could confuse providers. Fixed with `.as_posix()` (build 10404).
-- **`write_baseline` now writes atomically.** Previously used a direct `path.write_text()` call that could leave a partially-written file if interrupted. Now uses the shared `atomic_write_text` helper from `fileutil`, consistent with every other persistence operation in the codebase (build 10404).
+- **Claude Code tasks no longer crash on Windows with "filename or extension is too long" (error 206).** Windows limits `CreateProcess` command lines to 32 767 characters. The Architect's planning prompts (`architect.md` ~23 KB + `execution-protocol.md` ~19 KB + `ARCHITECT.md` ~16 KB + task file) routinely exceed that limit, causing every task attempt to fail immediately. Claude Code now receives its instruction via **stdin** instead of a command-line argument, eliminating the limit entirely. The provider protocol gains a new `instruction_via_stdin` flag; all other providers (OpenCode, Codex, Gemini) are unaffected.
+
+- **Windows PowerShell and Windows Terminal now show the modern interactive TUI** instead of the old legacy text fallback. PowerShell never sets the `TERM` environment variable, which the auto-detection logic previously treated as `TERM=dumb`, silently disabling the entire Textual UI. The check now only disables the TUI when `TERM` is *explicitly* set to `dumb`.
+
+- **Rich colours and box characters render correctly in PowerShell.** The Rich console now passes `legacy_windows=False` on Windows so it emits VT escape sequences instead of the old Win32 console API path that produced plain, uncoloured output.
+
+- **Alternate screen buffer (the full-screen view) works in PowerShell and Windows Terminal.** The `alternate_screen()` context manager now enables VT processing via `SetConsoleMode` before writing the ANSI escape, so the screen correctly switches instead of printing raw escape bytes.
+
+- **Task files with uppercase extensions (`.MD`, `.Py`) are now discovered correctly.** All file-extension comparisons used bare `== ".md"` which is case-sensitive. On Windows, files can be stored with any extension case and would be found by directory listing but silently rejected. All comparisons now use `.suffix.lower()` and `re.IGNORECASE`.
+
+- **Project type detection (game, mobile, IaC, CLI, etc.) is case-insensitive on all platforms.** Marker filenames like `main.tf`, `project.godot`, and `AndroidManifest.xml` are now matched regardless of how the OS stored the filename.
+
+- **File paths inside planning prompts, task instructions, and baseline change reports always use forward slashes.** On Windows, `Path.relative_to()` produced backslash-separated strings, which appeared in prompts sent to providers and could confuse them, and caused baseline change detection to silently mark every file as created or deleted.
+
+- **"Press any key to exit" works on Windows.** The POSIX-only `termios`/`tty` modules are replaced by a cross-platform `_wait_for_keypress()` helper that uses `msvcrt.getch()` on Windows.
+
+- **Atomic file writes are safe when a reader has the file open.** On Windows, `os.replace(tmp, dst)` raises `PermissionError` when another process (e.g. the dashboard) has the destination file open — something POSIX allows. A shared `fileutil.py` helper retries the rename with brief exponential backoff. All persistence paths (`monitor_state.json`, `token_ledger.json`, `ARCHITECT.md`) use this helper.
+
+- **Model status text in the pre-run configuration screen no longer logs a `StyleValueError`.** The loading indicator was setting `styles.color = "$text-muted"` at runtime, which is not a valid colour value outside of CSS context. The widget's existing CSS class already provides the correct muted colour.
+
+- **`signal.SIGKILL` AttributeError on Windows is eliminated.** A direct `signal.SIGKILL` reference in exit-code comparison was replaced with the module-level constant that is already guarded with `getattr(signal, "SIGKILL", signal.SIGTERM)`.
+
+- **`/dev/tty` access is explicitly skipped on Windows** (it doesn't exist there). The terminal-cleanup helper now checks `sys.platform != "win32"` before attempting to open it.
 
 ### Added
 
-- **Cross-platform atomic file I/O helper (`the_architect.core.fileutil`).** Introduced `atomic_write_text` and `atomic_write_json` with an exponential-backoff retry loop on `PermissionError` so atomic temp-file renames are safe even when a reader process briefly holds the destination file open. All three atomic-write call sites (`monitor_state.py`, `token_ledger.py`, `architect_md.py`) now use this shared helper (build 10403).
-
-### Fixed
-
-- **`runner.py` used `signal.SIGKILL` directly for exit-code comparison.** `signal.SIGKILL` does not exist on Windows, causing an `AttributeError` on any code path that calls `_task_outcome_summary_for_exit`. The comparison now uses `_FORCED_TERMINATION_EXIT_CODE`, which is already correctly guarded with `getattr(signal, "SIGKILL", signal.SIGTERM)` at module load time (build 10403).
-- **`tui/terminal.py` attempted to open `/dev/tty` unconditionally.** `/dev/tty` does not exist on Windows. The call was already wrapped in `except Exception` so it never crashed, but the intent was unclear. The path is now a named constant and the open is explicitly guarded by `sys.platform != "win32"` with a clear comment explaining the POSIX-only nature (build 10403).
-- **`alternate_screen()` INVALID_HANDLE_VALUE check was incomplete.** `GetStdHandle` on 64-bit Windows returns `0xFFFFFFFFFFFFFFFF` for invalid handles, which Python ctypes represents as a large positive integer — not as `-1`. The check now covers both the 32-bit (`-1`) and 64-bit (`0xFFFFFFFF` / `0xFFFFFFFFFFFFFFFF`) representations (build 10403).
-- **`cancel` command stop-process UI was needlessly platform-specific.** The two branches for Windows vs POSIX called the exact same `os.kill(pid, SIGTERM)` but printed different labels. Collapsed into one platform-agnostic path with a neutral "Sent termination signal" message (build 10403).
+- **Cross-platform atomic file I/O helper (`the_architect.core.fileutil`).** `atomic_write_text` and `atomic_write_json` write to a temp file then rename, with a `PermissionError` retry loop so the pattern is safe on Windows where a reader holding a file open blocks the rename.
 
 ## [1.2.9] (build 10402) — 2026-05-14
 

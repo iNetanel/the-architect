@@ -788,7 +788,9 @@ class PreRunScreen(Screen[PreRunValues]):
             if self._models_loading:
                 provider_label = provider.display_name if provider is not None else "provider"
                 status.update(f"Loading models for {provider_label}…")
-                status.styles.color = "$text-muted"
+                # tab_hint CSS class already applies $text-muted colour — no
+                # need to set styles.color here, and "$text-muted" is not a
+                # valid runtime colour value (it's a CSS variable reference).
                 status.display = True
             elif self._model_fetch_error:
                 status.update("Could not load models — using provider default.")

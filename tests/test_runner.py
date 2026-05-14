@@ -104,6 +104,10 @@ def _make_mock_provider(**overrides):
     p.get_env_overrides = overrides.get("get_env_overrides", MagicMock(return_value={}))
     p.parse_output_line = overrides.get("parse_output_line", MagicMock(return_value=None))
     p.supports_agents = MagicMock(return_value=overrides.get("supports_agents", True))
+    # Instruction is delivered as a CLI arg in mocked tests (not via stdin).
+    # Explicit False prevents the truthy MagicMock attribute from triggering
+    # the stdin-pipe path and requiring process.stdin on the mock.
+    p.instruction_via_stdin = overrides.get("instruction_via_stdin", False)
     return p
 
 
@@ -3405,7 +3409,89 @@ class TestStreamProviderTokenAccumulation:
         assert result.tokens.output_tokens == 50
 
 
-class TestStreamProviderFileNotFoundError:
+class TestInstructionViaStdin:
+    """Tests for the stdin-delivery path (instruction_via_stdin=True).
+
+    This is the fix for Windows CreateProcess command-line length limit
+    (error 206) that caused every Claude Code task to fail when prompts
+    exceeded 32 767 chars.
+    """
+
+    @pytest.mark.asyncio
+    async def test_stdin_provider_writes_instruction_to_stdin(self, tmp_path: Path) -> None:
+        """When instruction_via_stdin=True the instruction is written to process.stdin."""
+        from unittest.mock import AsyncMock as _AsyncMock
+
+        provider = _make_mock_provider(instruction_via_stdin=True)
+        mock_process = _make_mock_process(stdout_lines=[], exit_code=0)
+        # Attach an AsyncMock stdin so we can assert it was written to.
+        mock_stdin = _AsyncMock()
+        mock_process.stdin = mock_stdin
+
+        with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = mock_process
+            await stream_provider("my instruction", tmp_path, provider)
+
+        mock_stdin.write.assert_called_once_with(b"my instruction")
+        mock_stdin.drain.assert_awaited_once()
+        mock_stdin.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_stdin_provider_opens_stdin_pipe(self, tmp_path: Path) -> None:
+        """When instruction_via_stdin=True the subprocess is opened with stdin=PIPE."""
+        provider = _make_mock_provider(instruction_via_stdin=True)
+        mock_process = _make_mock_process(stdout_lines=[], exit_code=0)
+        from unittest.mock import AsyncMock as _AsyncMock
+
+        mock_process.stdin = _AsyncMock()
+
+        with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = mock_process
+            await stream_provider("instruction", tmp_path, provider)
+
+        _, kwargs = mock_exec.call_args
+        import asyncio as _asyncio
+
+        assert kwargs.get("stdin") == _asyncio.subprocess.PIPE
+
+    @pytest.mark.asyncio
+    async def test_non_stdin_provider_does_not_open_stdin_pipe(self, tmp_path: Path) -> None:
+        """When instruction_via_stdin=False the subprocess stdin must be None."""
+        provider = _make_mock_provider(instruction_via_stdin=False)
+
+        with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = _make_mock_process(stdout_lines=[], exit_code=0)
+            await stream_provider("instruction", tmp_path, provider)
+
+        _, kwargs = mock_exec.call_args
+        assert kwargs.get("stdin") is None
+
+    def test_claude_code_provider_instruction_via_stdin_is_true(self) -> None:
+        """ClaudeCodeProvider must advertise stdin delivery."""
+        from the_architect.core.claude_code_provider import ClaudeCodeProvider
+
+        assert ClaudeCodeProvider().instruction_via_stdin is True
+
+    def test_claude_code_build_command_excludes_instruction(self) -> None:
+        """ClaudeCodeProvider.build_command must NOT include the instruction."""
+        from unittest.mock import patch as _patch
+
+        from the_architect.core.claude_code_provider import ClaudeCodeProvider
+
+        with _patch("shutil.which", return_value="/usr/bin/claude"):
+            cmd = ClaudeCodeProvider().build_command("secret instruction", model_override=None)
+        assert "secret instruction" not in cmd
+
+    def test_other_providers_instruction_via_stdin_is_false(self) -> None:
+        """OpenCode, Codex, and Gemini providers must keep stdin=False."""
+        from the_architect.core.codex_cli_provider import CodexCliProvider
+        from the_architect.core.gemini_cli_provider import GeminiCliProvider
+        from the_architect.core.opencode_provider import OpenCodeProvider
+
+        assert OpenCodeProvider().instruction_via_stdin is False
+        assert CodexCliProvider().instruction_via_stdin is False
+        assert GeminiCliProvider().instruction_via_stdin is False
+
     """Cover FileNotFoundError re-raise (L726)."""
 
     @pytest.mark.asyncio

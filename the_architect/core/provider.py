@@ -184,6 +184,12 @@ class ArchitectProvider(Protocol):
     ) -> list[str]:
         """Build the subprocess command list for running an instruction.
 
+        When :py:attr:`instruction_via_stdin` is ``True``, the returned
+        list must **not** include the instruction string — the runner will
+        write it to the process's stdin after spawning.  This avoids
+        Windows ``CreateProcess`` command-line length limits (32 767 chars)
+        which are routinely exceeded by large planning prompts.
+
         Args:
             instruction: The full instruction string to pass to the CLI.
             model_override: Optional model to use (overrides config).
@@ -194,6 +200,26 @@ class ArchitectProvider(Protocol):
             List of command components ready for ``subprocess`` / ``asyncio``.
         """
         ...
+
+    @property
+    def instruction_via_stdin(self) -> bool:
+        """Return True when the provider reads its instruction from stdin.
+
+        When True, :py:meth:`build_command` must NOT include the instruction
+        string in the returned command list.  The runner will instead open a
+        stdin pipe and write the instruction to it after spawning the process.
+
+        This is the correct mechanism for providers that accept stdin input
+        (e.g. ``claude --print`` with no positional argument).  It completely
+        avoids the Windows ``CreateProcess`` command-line length limit of
+        32 767 characters which is routinely hit when planning prompts,
+        ARCHITECT.md, and execution-protocol.md are all concatenated into a
+        single argument.
+
+        Providers that do not support stdin input should return ``False``
+        (the default) and include the instruction in the command list.
+        """
+        return False
 
     def get_env_overrides(self, config_override: Path | None = None) -> dict[str, str]:
         """Return extra environment variables to set for this provider run.

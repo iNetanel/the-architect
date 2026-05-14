@@ -324,7 +324,9 @@ class TestClaudeCodeProviderCommand:
         idx = cmd.index("--output-format")
         assert cmd[idx + 1] == "stream-json"
         assert "--verbose" in cmd
-        assert "do something" in cmd
+        # Instruction is delivered via stdin, not as a CLI argument.
+        assert "do something" not in cmd
+        assert ClaudeCodeProvider().instruction_via_stdin is True
 
     def test_build_command_with_model(self) -> None:
         with patch("shutil.which", return_value="/usr/local/bin/claude"):

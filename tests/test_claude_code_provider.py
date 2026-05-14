@@ -714,12 +714,14 @@ class TestClaudeCodeProviderCommandBuilding:
     """Tests for ClaudeCodeProvider command building methods."""
 
     def test_command_building_basic(self, provider):
-        """Test basic command building."""
+        """Test basic command building — instruction is now delivered via stdin."""
         cmd = provider.build_command("test instruction")
         assert "claude" in cmd[0]
         assert "--dangerously-skip-permissions" in cmd
         assert "--print" in cmd
-        assert "test instruction" in cmd
+        # Instruction is NOT in the command list; it is written to stdin.
+        assert "test instruction" not in cmd
+        assert provider.instruction_via_stdin is True
 
     def test_command_building_with_model_override(self, provider):
         """Test command building with model override."""
