@@ -305,7 +305,7 @@ def _gather_review_context(project_dir: Path, original_goal: str) -> str:
         for task_file in sorted(tasks_dir.iterdir()):
             if task_file.name.startswith("architect_eval_"):
                 continue
-            if task_file.is_file() and task_file.suffix == ".md":
+            if task_file.is_file() and task_file.suffix.lower() == ".md":
                 task_lines.append(f"- {task_file.name}")
                 # Read first line (heading) for context
                 try:

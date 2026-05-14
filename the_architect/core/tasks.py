@@ -193,12 +193,13 @@ def discover_tasks(tasks_dir: Path | str) -> list[Task]:
         return []
 
     tasks: list[Task] = []
-    pattern = re.compile(r"^[TR](\d+)_.+\.md$")
+    # re.IGNORECASE so T01_example.MD is discovered on case-preserving filesystems
+    pattern = re.compile(r"^[TR](\d+)_.+\.md$", re.IGNORECASE)
 
     for entry in tasks_dir.iterdir():
         if entry.name.startswith("architect_eval_"):
             continue
-        if entry.is_file() and entry.suffix == ".md":
+        if entry.is_file() and entry.suffix.lower() == ".md":
             match = pattern.match(entry.name)
             if match:
                 number = int(match.group(1))

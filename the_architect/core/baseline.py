@@ -170,7 +170,7 @@ def capture_baseline(project_dir: Path, task_prefix: str = "") -> WorkspaceBasel
                 filepath = Path(dirpath) / fname
                 if filepath.is_symlink() or filepath.name.startswith("."):
                     continue
-                if filepath.suffix not in _TRACKED_EXTENSIONS:
+                if filepath.suffix.lower() not in _TRACKED_EXTENSIONS:
                     continue
                 result = _hash_file(filepath)
                 if result is None:

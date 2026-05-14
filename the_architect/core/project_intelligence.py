@@ -250,7 +250,9 @@ def _detect_project_type(project_dir: Path, components: list[Component]) -> str:
         for item in (component.role, component.framework, component.language, component.path)
         if item
     )
-    root_files = {path.name for path in project_dir.iterdir()} if project_dir.exists() else set()
+    root_files = (
+        {path.name.lower() for path in project_dir.iterdir()} if project_dir.exists() else set()
+    )
 
     if any(marker in root_files for marker in ("project.godot",)) or any(
         name.endswith((".uproject", ".unity")) for name in root_files
@@ -260,7 +262,9 @@ def _detect_project_type(project_dir: Path, components: list[Component]) -> str:
         name.endswith(".xcodeproj") for name in root_files
     ):
         return "Mobile app"
-    if "main.tf" in root_files or any(path.suffix == ".tf" for path in project_dir.glob("*.tf")):
+    if "main.tf" in root_files or any(
+        path.suffix.lower() == ".tf" for path in project_dir.glob("*.tf")
+    ):
         return "Infrastructure-as-Code"
     if "cli" in role_text or _has_cli_entry(project_dir):
         return "CLI tool"

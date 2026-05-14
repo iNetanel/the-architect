@@ -20,6 +20,11 @@ Added / Changed / Deprecated / Removed / Fixed / Security.
 
 ### Fixed
 
+- **Task files with uppercase or mixed-case extensions are now discovered correctly.** All file-extension comparisons in `tasks.py`, `planner.py`, `retrospective.py`, and `baseline.py` previously used bare `== ".md"` or `endswith(".md")` which are case-sensitive. On Windows (case-insensitive filesystem) a task file named `T01_example.MD` would be visible in the directory but silently rejected by all discovery passes. All comparisons now use `.suffix.lower() == ".md"` or `.lower().endswith(".md")`, and regex patterns use `re.IGNORECASE`. Five new tests lock in the case-insensitive invariant (build 10405).
+- **Project type detection uses case-insensitive filename comparisons.** `project_intelligence.py` built a set of root filenames and compared them with lowercase literals like `"main.tf"` and `"project.godot"`. On Windows a file named `Main.TF` or `Project.Godot` would not match. The root-file set is now built with `.name.lower()` so comparisons are consistent on all platforms (build 10405).
+
+### Fixed
+
 - **"Press any key to exit" now works on Windows.** The `termios`/`tty` modules used to read a single keypress are POSIX-only. Replaced with a new cross-platform `_wait_for_keypress()` helper: POSIX uses `termios`/`tty` as before; Windows uses `msvcrt.getch()`. The `except Exception` fallback remains for non-interactive terminals on all platforms (build 10404).
 - **Baseline file paths always use forward slashes.** `capture_baseline` stored relative paths with `str(path.relative_to(base))`, which produces backslash-separated strings on Windows (`tasks\T01.md`). `detect_changes` then compared two sets of strings that could differ only in separator, silently marking every file as created or deleted on Windows. All three path-to-string sites now use `.as_posix()` for consistent cross-platform forward-slash paths (build 10404).
 - **Context file paths injected into prompts use forward slashes.** `context.py` used `str(path.relative_to(dir_path))` to produce the label shown inside the planning prompt. On Windows this produced backslash paths in prompt text. Fixed with `.as_posix()` (build 10404).

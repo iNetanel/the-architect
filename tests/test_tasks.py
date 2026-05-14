@@ -427,3 +427,47 @@ class TestIsRelativeTo:
             inner.mkdir()
             # outside is not relative to inner
             assert not outside.resolve().is_relative_to(inner.resolve())
+
+
+# ---------------------------------------------------------------------------
+# Case-insensitive extension detection
+# ---------------------------------------------------------------------------
+
+
+class TestDiscoverTasksCaseInsensitive:
+    """discover_tasks must find task files regardless of extension case."""
+
+    def test_lowercase_extension_discovered(self, tmp_path: Path) -> None:
+        """Standard .md extension is discovered."""
+        (tmp_path / "T01_example.md").write_text("# T01", encoding="utf-8")
+        tasks = discover_tasks(tmp_path)
+        assert len(tasks) == 1
+
+    def test_uppercase_extension_discovered(self, tmp_path: Path) -> None:
+        """Uppercase .MD extension (possible on some filesystems) is discovered."""
+        (tmp_path / "T01_example.MD").write_text("# T01", encoding="utf-8")
+        tasks = discover_tasks(tmp_path)
+        assert len(tasks) == 1
+        assert tasks[0].prefix == "T01"
+
+    def test_mixed_case_extension_discovered(self, tmp_path: Path) -> None:
+        """Mixed case .Md extension is also discovered."""
+        (tmp_path / "T02_other.Md").write_text("# T02", encoding="utf-8")
+        tasks = discover_tasks(tmp_path)
+        assert len(tasks) == 1
+        assert tasks[0].prefix == "T02"
+
+    def test_non_md_extension_ignored(self, tmp_path: Path) -> None:
+        """Files with non-.md extensions must be ignored regardless of case."""
+        (tmp_path / "T01_example.txt").write_text("# T01", encoding="utf-8")
+        (tmp_path / "T02_other.TXT").write_text("# T02", encoding="utf-8")
+        assert discover_tasks(tmp_path) == []
+
+    def test_mixed_case_and_lowercase_together(self, tmp_path: Path) -> None:
+        """Uppercase and lowercase .md files are both discovered in the same directory."""
+        (tmp_path / "T01_lower.md").write_text("# T01", encoding="utf-8")
+        (tmp_path / "T02_upper.MD").write_text("# T02", encoding="utf-8")
+        tasks = discover_tasks(tmp_path)
+        assert len(tasks) == 2
+        prefixes = {t.prefix for t in tasks}
+        assert prefixes == {"T01", "T02"}

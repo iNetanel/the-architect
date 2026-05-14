@@ -380,7 +380,9 @@ def gather_project_context(
         current_tasks = [
             f
             for f in sorted(tasks_dir.iterdir())
-            if f.is_file() and f.suffix == ".md" and not f.name.startswith("architect_eval_")
+            if f.is_file()
+            and f.suffix.lower() == ".md"
+            and not f.name.startswith("architect_eval_")
         ]
         if current_tasks:
             for task_file in current_tasks:
@@ -406,7 +408,7 @@ def gather_project_context(
                         f.stem
                         for f in sorted(session_dir.iterdir())
                         if f.is_file()
-                        and f.suffix == ".md"
+                        and f.suffix.lower() == ".md"
                         and f.name != "INSTRUCTIONS.md"
                         and not f.name.startswith("architect_eval_")
                     ]
@@ -720,7 +722,7 @@ def _rescue_stray_tasks(project_dir: Path, tasks_dir: Path) -> int:
     import re
 
     skip_dirs = {".git", "node_modules", ".venv", "__pycache__", ".architect", ".pytest_cache"}
-    task_pattern = re.compile(r"^[TR]\d+_.+\.md$")
+    task_pattern = re.compile(r"^[TR]\d+_.+\.md$", re.IGNORECASE)
     rescued = 0
 
     tasks_dir.mkdir(parents=True, exist_ok=True)
@@ -737,7 +739,7 @@ def _rescue_stray_tasks(project_dir: Path, tasks_dir: Path) -> int:
 
         dirpath = Path(dirpath_str)
         for filename in filenames:
-            if not filename.endswith(".md"):
+            if not filename.lower().endswith(".md"):
                 continue
 
             path = dirpath / filename
@@ -1067,7 +1069,7 @@ def archive_previous_run(
     to_archive = [
         f
         for f in tasks_dir.iterdir()
-        if f.is_file() and f.suffix == ".md" and task_pattern.match(f.name)
+        if f.is_file() and f.suffix.lower() == ".md" and task_pattern.match(f.name)
     ]
 
     # Also include INSTRUCTIONS.md — it contains the goal, stack, and plan
