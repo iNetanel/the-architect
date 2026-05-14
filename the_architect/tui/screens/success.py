@@ -139,6 +139,7 @@ class SuccessScreen(Screen[bool]):
         total_tokens: TokenUsage,
         success_md_path: str | None = None,
         retrospective_rounds: list[RetrospectiveRound] | None = None,
+        session_cost_usd: float = 0.0,
     ) -> None:
         super().__init__()
         self._results = results
@@ -148,6 +149,25 @@ class SuccessScreen(Screen[bool]):
         self._retrospective_rounds = retrospective_rounds or []
         self._frame_index = 0
         self._current_frame = next_matrix_frame(self._frame_index)
+        self._session_cost_usd = session_cost_usd
+        # If cost was not supplied, try to compute it from results
+        if session_cost_usd == 0.0 and results:
+            try:
+                from the_architect.core.token_ledger import estimate_cost_detailed
+
+                _computed = 0.0
+                for r in results:
+                    if r.model and r.tokens.total > 0:
+                        _computed += estimate_cost_detailed(
+                            input_tokens=r.tokens.input_tokens,
+                            output_tokens=r.tokens.output_tokens,
+                            cache_read_tokens=r.tokens.cache_read_tokens,
+                            cache_write_tokens=r.tokens.cache_write_tokens,
+                            model=r.model,
+                        )
+                self._session_cost_usd = _computed
+            except Exception:
+                self._session_cost_usd = 0.0
 
     def compose(self) -> ComposeResult:
         """Build the success screen layout."""
@@ -315,5 +335,7 @@ class SuccessScreen(Screen[bool]):
             parts.append(f"[dim]{_fmt_tokens(self._total_tokens.total)} tokens[/dim]")
         if retries > 0:
             parts.append(f"[dim]{retries} retries[/dim]")
+        if self._session_cost_usd > 0:
+            parts.append(f"[dim]~${self._session_cost_usd:.4f} est.[/dim]")
 
         return f"[bold]TOTAL[/bold]  {count_str}  " + "  ·  ".join(parts)

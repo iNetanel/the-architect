@@ -226,6 +226,9 @@ class MonitorStateWriter:
         self._model_current: str = ""
         self._model_rotation_count: int = 0
         self._graceful_stop_requested: bool = False
+        self._session_cost_usd: float = 0.0
+        self._last_task_cost_usd: float = 0.0
+        self._model_costs: dict[str, float] = {}  # model_name -> cumulative USD
 
         # Flush the initial RUNNING state to disk immediately so the
         # dashboard transitions from PLANNING → RUNNING as soon as
@@ -249,28 +252,88 @@ class MonitorStateWriter:
         self._task_statuses[task.prefix] = TASK_STATUS_RUNNING
         self._flush()
 
-    def on_task_done(self, task_id: str, tokens: int = 0) -> None:
+    def on_task_done(
+        self,
+        task_id: str,
+        tokens: int = 0,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+        model: str = "",
+    ) -> None:
         """Record that a task completed successfully.
 
         Args:
             task_id: The task prefix that completed.
-            tokens: Token count for the last attempt.
+            tokens: Total token count for the last attempt (legacy).
+            input_tokens: Prompt/input tokens for cost calculation.
+            output_tokens: Completion/output tokens for cost calculation.
+            cache_read_tokens: Cache read tokens for cost calculation.
+            cache_write_tokens: Cache write tokens for cost calculation.
+            model: Model name used — required for cost estimation.
         """
         self._task_statuses[task_id] = TASK_STATUS_DONE
         self._session_tokens += tokens
         self._last_attempt_tokens = tokens
+        if model and (input_tokens or output_tokens):
+            try:
+                from the_architect.core.token_ledger import estimate_cost_detailed
+
+                cost = estimate_cost_detailed(
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cache_read_tokens=cache_read_tokens,
+                    cache_write_tokens=cache_write_tokens,
+                    model=model,
+                )
+                self._session_cost_usd += cost
+                self._last_task_cost_usd = cost
+                self._model_costs[model] = self._model_costs.get(model, 0.0) + cost
+            except Exception:
+                pass
         self._flush()
 
-    def on_task_failed(self, task_id: str, tokens: int = 0) -> None:
+    def on_task_failed(
+        self,
+        task_id: str,
+        tokens: int = 0,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+        model: str = "",
+    ) -> None:
         """Record that a task failed all retries.
 
         Args:
             task_id: The task prefix that failed.
-            tokens: Token count for the last attempt.
+            tokens: Total token count for the last attempt (legacy).
+            input_tokens: Prompt/input tokens for cost calculation.
+            output_tokens: Completion/output tokens for cost calculation.
+            cache_read_tokens: Cache read tokens for cost calculation.
+            cache_write_tokens: Cache write tokens for cost calculation.
+            model: Model name used — required for cost estimation.
         """
         self._task_statuses[task_id] = TASK_STATUS_FAILED
         self._session_tokens += tokens
         self._last_attempt_tokens = tokens
+        if model and (input_tokens or output_tokens):
+            try:
+                from the_architect.core.token_ledger import estimate_cost_detailed
+
+                cost = estimate_cost_detailed(
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cache_read_tokens=cache_read_tokens,
+                    cache_write_tokens=cache_write_tokens,
+                    model=model,
+                )
+                self._session_cost_usd += cost
+                self._last_task_cost_usd = cost
+                self._model_costs[model] = self._model_costs.get(model, 0.0) + cost
+            except Exception:
+                pass
         self._flush()
 
     def on_attempt_start(self, attempt_num: int, model: str | None) -> None:
@@ -483,6 +546,9 @@ class MonitorStateWriter:
             "tokens": {
                 "session_total": self._session_tokens,
                 "last_attempt": self._last_attempt_tokens,
+                "session_cost_usd": round(self._session_cost_usd, 6),
+                "last_task_cost_usd": round(self._last_task_cost_usd, 6),
+                "model_costs": {model: round(cost, 6) for model, cost in self._model_costs.items()},
             },
             "graceful_stop_requested": self._graceful_stop_requested,
             "max_retries": self._max_retries,

@@ -2914,7 +2914,15 @@ async def _run_tasks_raw(
         console.print(_SEPARATOR)
         if monitor_writer is not None:
             try:
-                monitor_writer.on_task_done(result.prefix, tokens=result.tokens.total)
+                monitor_writer.on_task_done(
+                    result.prefix,
+                    tokens=result.tokens.total,
+                    input_tokens=result.tokens.input_tokens,
+                    output_tokens=result.tokens.output_tokens,
+                    cache_read_tokens=result.tokens.cache_read_tokens,
+                    cache_write_tokens=result.tokens.cache_write_tokens,
+                    model=result.model,
+                )
             except Exception:
                 pass
 
@@ -2926,7 +2934,15 @@ async def _run_tasks_raw(
         console.print(_SEPARATOR)
         if monitor_writer is not None:
             try:
-                monitor_writer.on_task_failed(result.prefix, tokens=result.tokens.total)
+                monitor_writer.on_task_failed(
+                    result.prefix,
+                    tokens=result.tokens.total,
+                    input_tokens=result.tokens.input_tokens,
+                    output_tokens=result.tokens.output_tokens,
+                    cache_read_tokens=result.tokens.cache_read_tokens,
+                    cache_write_tokens=result.tokens.cache_write_tokens,
+                    model=result.model,
+                )
             except Exception:
                 pass
 
@@ -3241,6 +3257,45 @@ async def _run_tasks_raw(
                 except Exception:
                     pass
             on_task_done(result)
+            # Push live cost data to the Costs tab
+            if _tui_session.app is not None:
+                try:
+                    from the_architect.core.token_ledger import estimate_cost_detailed
+
+                    _session_cost_usd = 0.0
+                    _model_costs_map: dict[str, float] = {}
+                    _session_tokens_total = 0
+                    for r in results:
+                        if r.model and r.tokens.total > 0:
+                            c = estimate_cost_detailed(
+                                input_tokens=r.tokens.input_tokens,
+                                output_tokens=r.tokens.output_tokens,
+                                cache_read_tokens=r.tokens.cache_read_tokens,
+                                cache_write_tokens=r.tokens.cache_write_tokens,
+                                model=r.model,
+                            )
+                            _session_cost_usd += c
+                            _model_costs_map[r.model] = _model_costs_map.get(r.model, 0.0) + c
+                        _session_tokens_total += r.tokens.total
+                    last_cost = 0.0
+                    if result.model and result.tokens.total > 0:
+                        last_cost = estimate_cost_detailed(
+                            input_tokens=result.tokens.input_tokens,
+                            output_tokens=result.tokens.output_tokens,
+                            cache_read_tokens=result.tokens.cache_read_tokens,
+                            cache_write_tokens=result.tokens.cache_write_tokens,
+                            model=result.model,
+                        )
+                    _tui_session.update_costs(
+                        {
+                            "session_cost_usd": _session_cost_usd,
+                            "last_task_cost_usd": last_cost,
+                            "session_tokens": _session_tokens_total,
+                            "model_costs": _model_costs_map,
+                        }
+                    )
+                except Exception:
+                    pass
 
         def _tui_on_task_failed(result: TaskResult) -> None:
             _tui_task_statuses[result.prefix] = "failed"
@@ -3254,6 +3309,45 @@ async def _run_tasks_raw(
                 except Exception:
                     pass
             on_task_failed(result)
+            # Push live cost data to the Costs tab
+            if _tui_session.app is not None:
+                try:
+                    from the_architect.core.token_ledger import estimate_cost_detailed
+
+                    _session_cost_usd_f = 0.0
+                    _model_costs_map_f: dict[str, float] = {}
+                    _session_tokens_total_f = 0
+                    for r in results:
+                        if r.model and r.tokens.total > 0:
+                            c = estimate_cost_detailed(
+                                input_tokens=r.tokens.input_tokens,
+                                output_tokens=r.tokens.output_tokens,
+                                cache_read_tokens=r.tokens.cache_read_tokens,
+                                cache_write_tokens=r.tokens.cache_write_tokens,
+                                model=r.model,
+                            )
+                            _session_cost_usd_f += c
+                            _model_costs_map_f[r.model] = _model_costs_map_f.get(r.model, 0.0) + c
+                        _session_tokens_total_f += r.tokens.total
+                    last_cost_f = 0.0
+                    if result.model and result.tokens.total > 0:
+                        last_cost_f = estimate_cost_detailed(
+                            input_tokens=result.tokens.input_tokens,
+                            output_tokens=result.tokens.output_tokens,
+                            cache_read_tokens=result.tokens.cache_read_tokens,
+                            cache_write_tokens=result.tokens.cache_write_tokens,
+                            model=result.model,
+                        )
+                    _tui_session.update_costs(
+                        {
+                            "session_cost_usd": _session_cost_usd_f,
+                            "last_task_cost_usd": last_cost_f,
+                            "session_tokens": _session_tokens_total_f,
+                            "model_costs": _model_costs_map_f,
+                        }
+                    )
+                except Exception:
+                    pass
 
         if _tui_session.app is not None:
             _tui_session.update_details(goal=original_goal)

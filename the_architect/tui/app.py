@@ -563,6 +563,19 @@ class ArchitectApp(App[None]):
         screen = self._ensure_execution_screen()
         screen.update_settings(settings)
 
+    def update_costs(self, costs: dict[str, object]) -> None:
+        """Update the Costs tab with live session cost data.
+
+        Args:
+            costs: Mapping with keys ``session_cost_usd``, ``last_task_cost_usd``,
+                ``session_tokens``, and ``model_costs``.
+        """
+        self._thread_safe_call(self._update_costs_sync, costs)
+
+    def _update_costs_sync(self, costs: dict[str, object]) -> None:
+        screen = self._ensure_execution_screen()
+        screen.update_costs(costs)
+
     # ── Wait screen overlay (planning / retrospective / reassessment) ──
 
     def show_wait(self, title: str, detail: str = "") -> None:
@@ -744,12 +757,29 @@ class ArchitectApp(App[None]):
         """
         from the_architect.tui.screens.success import SuccessScreen
 
+        session_cost = 0.0
+        try:
+            from the_architect.core.token_ledger import estimate_cost_detailed
+
+            for r in results:
+                if r.model and r.tokens.total > 0:
+                    session_cost += estimate_cost_detailed(
+                        input_tokens=r.tokens.input_tokens,
+                        output_tokens=r.tokens.output_tokens,
+                        cache_read_tokens=r.tokens.cache_read_tokens,
+                        cache_write_tokens=r.tokens.cache_write_tokens,
+                        model=r.model,
+                    )
+        except Exception:
+            pass
+
         screen = SuccessScreen(
             results=results,
             total_duration=total_duration,
             total_tokens=total_tokens,
             success_md_path=success_md_path,
             retrospective_rounds=retrospective_rounds,
+            session_cost_usd=session_cost,
         )
         # push_and_wait blocks the worker thread until the user exits the screen.
         self.push_and_wait(screen)

@@ -84,6 +84,20 @@ class TuiSession:
         except Exception:
             pass
 
+    def update_costs(self, costs: dict[str, object]) -> None:
+        """Push live cost data to the Costs tab (no-op when disabled).
+
+        Args:
+            costs: Mapping with keys ``session_cost_usd``, ``last_task_cost_usd``,
+                ``session_tokens``, and ``model_costs``.
+        """
+        if self.app is None:
+            return
+        try:
+            self.app.update_costs(costs)
+        except Exception:
+            pass
+
     def update_footer(self, text: str) -> None:
         """Update the TUI footer (no-op when disabled)."""
         if self.app is None:

@@ -30,6 +30,20 @@ from textual.widgets import Header, RichLog, Static, TabbedContent, TabPane
 from the_architect.tui.widgets import MatrixRain, next_matrix_frame
 
 
+def _fmt_tokens(count: int) -> str:
+    """Format a token count as K or raw integer.
+
+    Args:
+        count: Token count to format.
+
+    Returns:
+        Human-readable string like "12.3K" or "500".
+    """
+    if count >= 1_000:
+        return f"{count / 1_000:.1f}K"
+    return str(count)
+
+
 def _idle_footer_text() -> str:
     """Initial footer text shown before any run activity.
 
@@ -56,6 +70,7 @@ class ExecutionScreen(Screen[None]):
         Binding("p", "switch_tab('tab_progress')", "Progress", show=False),
         Binding("d", "switch_tab('tab_diagnostics')", "Diagnostics", show=False),
         Binding("g", "switch_tab('tab_settings')", "Settings", show=False),
+        Binding("c", "switch_tab('tab_costs')", "Costs", show=False),
         Binding("o", "switch_tab('tab_live')", "Live", show=False),
         Binding("e", "switch_tab('tab_diagnostics')", "Diagnostics", show=False),
         Binding("s", "switch_tab('tab_progress')", "Progress", show=False),
@@ -121,6 +136,12 @@ class ExecutionScreen(Screen[None]):
         padding: 1 2;
     }
 
+    #exec_costs {
+        height: 1fr;
+        border: round $panel;
+        padding: 1 2;
+    }
+
     #exec_footer {
         dock: bottom;
         height: 1;
@@ -151,6 +172,8 @@ class ExecutionScreen(Screen[None]):
         self._pending_output: list[str] = []
         self._pending_diagnostics: list[tuple[str, dict[str, object] | None]] = []
         self._pending_footer: str | None = None
+        self._costs: dict[str, object] = {}
+        self._pending_costs: dict[str, object] | None = None
         # Track whether any real provider output has been received so the
         # placeholder can be cleared on the first write.
         self._output_received: bool = False
@@ -185,6 +208,9 @@ class ExecutionScreen(Screen[None]):
             with TabPane("Settings", id="tab_settings"):
                 with VerticalScroll(id="exec_settings"):
                     yield Static(self._render_settings(), id="exec_settings_text")
+            with TabPane("Costs", id="tab_costs"):
+                with VerticalScroll(id="exec_costs"):
+                    yield Static(self._render_costs(), id="exec_costs_text")
         yield Static(
             _idle_footer_text(),
             id="exec_footer",
@@ -195,7 +221,13 @@ class ExecutionScreen(Screen[None]):
         self.set_interval(0.1, self._tick_spinner)
         # Make every tab body focusable so keyboard scrolling works when a tab
         # has more content than the available terminal height.
-        for scroll_id in ("#exec_output", "#exec_diagnostics", "#exec_progress", "#exec_settings"):
+        for scroll_id in (
+            "#exec_output",
+            "#exec_diagnostics",
+            "#exec_progress",
+            "#exec_settings",
+            "#exec_costs",
+        ):
             try:
                 self.query_one(scroll_id).can_focus = True
             except Exception:
@@ -232,6 +264,9 @@ class ExecutionScreen(Screen[None]):
             except Exception:
                 pass
             self._pending_footer = None
+        if self._pending_costs is not None:
+            self.update_costs(self._pending_costs)
+            self._pending_costs = None
         self._refresh_summary_widgets()
 
     def _write_default_placeholders(self) -> None:
@@ -290,6 +325,7 @@ class ExecutionScreen(Screen[None]):
                 "tab_progress": "#exec_progress",
                 "tab_diagnostics": "#exec_diagnostics",
                 "tab_settings": "#exec_settings",
+                "tab_costs": "#exec_costs",
             }.get(active)
             if target_id:
                 self.query_one(target_id).focus()
@@ -372,14 +408,31 @@ class ExecutionScreen(Screen[None]):
         self._settings = {k: v for k, v in settings.items() if v is not None}
         self._refresh_summary_widgets()
 
+    def update_costs(self, costs: dict[str, object]) -> None:
+        """Replace the Costs tab content with live session cost data.
+
+        Args:
+            costs: Mapping with keys ``session_cost_usd``, ``last_task_cost_usd``,
+                ``session_tokens``, and ``model_costs``.
+        """
+        self._costs = {k: v for k, v in costs.items() if v is not None}
+        try:
+            self.query_one("#exec_costs_text", Static).update(self._render_costs())
+        except Exception:
+            self._pending_costs = costs
+
     def _refresh_summary_widgets(self) -> None:
-        """Refresh cached progress/settings state after mount or updates."""
+        """Refresh cached progress/settings/costs state after mount or updates."""
         try:
             self.query_one("#exec_progress_text", Static).update(self._render_progress())
         except Exception:
             pass
         try:
             self.query_one("#exec_settings_text", Static).update(self._render_settings())
+        except Exception:
+            pass
+        try:
+            self.query_one("#exec_costs_text", Static).update(self._render_costs())
         except Exception:
             pass
 
@@ -480,7 +533,7 @@ class ExecutionScreen(Screen[None]):
             "",
             "[dim]─────────────────────────────[/dim]",
             "",
-            "[dim]Tabs:  [l] Live  [p] Progress  [d] Diagnostics  [g] Settings[/dim]",
+            "[dim]Tabs:  [l] Live  [p] Progress  [d] Diagnostics  [g] Settings  [c] Costs[/dim]",
             "[dim]Keys:  Esc = pause menu  ·  Ctrl+C = stop[/dim]",
         ]
         return "\n".join(lines)
@@ -499,7 +552,57 @@ class ExecutionScreen(Screen[None]):
             "",
             "[dim]─────────────────────────────[/dim]",
             "",
-            "[dim]Tabs:  [l] Live  [p] Progress  [d] Diagnostics  [g] Settings[/dim]",
+            "[dim]Tabs:  [l] Live  [p] Progress  [d] Diagnostics  [g] Settings  [c] Costs[/dim]",
+            "[dim]Keys:  Esc = pause menu  ·  Ctrl+C = stop[/dim]",
+        ]
+        return "\n".join(lines)
+
+    def _render_costs(self) -> str:
+        """Render the Costs tab content with live session cost data.
+
+        Returns:
+            Markup string for the Costs tab Static widget.
+        """
+        lines = [
+            "[#7cc800][bold]Session Costs[/bold][/#7cc800]",
+            "",
+        ]
+
+        session_cost = self._costs.get("session_cost_usd", 0.0)
+        last_task_cost = self._costs.get("last_task_cost_usd", 0.0)
+        session_tokens = self._costs.get("session_tokens", 0)
+        model_costs: dict[str, float] = self._costs.get("model_costs", {})  # type: ignore[assignment]
+
+        if not self._costs:
+            lines.append("  [dim]Cost data will appear after the first task completes.[/dim]")
+            lines.append("  [dim]Requires models with known pricing (Claude, GPT-4, Gemini).[/dim]")
+        else:
+            if session_tokens and isinstance(session_tokens, (int, float)):
+                lines.append(f"  Session tokens    [dim]{_fmt_tokens(int(session_tokens))}[/dim]")
+            if isinstance(session_cost, float) and session_cost > 0:
+                lines.append(f"  Session cost      [bold]${session_cost:.4f}[/bold]")
+            elif session_tokens and not (isinstance(session_cost, float) and session_cost > 0):
+                lines.append("  Session cost      [dim]—  (model not in pricing table)[/dim]")
+            if isinstance(last_task_cost, float) and last_task_cost > 0:
+                lines.append(f"  Last task cost    [dim]${last_task_cost:.4f}[/dim]")
+
+            if model_costs:
+                lines += ["", "  [dim]Per-model breakdown:[/dim]"]
+                for model, cost in sorted(model_costs.items(), key=lambda x: -x[1]):
+                    model_short = model.split("/")[-1] if "/" in model else model
+                    if isinstance(cost, float) and cost > 0:
+                        lines.append(f"    [dim]{model_short:<32}[/dim]  ${cost:.4f}")
+                    else:
+                        lines.append(f"    [dim]{model_short}[/dim]")
+
+        lines += [
+            "",
+            "  [dim]Prices are estimates based on public list rates.[/dim]",
+            "  [dim]Run  architect token-report  for historical totals.[/dim]",
+            "",
+            "[dim]─────────────────────────────[/dim]",
+            "",
+            "[dim]Tabs:  [l] Live  [p] Progress  [d] Diagnostics  [g] Settings  [c] Costs[/dim]",
             "[dim]Keys:  Esc = pause menu  ·  Ctrl+C = stop[/dim]",
         ]
         return "\n".join(lines)
