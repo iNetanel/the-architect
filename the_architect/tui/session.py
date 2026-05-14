@@ -177,7 +177,9 @@ def tui_execution_session(enabled: bool) -> Iterator[TuiSession]:
     def _run_app() -> None:
         ready.set()
         try:
-            app.run()
+            import os
+
+            app.run(headless=bool(os.environ.get("PYTEST_CURRENT_TEST")))
         except Exception:
             pass
         finally:
@@ -359,7 +361,9 @@ def tui_wait_session(
     def _run_app() -> None:
         ready.set()
         try:
-            app.run()
+            import os
+
+            app.run(headless=bool(os.environ.get("PYTEST_CURRENT_TEST")))
         except Exception:
             pass
         finally:
