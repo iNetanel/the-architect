@@ -18,9 +18,24 @@ empty [Unreleased] above it. Use Keep a Changelog section headings:
 Added / Changed / Deprecated / Removed / Fixed / Security.
 -->
 
+## [1.2.8] (build 10399) — 2026-05-14
+
+### Added
+
+- **Cross-run token and cost ledger.** The Architect now records each completed run to `.architect/token_ledger.json`, including total tokens, estimated USD cost, outcome, duration, task count, and per-model token/cost breakdowns. Ledger writes are atomic and best-effort, so reporting cannot crash an execution run (builds 10394-10395).
+- **`architect token-report` command.** Users can now inspect historical token usage and estimated cost directly from the CLI, with a readable Rich table by default, `--json` for automation, `--since` for date filtering, and `--top-models` to focus on the most expensive models (build 10396).
+- **Token ledger research record.** Added `cycle-research.md` to document why cross-run cost visibility matters across Codex CLI, Claude Code, OpenCode, and adjacent LLM cost-tracking tools (build 10393).
+
 ### Changed
 
-- `architect doctor` now reports every supported provider while provider selection lists show only installed, configured providers that can actually run (build 10392).
+- **Provider diagnostics are clearer.** `architect doctor` now reports every supported provider, while provider selection only shows installed and configured providers that can actually run. This makes setup issues easier to diagnose without offering unusable providers during execution (build 10392).
+- **Token ledger recording is enabled by default.** Projects automatically collect run-level cost history unless `token_ledger = false` is set in `architect.toml` (build 10395).
+
+### Fixed
+
+- **More resilient execution after computer sleep or suspend.** The provider streaming loop now detects large wall-clock gaps in an OS- and terminal-agnostic way, terminates stale provider subprocesses after wake, retries the attempt, and avoids counting local sleep interruptions against circuit breaker no-progress/same-error thresholds (build 10398).
+- **Fixed pre-task exits from packaged resource loading.** Task execution now prefers the project-local `.architect/prompts/execution-protocol.md` before reading packaged prompt resources, preventing `MultiplexedPath` resource-loader glitches from aborting tasks before OpenCode, Codex, Claude Code, or Gemini starts (build 10397).
+- **More reliable local and CI test behavior.** OpenCode config discovery tests now isolate host-level config paths so a developer's real `~/.config/opencode` cannot create false failures during full-suite runs (build 10397).
 
 ## [1.2.7] (build 10390) — 2026-05-13
 

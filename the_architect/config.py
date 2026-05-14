@@ -243,6 +243,15 @@ class ArchitectConfig(BaseModel):
         ),
     )
 
+    token_ledger: bool = Field(
+        default=True,
+        description=(
+            "When True, The Architect records each run's token usage and "
+            "estimated cost to .architect/token_ledger.json after completion. "
+            "Set to False to disable cross-run token ledger recording."
+        ),
+    )
+
     model_config = {"frozen": False, "extra": "ignore"}
 
     @property
@@ -302,6 +311,7 @@ class ArchitectConfig(BaseModel):
             cooldown_detection=self.cooldown_detection,
             token_budget_per_hour=self.token_budget_per_hour,
             workspace_baseline=self.workspace_baseline,
+            token_ledger=self.token_ledger,
         )
 
 

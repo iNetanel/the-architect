@@ -79,6 +79,12 @@ from the_architect.core.tasks import (
     duplicate_task_prefixes,
 )
 from the_architect.core.tmux import PaddedConsole
+from the_architect.core.token_ledger import (
+    TokenLedger,
+    append_run,
+    load_ledger,
+    save_ledger,
+)
 from the_architect.tui.screens.pre_run import BACK_SENTINEL
 
 console = PaddedConsole()
@@ -5111,6 +5117,16 @@ def _run_main(
             original_goal=original_goal,
         )
 
+        # ── Token ledger recording ────────────────────────────────────────
+        if config.token_ledger:
+            try:
+                ledger = load_ledger(project)
+                outcome = "success" if success else "failure"
+                append_run(ledger, all_results, original_goal, total_duration, outcome)
+                save_ledger(project, ledger)
+            except Exception as _ledger_exc:
+                logger.debug(f"Token ledger recording failed (non-fatal): {_ledger_exc!r}")
+
         # TUI path: show the animated success screen instead of the plain
         # terminal summary.  The screen blocks until the user presses Enter,
         # Q, or Escape, then the ArchitectAppRunner exits cleanly.
@@ -5737,6 +5753,218 @@ def status_cmd(project: Path | None, use_tui: bool, as_json: bool) -> None:
             if len(log_files) > 5:
                 console.print(f"  [dim]… and {len(log_files) - 5} more[/dim]")
             console.print()
+
+
+# ---------------------------------------------------------------------------
+# Token report command
+# ---------------------------------------------------------------------------
+
+
+def _fmt_cost(dollars: float) -> str:
+    """Format a USD cost value for display.
+
+    Args:
+        dollars: Cost amount in USD.
+
+    Returns:
+        Formatted string like ``"$0.00"`` or ``"$12.34"``.
+    """
+    return f"${dollars:.2f}"
+
+
+def _render_token_report_table(
+    ledger: TokenLedger,
+    top_models: int | None = None,
+) -> None:
+    """Render the token ledger as a Rich table with summary totals.
+
+    Args:
+        ledger: A :class:`~the_architect.core.token_ledger.TokenLedger` instance.
+        top_models: When set, limit the per-model breakdown to the N most
+            expensive models.
+    """
+    from rich import box
+    from rich.table import Table
+
+    from the_architect.core.success import _fmt_tokens
+
+    console.print()
+    console.print(
+        f"[bold {ARCHITECT_GREEN}]The Architect[/bold {ARCHITECT_GREEN}]  "
+        "[dim]Token Ledger Report[/dim]"
+    )
+    console.print()
+
+    if not ledger.records:
+        console.print("[dim]No token ledger data found.[/dim]")
+        console.print()
+        return
+
+    # ── Per-run table ────────────────────────────────────────────────────
+    table = Table(box=box.SIMPLE, show_header=True, header_style="dim", padding=(0, 1))
+    table.add_column("Date", width=10)
+    table.add_column("Goal", no_wrap=False)
+    table.add_column("Tasks", justify="right", width=6)
+    table.add_column("Tokens", justify="right", width=8)
+    table.add_column("Est. Cost", justify="right", width=9)
+    table.add_column("Outcome", width=10)
+
+    for record in ledger.records:
+        # Extract date portion from ISO timestamp
+        date_str = record.timestamp[:10] if len(record.timestamp) >= 10 else record.timestamp
+        goal = record.goal_summary or "—"
+        if len(goal) > 60:
+            goal = goal[:57] + "..."
+        tasks_str = str(record.task_count)
+        tokens_str = _fmt_tokens(record.total_tokens) if record.total_tokens else "—"
+        cost_str = _fmt_cost(record.total_cost_estimate)
+        if record.outcome == "success":
+            outcome_str = "[#7cc800]✓ Success[/#7cc800]"
+        else:
+            outcome_str = "[red]✗ Failed[/red]"
+        table.add_row(date_str, goal, tasks_str, tokens_str, cost_str, outcome_str)
+
+    console.print(table)
+
+    # ── Summary totals ───────────────────────────────────────────────────
+    total_runs = len(ledger.records)
+    total_tokens = ledger.total_tokens_all_runs()
+    total_cost = ledger.total_cost_all_runs()
+
+    console.print()
+    console.print(
+        f"[bold]Summary[/bold]  "
+        f"{total_runs} run{'s' if total_runs != 1 else ''}  "
+        f"· {_fmt_tokens(total_tokens)} tokens  "
+        f"· {_fmt_cost(total_cost)} est. cost"
+    )
+
+    # ── Per-model breakdown ──────────────────────────────────────────────
+    model_totals = ledger.model_totals()
+    if model_totals:
+        # Calculate cost per model using the pricing table
+        from the_architect.core.token_ledger import estimate_cost
+
+        model_costs: list[tuple[str, float, int]] = []
+        for model, usage in model_totals.items():
+            cost = estimate_cost(usage.total, model)
+            model_costs.append((model, cost, usage.total))
+
+        # Sort by cost descending
+        model_costs.sort(key=lambda x: x[1], reverse=True)
+        if top_models:
+            model_costs = model_costs[:top_models]
+
+        console.print()
+        console.print("[dim]Per-model cost breakdown:[/dim]")
+        for model, cost, tokens in model_costs:
+            short_model = model
+            # Shorten provider prefixes
+            for prefix in ("anthropic/", "openai/", "google/"):
+                if short_model.startswith(prefix):
+                    short_model = short_model[len(prefix) :]
+                    break
+            console.print(
+                f"  [dim]{short_model}[/dim]  {_fmt_tokens(tokens)} tokens  · {_fmt_cost(cost)}"
+            )
+
+    console.print()
+
+
+def _format_token_report_json(ledger: TokenLedger) -> str:
+    """Return the token ledger as structured JSON for machine consumption.
+
+    Args:
+        ledger: A :class:`~the_architect.core.token_ledger.TokenLedger` instance.
+
+    Returns:
+        JSON string containing run records and summary data.
+    """
+    from the_architect.core.token_ledger import estimate_cost
+
+    result: dict[str, object] = {
+        "runs": [r.model_dump() for r in ledger.records],
+        "summary": {
+            "total_runs": len(ledger.records),
+            "total_tokens": ledger.total_tokens_all_runs(),
+            "total_cost_estimate": ledger.total_cost_all_runs(),
+        },
+    }
+
+    # Per-model breakdown
+    model_totals = ledger.model_totals()
+    if model_totals:
+        model_costs: list[dict[str, object]] = []
+        for model, usage in model_totals.items():
+            cost = estimate_cost(usage.total, model)
+            model_costs.append(
+                {
+                    "model": model,
+                    "total_tokens": usage.total,
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    "cost_estimate": cost,
+                }
+            )
+        model_costs.sort(key=lambda x: x["cost_estimate"], reverse=True)  # type: ignore[arg-type, return-value]
+        result["model_breakdown"] = model_costs
+
+    return json.dumps(result, indent=2)
+
+
+@main.command(name="token-report")
+@click.option(
+    "--project",
+    "-p",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+    default=None,
+    help="Project directory (default: current working directory)",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Output as machine-readable JSON",
+)
+@click.option(
+    "--since",
+    default=None,
+    metavar="DATE",
+    help="Show only runs on or after DATE (e.g. 2026-05-01)",
+)
+@click.option(
+    "--top-models",
+    type=int,
+    default=None,
+    metavar="N",
+    help="Show only the N most expensive models in the breakdown",
+)
+def token_report_cmd(
+    project: Path | None,
+    as_json: bool,
+    since: str | None,
+    top_models: int | None,
+) -> None:
+    """Show cross-run token usage and estimated costs from the token ledger.
+
+    Reads ``.architect/token_ledger.json`` and displays a formatted summary
+    of token usage, costs, and per-model breakdowns across all Architect runs.
+    """
+    _setup_loguru()
+
+    proj = (project or Path.cwd()).resolve()
+
+    ledger = load_ledger(proj)
+
+    # Apply date filter
+    if since:
+        ledger = ledger.filter_by_date(start=since)
+
+    if as_json:
+        click.echo(_format_token_report_json(ledger))
+        return
+
+    _render_token_report_table(ledger, top_models=top_models)
 
 
 @main.command(name="init")

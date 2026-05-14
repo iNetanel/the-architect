@@ -635,6 +635,33 @@ class TestStreamProviderSubprocess:
         assert "Provider produced no stdout" in result.accumulated_text
         assert mock_process.kill.called
 
+    @pytest.mark.asyncio
+    async def test_sleep_wake_gap_terminates_provider(self, monkeypatch: pytest.MonkeyPatch):
+        """A large wall-clock gap while waiting for output is treated as retryable."""
+        provider = _make_mock_provider()
+        mock_process = _make_mock_process(stdout_lines=[], exit_code=0)
+
+        async def _never_returns():
+            await asyncio.sleep(60)
+            return b""
+
+        mock_process.stdout.readline = _never_returns
+        mock_process.returncode = None
+        mock_process.kill = MagicMock()
+        monkeypatch.setenv("ARCHITECT_PROVIDER_IDLE_TIMEOUT_SECONDS", "900")
+        monkeypatch.setenv("ARCHITECT_SLEEP_WAKE_GAP_SECONDS", "0.01")
+        with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = mock_process
+            with patch("the_architect.core.runner.time.time", side_effect=[100.0, 101.0]):
+                with patch("sys.stdout"):
+                    result = await stream_provider("test", Path("/tmp"), provider)
+
+        assert result.interrupted is True
+        assert result.interruption_reason == "sleep_wake_gap"
+        assert "computer slept or was suspended" in result.accumulated_text
+        assert result.exit_code != 0
+        assert mock_process.kill.called
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 4. _tool_result_lines
@@ -1218,6 +1245,26 @@ class TestBuildInstruction:
         assert "<promise>T01_COMPLETE</promise>" in result
         assert task.path.name in result
 
+    def test_uses_project_local_execution_protocol_when_resources_fail(
+        self, task, config, monkeypatch
+    ):
+        prompts_dir = config.project_root / ".architect" / "prompts"
+        prompts_dir.mkdir(parents=True, exist_ok=True)
+        (prompts_dir / "execution-protocol.md").write_text(
+            "LOCAL EXECUTION PROTOCOL",
+            encoding="utf-8",
+        )
+
+        def fail_resource_lookup(package: str) -> None:
+            raise NotADirectoryError("MultiplexedPath only supports directories")
+
+        monkeypatch.setattr("importlib.resources.files", fail_resource_lookup)
+
+        result = build_instruction(task, attempt=1, config=config)
+
+        assert "LOCAL EXECUTION PROTOCOL" in result
+        assert "TASK PREFIX: T01" in result
+
     def test_instruction_uses_r_task_prefix_for_promise(self, config):
         path = config.tasks_dir / "R01_fix.md"
         path.write_text("# R01 - Fix Task\n", encoding="utf-8")
@@ -1453,6 +1500,28 @@ class TestRunTaskCircuitBreaker:
         ):
             result = await run_task(task=task, config=config, circuit_breaker=cb)
             assert result.status == "failed"
+
+    @pytest.mark.asyncio
+    async def test_interrupted_attempt_skips_circuit_counters(self, task, config):
+        from the_architect.core.circuit import CircuitBreaker as CB
+
+        config.max_retries = 1
+        cb = MagicMock(spec=CB)
+        cb.can_run.return_value = (True, "")
+        interrupted = StreamResult(
+            exit_code=-9,
+            tokens=TokenUsage(),
+            accumulated_text="Provider execution paused after system sleep.",
+            interrupted=True,
+            interruption_reason="sleep_wake_gap",
+        )
+        with patch("the_architect.core.runner.stream_provider", return_value=interrupted):
+            result = await run_task(task=task, config=config, circuit_breaker=cb)
+
+        assert result.status == "failed"
+        assert result.interrupted is True
+        assert result.interruption_reason == "sleep_wake_gap"
+        cb.record_attempt.assert_not_called()
 
 
 class TestRunTaskArchitectMdAndCallbacks:

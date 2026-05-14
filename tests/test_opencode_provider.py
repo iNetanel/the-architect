@@ -739,8 +739,13 @@ class TestOpenCodeProviderFindUserConfig:
                 result = provider.find_user_config(tmp_path)
                 assert result == config_file
 
-    def test_returns_none_when_no_config_found(self, tmp_path: Path) -> None:
+    def test_returns_none_when_no_config_found(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Should return None when config not found anywhere."""
+        monkeypatch.delenv("OPENCODE_CONFIG", raising=False)
+        monkeypatch.delenv("OPENCODE_CONFIG_DIR", raising=False)
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
         provider = OpenCodeProvider()
         result = provider.find_user_config(tmp_path)
         assert result is None

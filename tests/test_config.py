@@ -5,6 +5,8 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from the_architect.config import ArchitectConfig, find_opencode_json, load_config, write_config
 
 
@@ -129,17 +131,20 @@ class TestFindOpencodeJson:
             assert result is not None
             assert result.name == "opencode.json"
 
-    def test_find_opencode_json_not_found(self) -> None:
+    def test_find_opencode_json_not_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Should return None when opencode.json doesn't exist in project_dir."""
         with tempfile.TemporaryDirectory() as tmpdir:
             project_dir = Path(tmpdir) / "project"
             project_dir.mkdir()
+            monkeypatch.setenv("XDG_CONFIG_HOME", str(Path(tmpdir) / "xdg"))
 
             result = find_opencode_json(project_dir)
 
             assert result is None
 
-    def test_find_opencode_json_does_not_walk_to_parent(self) -> None:
+    def test_find_opencode_json_does_not_walk_to_parent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Should NOT find opencode.json in a parent directory.
 
         A parent opencode.json belongs to a different project. Walking up
@@ -149,18 +154,22 @@ class TestFindOpencodeJson:
             project_dir = Path(tmpdir) / "subproject"
             project_dir.mkdir()
             (Path(tmpdir) / "opencode.json").touch()  # parent has one — must be ignored
+            monkeypatch.setenv("XDG_CONFIG_HOME", str(Path(tmpdir) / "xdg"))
 
             result = find_opencode_json(project_dir)
 
             assert result is None
 
-    def test_find_opencode_json_does_not_walk_past_git(self) -> None:
+    def test_find_opencode_json_does_not_walk_past_git(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Should return None even when parent has opencode.json and a .git exists."""
         with tempfile.TemporaryDirectory() as tmpdir:
             project_dir = Path(tmpdir) / "subproject"
             project_dir.mkdir()
             (project_dir / ".git").mkdir()
             (Path(tmpdir) / "opencode.json").touch()
+            monkeypatch.setenv("XDG_CONFIG_HOME", str(Path(tmpdir) / "xdg"))
 
             result = find_opencode_json(project_dir)
 

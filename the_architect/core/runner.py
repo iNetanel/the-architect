@@ -31,6 +31,9 @@ from the_architect.core.tasks import Task, TaskPlan, discover_tasks
 _STREAM_LEFT_PAD = "  "
 _STREAM_RIGHT_GAP = 2
 _PROVIDER_IDLE_TIMEOUT_SECONDS = 900.0
+_PROVIDER_SLEEP_WAKE_GAP_SECONDS = 120.0
+_PROVIDER_READ_PROBE_SECONDS = 5.0
+_FORCED_TERMINATION_EXIT_CODE = -int(getattr(signal, "SIGKILL", signal.SIGTERM))
 _OUTCOME_SECTION_MARKER = "=== TASK OUTCOME ==="
 _OUTCOME_FIELD_LABELS = {
     "summary": "Summary",
@@ -223,6 +226,14 @@ class TaskResult(BaseModel):
             "(.architect/baselines/<task_name>.json). Empty string when "
             "baseline capture is disabled or failed."
         ),
+    )
+    interrupted: bool = Field(
+        default=False,
+        description="True when the provider attempt was interrupted by local execution conditions.",
+    )
+    interruption_reason: str = Field(
+        default="",
+        description="Human-readable reason for an interrupted provider attempt.",
     )
 
 
@@ -688,6 +699,14 @@ class StreamResult(BaseModel):
             "until this time before retrying."
         ),
     )
+    interrupted: bool = Field(
+        default=False,
+        description="True when the provider subprocess was terminated by the runner.",
+    )
+    interruption_reason: str = Field(
+        default="",
+        description="Human-readable reason for a runner-terminated provider subprocess.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -788,6 +807,34 @@ def _provider_idle_timeout_seconds() -> float:
     return max(0.0, value)
 
 
+def _provider_sleep_wake_gap_seconds() -> float:
+    """Return wall-clock gap threshold used to detect computer sleep/wake pauses."""
+    raw = os.environ.get("ARCHITECT_SLEEP_WAKE_GAP_SECONDS", "").strip()
+    if not raw:
+        return _PROVIDER_SLEEP_WAKE_GAP_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid ARCHITECT_SLEEP_WAKE_GAP_SECONDS value "
+            f"{raw!r}; using default {int(_PROVIDER_SLEEP_WAKE_GAP_SECONDS)}s"
+        )
+        return _PROVIDER_SLEEP_WAKE_GAP_SECONDS
+    return max(0.0, value)
+
+
+def _provider_read_probe_seconds(
+    idle_timeout_seconds: float, sleep_wake_gap_seconds: float
+) -> float:
+    """Return short readline probe interval for idle and sleep/wake detection."""
+    candidates = [_PROVIDER_READ_PROBE_SECONDS]
+    if idle_timeout_seconds > 0:
+        candidates.append(idle_timeout_seconds)
+    if sleep_wake_gap_seconds > 0:
+        candidates.append(sleep_wake_gap_seconds)
+    return max(0.01, min(candidates))
+
+
 async def stream_provider(
     instruction: str,
     project_dir: Path,
@@ -874,6 +921,13 @@ async def stream_provider(
     exit_code: int = -1
     first_output_fired: bool = False
     idle_timeout_seconds = _provider_idle_timeout_seconds()
+    sleep_wake_gap_seconds = _provider_sleep_wake_gap_seconds()
+    read_probe_seconds = _provider_read_probe_seconds(
+        idle_timeout_seconds,
+        sleep_wake_gap_seconds,
+    )
+    interrupted: bool = False
+    interruption_reason: str = ""
 
     def _fire_first_output() -> None:
         """Fire the on_first_output callback exactly once, swallowing errors."""
@@ -918,6 +972,8 @@ async def stream_provider(
             nonlocal accumulated_tokens
             nonlocal rate_limit_detected
             nonlocal cooldown_until
+            nonlocal interrupted
+            nonlocal interruption_reason
 
             log_file = None
             if log_path is not None:
@@ -927,27 +983,56 @@ async def stream_provider(
                     log_file = None
 
             try:
+                last_output_wall = time.time()
+                last_probe_wall = last_output_wall
                 while True:
                     try:
-                        if idle_timeout_seconds > 0:
+                        if idle_timeout_seconds <= 0 and sleep_wake_gap_seconds <= 0:
+                            line_bytes = await stdout_reader.readline()
+                        else:
                             line_bytes = await asyncio.wait_for(
                                 stdout_reader.readline(),
-                                timeout=idle_timeout_seconds,
+                                timeout=read_probe_seconds,
                             )
-                        else:
-                            line_bytes = await stdout_reader.readline()
                     except TimeoutError:
-                        message = (
-                            f"Provider produced no stdout for {int(idle_timeout_seconds)}s; "
-                            "terminating stalled subprocess."
-                        )
-                        accumulated_text_parts.append(message)
-                        logger.warning(message)
-                        if process is not None and process.returncode is None:
-                            _kill_process_tree(process)
-                        break
+                        now_wall = time.time()
+                        wall_gap = now_wall - last_probe_wall
+                        idle_elapsed = now_wall - last_output_wall
+                        last_probe_wall = now_wall
+
+                        if sleep_wake_gap_seconds > 0 and wall_gap >= sleep_wake_gap_seconds:
+                            message = (
+                                "Provider execution paused for "
+                                f"{int(wall_gap)}s, likely because the computer slept or was "
+                                "suspended; terminating stale subprocess so the attempt can retry."
+                            )
+                            interrupted = True
+                            interruption_reason = "sleep_wake_gap"
+                            accumulated_text_parts.append(message)
+                            logger.warning(message)
+                            if process is not None and process.returncode is None:
+                                _kill_process_tree(process)
+                            break
+
+                        if idle_timeout_seconds > 0 and idle_elapsed >= idle_timeout_seconds:
+                            message = (
+                                f"Provider produced no stdout for {int(idle_timeout_seconds)}s; "
+                                "terminating stalled subprocess."
+                            )
+                            interrupted = True
+                            interruption_reason = "idle_timeout"
+                            accumulated_text_parts.append(message)
+                            logger.warning(message)
+                            if process is not None and process.returncode is None:
+                                _kill_process_tree(process)
+                            break
+
+                        await asyncio.sleep(0)
+                        continue
                     if not line_bytes:
                         break
+                    last_output_wall = time.time()
+                    last_probe_wall = last_output_wall
                     line = line_bytes.decode("utf-8", errors="replace").rstrip("\n").rstrip("\r")
 
                     # Append raw line to log file
@@ -1036,6 +1121,8 @@ async def stream_provider(
             await asyncio.wait_for(reader_task, timeout=30.0)
         except TimeoutError:
             reader_task.cancel()
+        if interrupted and exit_code == 0:
+            exit_code = _FORCED_TERMINATION_EXIT_CODE
 
     except FileNotFoundError:
         raise
@@ -1086,6 +1173,8 @@ async def stream_provider(
         accumulated_text="\n".join(accumulated_text_parts),
         rate_limit_hit=rate_limit_detected,
         cooldown_until=cooldown_until,
+        interrupted=interrupted,
+        interruption_reason=interruption_reason,
     )
 
 
@@ -1892,8 +1981,17 @@ def build_instruction(
     lines: list[str] = []
 
     # --- Execution protocol (explains The Architect to the user's agent) ---
-    protocol_source = resources.files("the_architect.resources.prompts") / "execution-protocol.md"
-    protocol_text = protocol_source.read_text(encoding="utf-8").strip()
+    local_protocol = config.project_root / ".architect" / "prompts" / "execution-protocol.md"
+    protocol_text = ""
+    try:
+        protocol_text = local_protocol.read_text(encoding="utf-8").strip()
+    except OSError:
+        protocol_text = ""
+    if not protocol_text:
+        protocol_source = (
+            resources.files("the_architect.resources.prompts") / "execution-protocol.md"
+        )
+        protocol_text = protocol_source.read_text(encoding="utf-8").strip()
     lines.append(protocol_text)
 
     lines.append("")
@@ -2297,11 +2395,16 @@ async def run_task_once(
         # Give any file writes a moment to flush before checking PROGRESS.md
         await asyncio.sleep(2)
 
-        if stream_result.exit_code != 0:
+        if stream_result.interrupted or stream_result.exit_code != 0:
             logger.warning(
                 f"Task {task.prefix} attempt {attempt} exited with code {stream_result.exit_code}"
             )
-            if stream_result.exit_code == -signal.SIGKILL:
+            if stream_result.interrupted:
+                logger.warning(
+                    f"Task {task.prefix} provider attempt interrupted: "
+                    f"{stream_result.interruption_reason or 'unknown'}"
+                )
+            if stream_result.exit_code == _FORCED_TERMINATION_EXIT_CODE:
                 logger.warning(
                     f"Task {task.prefix} provider process was killed with SIGKILL; "
                     "treating output as interrupted"
@@ -2328,6 +2431,8 @@ async def run_task_once(
                 accumulated_text=stream_result.accumulated_text,
                 exit_code=stream_result.exit_code,
                 cooldown_until=stream_result.cooldown_until,
+                interrupted=stream_result.interrupted,
+                interruption_reason=stream_result.interruption_reason,
                 outcome_summary=_task_outcome_summary_for_exit(
                     stream_result.accumulated_text,
                     stream_result.exit_code,
@@ -2416,6 +2521,8 @@ async def run_task_once(
             accumulated_text=stream_result.accumulated_text,
             exit_code=stream_result.exit_code,
             cooldown_until=stream_result.cooldown_until,
+            interrupted=stream_result.interrupted,
+            interruption_reason=stream_result.interruption_reason,
             outcome_summary=outcome_summary,
             baseline_path=baseline_path_str,
         )
@@ -2661,7 +2768,12 @@ async def run_task(
 
         # ── Circuit breaker: record attempt ─────────────────────────────
         cooldown_triggered = False
-        if cb is not None:
+        if result.interrupted:
+            logger.warning(
+                f"Task {task.prefix} attempt {attempt} interrupted locally "
+                f"({result.interruption_reason or 'unknown'}); skipping circuit counters"
+            )
+        elif cb is not None:
             log_path = (
                 config.log_dir / f"{task.name}.log"
                 if attempt == 1
@@ -2894,6 +3006,8 @@ async def run_task(
         tokens=accumulated_tokens,
         model=last_result.model if last_result else "",
         outcome_summary=last_result.outcome_summary if last_result else "",
+        interrupted=last_result.interrupted if last_result else False,
+        interruption_reason=last_result.interruption_reason if last_result else "",
     )
 
 
