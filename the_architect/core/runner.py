@@ -34,6 +34,7 @@ _PROVIDER_IDLE_TIMEOUT_SECONDS = 900.0
 _PROVIDER_SLEEP_WAKE_GAP_SECONDS = 120.0
 _PROVIDER_READ_PROBE_SECONDS = 5.0
 _FORCED_TERMINATION_EXIT_CODE = -int(getattr(signal, "SIGKILL", signal.SIGTERM))
+_PROGRESS_FLUSH_DELAY_SECONDS = 2.0
 _OUTCOME_SECTION_MARKER = "=== TASK OUTCOME ==="
 _OUTCOME_FIELD_LABELS = {
     "summary": "Summary",
@@ -2392,8 +2393,8 @@ async def run_task_once(
 
         duration = time.monotonic() - start_time
 
-        # Give any file writes a moment to flush before checking PROGRESS.md
-        await asyncio.sleep(2)
+        # Give any file writes a moment to flush before checking PROGRESS.md.
+        await asyncio.sleep(_PROGRESS_FLUSH_DELAY_SECONDS)
 
         if stream_result.interrupted or stream_result.exit_code != 0:
             logger.warning(

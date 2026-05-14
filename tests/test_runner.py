@@ -73,6 +73,12 @@ def config(tmp_path: Path) -> ArchitectConfig:
     )
 
 
+@pytest.fixture(autouse=True)
+def skip_progress_flush_delay(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Avoid the production progress-file flush delay in mocked runner tests."""
+    monkeypatch.setattr("the_architect.core.runner._PROGRESS_FLUSH_DELAY_SECONDS", 0.0)
+
+
 @pytest.fixture
 def task(config: ArchitectConfig) -> Task:
     path = config.tasks_dir / "T01_test.md"
