@@ -187,7 +187,22 @@ class PaddedConsole(Console):
     (no padding since there's no side panel to gap from).
 
     The gap size is controlled by the ``_SIDE_PANEL_GAP`` constant.
+
+    On Windows, ``legacy_windows=False`` is passed explicitly so that
+    Rich uses VT/ANSI escape sequences instead of the old Win32 console
+    API.  Windows Terminal and PowerShell 5.1+ both support VT natively.
+    Without this flag, Rich falls back to its legacy Windows rendering
+    path which produces visibly degraded output (no colour, no box
+    characters, no cursor positioning).
     """
+
+    def __init__(self, **kwargs: object) -> None:
+        """Initialise with Windows-safe defaults."""
+        import sys as _sys
+
+        if _sys.platform == "win32":
+            kwargs.setdefault("legacy_windows", False)
+        super().__init__(**kwargs)  # type: ignore[arg-type]
 
     @property
     def width(self) -> int:

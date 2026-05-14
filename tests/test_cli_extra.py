@@ -22,6 +22,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from click.testing import CliRunner
 
 from the_architect.cli import main
@@ -939,3 +940,113 @@ class TestDoctorCmd:
 
         assert result.exit_code == 0, result.output
         assert "Python version" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Windows / PowerShell TUI detection
+# ---------------------------------------------------------------------------
+
+
+class TestIsDumbTerminal:
+    """Tests for _is_dumb_terminal() — the authoritative dumb-terminal gate."""
+
+    def test_term_dumb_is_dumb(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """TERM=dumb must return True."""
+        from the_architect.cli import _is_dumb_terminal
+
+        monkeypatch.setenv("TERM", "dumb")
+        assert _is_dumb_terminal() is True
+
+    def test_term_empty_is_not_dumb(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Unset TERM (PowerShell / cmd.exe) must NOT be treated as dumb."""
+        from the_architect.cli import _is_dumb_terminal
+
+        monkeypatch.delenv("TERM", raising=False)
+        assert _is_dumb_terminal() is False
+
+    def test_term_xterm_is_not_dumb(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A normal TERM value must not be treated as dumb."""
+        from the_architect.cli import _is_dumb_terminal
+
+        monkeypatch.setenv("TERM", "xterm-256color")
+        assert _is_dumb_terminal() is False
+
+    def test_term_case_insensitive(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """TERM=DUMB (upper-case) must still be detected as dumb."""
+        from the_architect.cli import _is_dumb_terminal
+
+        monkeypatch.setenv("TERM", "DUMB")
+        assert _is_dumb_terminal() is True
+
+
+class TestResolveTuiDefaultWindows:
+    """Tests that _resolve_tui_default enables TUI on Windows PowerShell."""
+
+    def test_empty_term_with_tty_enables_tui(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Empty TERM (Windows PowerShell) + real TTY must enable the TUI."""
+        from the_architect.cli import _resolve_tui_default
+
+        monkeypatch.delenv("TERM", raising=False)
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        with patch("sys.stdout") as mock_stdout:
+            mock_stdout.isatty.return_value = True
+            assert _resolve_tui_default(None, headless=False) is True
+
+    def test_term_dumb_with_tty_disables_tui(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """TERM=dumb must disable the TUI even with a TTY."""
+        from the_architect.cli import _resolve_tui_default
+
+        monkeypatch.setenv("TERM", "dumb")
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        with patch("sys.stdout") as mock_stdout:
+            mock_stdout.isatty.return_value = True
+            assert _resolve_tui_default(None, headless=False) is False
+
+    def test_headless_always_disables_tui(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """headless=True must disable the TUI regardless of TERM."""
+        from the_architect.cli import _resolve_tui_default
+
+        monkeypatch.delenv("TERM", raising=False)
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        with patch("sys.stdout") as mock_stdout:
+            mock_stdout.isatty.return_value = True
+            assert _resolve_tui_default(None, headless=True) is False
+
+    def test_no_color_disables_tui(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """NO_COLOR env var must disable the TUI."""
+        from the_architect.cli import _resolve_tui_default
+
+        monkeypatch.delenv("TERM", raising=False)
+        monkeypatch.setenv("NO_COLOR", "1")
+        with patch("sys.stdout") as mock_stdout:
+            mock_stdout.isatty.return_value = True
+            assert _resolve_tui_default(None, headless=False) is False
+
+    def test_non_tty_disables_tui(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Piped / non-TTY stdout must disable the TUI."""
+        from the_architect.cli import _resolve_tui_default
+
+        monkeypatch.delenv("TERM", raising=False)
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        with patch("sys.stdout") as mock_stdout:
+            mock_stdout.isatty.return_value = False
+            assert _resolve_tui_default(None, headless=False) is False
+
+    def test_explicit_true_overrides_detection(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """explicit=True must bypass all auto-detection."""
+        from the_architect.cli import _resolve_tui_default
+
+        monkeypatch.setenv("TERM", "dumb")
+        with patch("sys.stdout") as mock_stdout:
+            mock_stdout.isatty.return_value = False
+            assert _resolve_tui_default(True, headless=False) is True
+
+    def test_explicit_false_overrides_detection(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """explicit=False (--no-tui) must bypass all auto-detection."""
+        from the_architect.cli import _resolve_tui_default
+
+        monkeypatch.delenv("TERM", raising=False)
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        with patch("sys.stdout") as mock_stdout:
+            mock_stdout.isatty.return_value = True
+            assert _resolve_tui_default(False, headless=False) is False

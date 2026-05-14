@@ -129,12 +129,44 @@ def alternate_screen() -> Generator[None, None, None]:
     This is a no-op when stdout is not a real TTY (e.g. piped output, Click
     test runner) so that automated tools and tests are not affected.
 
+    On Windows, VT (Virtual Terminal) processing is enabled on both stdout and
+    stderr before writing the escape sequence.  Modern Windows Terminal and
+    PowerShell 5.1+ support VT natively, but the Windows console host
+    (conhost.exe) requires an explicit ``SetConsoleMode`` call to activate it.
+    Without this, the escape bytes appear as literal characters instead of
+    switching the alternate screen.
+
     Uses ANSI escape sequence ``CSI ? 1049 h`` (enter alternate screen +
     save cursor) and ``CSI ? 1049 l`` (exit alternate screen + restore cursor).
     """
     if not sys.stdout.isatty():
         yield
         return
+
+    # Enable VT processing on Windows so the ANSI escapes work in conhost.exe
+    # (Windows Terminal / PowerShell 7 have VT on by default, but this is
+    # harmless there and required for PowerShell 5.1 / classic cmd.exe).
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            import ctypes.wintypes
+
+            ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+            ENABLE_PROCESSED_OUTPUT = 0x0001
+            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+            for handle_id in (-10, -11, -12):  # stdin, stdout, stderr
+                handle = kernel32.GetStdHandle(handle_id)
+                if handle and handle != -1:
+                    mode = ctypes.wintypes.DWORD(0)
+                    if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+                        kernel32.SetConsoleMode(
+                            handle,
+                            mode.value
+                            | ENABLE_VIRTUAL_TERMINAL_PROCESSING
+                            | ENABLE_PROCESSED_OUTPUT,
+                        )
+        except Exception:
+            pass  # Non-fatal — fall through and try the escape sequence anyway
 
     # Enter alternate screen buffer + save cursor
     sys.stdout.write("\033[?1049h")
@@ -1164,6 +1196,19 @@ def _tui_mode_enabled() -> bool:
     return os.environ.get("ARCHITECT_TUI", "").lower() in ("1", "true", "yes")
 
 
+def _is_dumb_terminal() -> bool:
+    """Return True when the terminal is explicitly incapable of ANSI/VT output.
+
+    Only ``TERM=dumb`` is treated as a hard incapability signal.  An *unset*
+    or empty ``TERM`` is **not** treated as dumb — Windows PowerShell and
+    Windows Terminal never set ``TERM`` at all, but they fully support VT
+    escape sequences and colour.  Treating an empty ``TERM`` as dumb was the
+    bug that forced Windows users onto the legacy prompt_toolkit fallback
+    screens instead of the modern Textual TUI.
+    """
+    return os.environ.get("TERM", "").lower() == "dumb"
+
+
 def _resolve_tui_default(
     explicit: bool | None,
     headless: bool = False,
@@ -1198,7 +1243,7 @@ def _resolve_tui_default(
         return False
     if os.environ.get("NO_COLOR", "").strip():
         return False
-    if os.environ.get("TERM", "").lower() in ("dumb", ""):
+    if _is_dumb_terminal():
         return False
     return True
 
@@ -2659,7 +2704,10 @@ def _ansi_supported() -> bool:
     Returns False when:
     - stdout is not a TTY
     - NO_COLOR env var is set (https://no-color.org/)
-    - TERM is 'dumb'
+    - TERM is explicitly set to 'dumb'
+
+    An unset or empty TERM is *not* treated as dumb.  Windows PowerShell
+    and Windows Terminal never set TERM at all but support VT/ANSI output.
 
     Returns:
         True if ANSI output is appropriate.
@@ -2668,7 +2716,7 @@ def _ansi_supported() -> bool:
         return False
     if os.environ.get("NO_COLOR"):
         return False
-    if os.environ.get("TERM", "").lower() == "dumb":
+    if _is_dumb_terminal():
         return False
     return True
 

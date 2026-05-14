@@ -18,6 +18,14 @@ empty [Unreleased] above it. Use Keep a Changelog section headings:
 Added / Changed / Deprecated / Removed / Fixed / Security.
 -->
 
+## [1.2.9] (build 10402) — 2026-05-14
+
+### Fixed
+
+- **Windows PowerShell and Windows Terminal now use the modern Textual TUI instead of the legacy prompt_toolkit fallback screens.** The TUI auto-detection previously treated an unset `TERM` environment variable as equivalent to `TERM=dumb`, silently disabling the TUI on every Windows terminal (PowerShell 5.1, PowerShell 7, Windows Terminal, cmd.exe). Windows never sets `TERM` but fully supports VT/ANSI output. The gate now only blocks the TUI when `TERM` is *explicitly* set to `dumb`. The new `_is_dumb_terminal()` helper enforces this across both `_resolve_tui_default` and `_ansi_supported` (build 10402).
+- **Rich console output is no longer degraded in Windows PowerShell.** `PaddedConsole` (the global Rich Console used throughout the CLI) now passes `legacy_windows=False` on Windows, forcing Rich to emit VT escape sequences for colour and box characters instead of the old Win32 console API path that produced plain uncoloured output (build 10402).
+- **Alternate screen buffer works correctly in PowerShell and Windows Terminal.** The `alternate_screen()` context manager now calls `SetConsoleMode` to activate VT processing on Windows before writing the `\033[?1049h` escape sequence. Without this, the escape bytes appeared as literal characters in the classic Windows console host rather than switching to the alternate screen (build 10402).
+
 ## [1.2.8] (build 10399) — 2026-05-14
 
 ### Added

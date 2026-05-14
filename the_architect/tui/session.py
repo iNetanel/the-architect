@@ -9,9 +9,9 @@ Two helpers are exported:
    launches the :class:`WaitApp` in a background thread, exposes
    thread-safe update methods, and tears down cleanly on exit.
 
-When ``enabled=False`` (non-TTY, ``NO_COLOR``, ``TERM=dumb``, running
-inside pytest), both helpers yield no-op sessions so CI and unit tests
-still behave like the plain fallback.
+When ``enabled=False`` (non-TTY, ``NO_COLOR``, ``TERM=dumb`` explicitly
+set, running inside pytest), both helpers yield no-op sessions so CI
+and unit tests still behave like the plain fallback.
 """
 
 from __future__ import annotations
