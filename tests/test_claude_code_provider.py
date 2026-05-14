@@ -242,8 +242,9 @@ class TestClaudeCodeProviderGetResolvedModel:
 
     def test_resolved_model_cache_hit_project_dir(self, provider):
         """Test that project directory cache is returned."""
-        provider._resolved_model_cache["/tmp"] = "claude-opus-4"
-        result = provider.get_resolved_model(Path("/tmp"))
+        project_dir = Path("/tmp")
+        provider._resolved_model_cache[str(project_dir)] = "claude-opus-4"
+        result = provider.get_resolved_model(project_dir)
         assert result == "claude-opus-4"
 
     def test_resolved_model_env_var_anthropic(self, provider, tmp_path, monkeypatch):
