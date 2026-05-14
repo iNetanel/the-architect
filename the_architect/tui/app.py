@@ -918,7 +918,10 @@ def run_single_screen(screen: Screen[T]) -> T | None:
             self.exit()
 
     try:
-        _Harness().run()
+        import os
+
+        _headless = bool(os.environ.get("PYTEST_CURRENT_TEST"))
+        _Harness().run(headless=_headless)
     finally:
         try:
             from the_architect.tui.terminal import restore_terminal_input_modes

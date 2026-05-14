@@ -191,7 +191,10 @@ class ArchitectAppRunner:
 
         app_error: BaseException | None = None
         try:
-            self.app.run()
+            import os
+
+            _headless = bool(os.environ.get("PYTEST_CURRENT_TEST"))
+            self.app.run(headless=_headless)
         except BaseException as exc:  # noqa: BLE001 — re-raised after cleanup
             app_error = exc
         finally:
