@@ -18,7 +18,23 @@ empty [Unreleased] above it. Use Keep a Changelog section headings:
 Added / Changed / Deprecated / Removed / Fixed / Security.
 -->
 
-## [1.2.11] (build 10407) — 2026-05-14
+## [1.2.11] (build 10410) — 2026-05-14
+
+### Added
+
+- **Live cost display in the TUI — new "Costs" tab on the Execution screen.** A fifth tab (press `c`) shows the running session spend in real time: total tokens used, estimated USD cost, last-task cost, and a per-model breakdown. The tab updates automatically after every task completes — no need to wait until the run finishes or run a separate command.
+
+- **Estimated spend on the Success screen.** After all tasks complete, the summary line now includes `~$X.XXXX est.` so you know what the run cost at a glance, right where you already look.
+
+- **Cost data written to `monitor_state.json`.** The `.architect/monitor_state.json` file now includes `session_cost_usd`, `last_task_cost_usd`, and a `model_costs` map in the `tokens` section. External dashboards and scripts that read this file can surface live cost data without any additional API calls.
+
+- **All four token types used for accurate cost estimation.** Input, output, cache-read, and cache-write tokens are each sent individually to the pricing engine. Previously only the total token count was forwarded, making cache discounts invisible. Claude models with prompt caching now show the correct (lower) cost rather than a worst-case estimate.
+
+- **CI now runs the test suite on Ubuntu, Windows, and macOS** across Python 3.11, 3.12, and 3.13 (9 matrix combinations per push). Previously tests only ran on Ubuntu.
+
+### Fixed
+
+- **TUI tests no longer hang on Windows CI.** All `app.run()` call sites in `ArchitectAppRunner`, `run_single_screen`, and the standalone `tui_execution_session` / `tui_wait_session` fallback paths now pass `headless=True` when running under pytest (`PYTEST_CURRENT_TEST` is set). Textual's `HeadlessDriver` skips Windows console initialisation while keeping the full event loop, screen stack, and threading model intact — so the tests continue to exercise real TUI lifecycle behaviour.
 
 ### Added
 
