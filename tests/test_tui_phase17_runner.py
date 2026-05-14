@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import builtins
 import io
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -71,7 +72,8 @@ class TestArchitectAppRunner:
         _restore_terminal_input_modes()
 
         output = stdout.getvalue()
-        assert output == stderr.getvalue() == tty.getvalue()
+        # stdout and stderr always get the restore sequence.
+        assert output == stderr.getvalue()
         assert "\033[?1049l" in output
         assert "\033[?1000l" in output
         assert "\033[?1001l" in output
@@ -81,6 +83,9 @@ class TestArchitectAppRunner:
         assert "\033[?1006l" in output
         assert "\033[?1007l" in output
         assert "\033[?2004l" in output
+        # /dev/tty is POSIX-only — only assert its content on non-Windows.
+        if sys.platform != "win32":
+            assert tty.getvalue() == output
 
     def test_unexpected_app_exit_before_worker_does_not_hang(
         self, monkeypatch: pytest.MonkeyPatch

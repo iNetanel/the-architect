@@ -495,8 +495,14 @@ class TestStreamProviderSubprocess:
         iteration used SIGTERM, which providers could ignore or delay
         while mid-call, producing the exact bug the user reported
         ("Ctrl+C just exits the UI, backend keeps going").
+
+        On Windows ``os.killpg`` does not exist; the test is POSIX-only.
         """
+        import os
         import signal as _signal
+
+        if not hasattr(os, "killpg"):
+            pytest.skip("killpg is POSIX-only")
 
         from the_architect.core import runner as runner_mod
 
