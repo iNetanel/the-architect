@@ -21,6 +21,11 @@ TERMINAL_RESTORE_SEQUENCE = (
     "\033[?25h"  # cursor visible
 )
 
+# The controlling-terminal device path on POSIX systems.
+# Does not exist on Windows — access is guarded by the ``sys.platform`` check
+# in :func:`restore_terminal_input_modes`.
+_DEV_TTY = "/dev/tty"
+
 
 def _stream_is_tty(stream: Any) -> bool:
     """Return True when a stream appears to be attached to a terminal."""
@@ -44,19 +49,30 @@ def _write_restore_sequence(stream: Any, *, require_tty: bool = True) -> None:
 def restore_terminal_input_modes() -> None:
     """Disable terminal input modes that can leak after abrupt TUI exits.
 
-    The raw ``35;...M`` text seen at the shell prompt is mouse-reporting input
-    that the terminal sends after a TUI app enabled mouse tracking but exited
-    before turning it off. Cleanup is intentionally redundant: stdout covers the
-    normal CLI path, stderr covers terminals where stdout is redirected, and
-    ``/dev/tty`` targets the controlling terminal directly when available.
+    The raw ``35;...M`` text seen at the shell prompt is mouse-reporting
+    input that the terminal sends after a TUI app enabled mouse tracking
+    but exited before turning it off.
+
+    Cleanup is intentionally redundant:
+
+    - **stdout** covers the normal CLI path.
+    - **stderr** covers terminals where stdout is redirected.
+    - **/dev/tty** (POSIX only) targets the controlling terminal directly
+      when both stdout and stderr are redirected.  This path is skipped
+      entirely on Windows where ``/dev/tty`` does not exist.
+
+    All writes are best-effort — failures are silently swallowed so cleanup
+    never crashes the process on exit.
     """
     if "PYTEST_CURRENT_TEST" not in os.environ:
         _write_restore_sequence(sys.stdout)
         if sys.stderr is not sys.stdout:
             _write_restore_sequence(sys.stderr)
 
-    try:
-        with open("/dev/tty", "w", encoding="utf-8") as tty:
-            _write_restore_sequence(tty, require_tty=False)
-    except Exception:
-        pass
+    # /dev/tty is a POSIX-only concept — skip on any non-POSIX platform.
+    if sys.platform != "win32":
+        try:
+            with open(_DEV_TTY, "w", encoding="utf-8") as tty:
+                _write_restore_sequence(tty, require_tty=False)
+        except Exception:
+            pass

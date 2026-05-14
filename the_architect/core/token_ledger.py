@@ -11,8 +11,6 @@ All operations are best-effort — a ledger write failure must never crash a run
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,6 +18,7 @@ from pathlib import Path
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from the_architect.core.fileutil import safe_atomic_write_json
 from the_architect.core.runner import TaskResult, TokenUsage
 
 # ---------------------------------------------------------------------------
@@ -344,35 +343,24 @@ def save_ledger(project_dir: Path, ledger: TokenLedger) -> None:
     """Persist *ledger* to *project_dir* / ``.architect/token_ledger.json``.
 
     Uses an atomic write pattern (temp file + rename) so the file is never
-    partially written.  Errors are logged at debug level and silently
-    swallowed — the ledger is optional infrastructure and must never crash
-    a run.
+    partially written.  On platforms where the destination may be held open
+    by a reader (e.g. on Windows), the rename is retried briefly before
+    failing.  Errors are logged at debug level and silently swallowed —
+    the ledger is optional infrastructure and must never crash a run.
 
     Args:
         project_dir: The project root directory.
         ledger: The ledger to persist.
     """
     ledger_path = project_dir / LEDGER_FILE
-    try:
-        ledger_path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_path = tempfile.mkstemp(
-            dir=ledger_path.parent,
-            prefix=".token_ledger_tmp_",
-            suffix=".json",
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump([r.model_dump() for r in ledger.records], f, indent=2)
-            os.replace(tmp_path, ledger_path)
-            logger.debug(f"Token ledger persisted: {len(ledger.records)} record(s)")
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
-    except Exception as exc:
-        logger.debug(f"Token ledger write failed (non-fatal): {exc!r}")
+    ok = safe_atomic_write_json(
+        ledger_path,
+        [r.model_dump() for r in ledger.records],
+        prefix=".token_ledger_tmp_",
+        log_label="Token ledger",
+    )
+    if ok:
+        logger.debug(f"Token ledger persisted: {len(ledger.records)} record(s)")
 
 
 def append_run(

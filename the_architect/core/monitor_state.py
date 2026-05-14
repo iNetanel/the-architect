@@ -14,14 +14,12 @@ All writes are best-effort — if they fail, the run continues unaffected.
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from loguru import logger
+from the_architect.core.fileutil import safe_atomic_write_json
 
 if TYPE_CHECKING:
     from the_architect.core.tasks import Task
@@ -70,6 +68,9 @@ def write_monitor_state(project_dir: Path, state: dict[str, Any]) -> None:
 
     Writes to a temp file in the same directory, then renames it to the
     final path.  This ensures the dashboard never reads a partial write.
+    On platforms where the destination file may be held open by a reader
+    process (e.g. the dashboard on Windows), the rename is retried briefly
+    before failing.
 
     Errors are logged at debug level and silently swallowed — the state
     file is optional infrastructure and must never crash the run.
@@ -79,25 +80,12 @@ def write_monitor_state(project_dir: Path, state: dict[str, Any]) -> None:
         state: The state dictionary to serialise.
     """
     state_path = project_dir / MONITOR_STATE_FILE
-    try:
-        state_path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_path = tempfile.mkstemp(
-            dir=state_path.parent,
-            prefix=".monitor_state_tmp_",
-            suffix=".json",
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(state, f, indent=2)
-            os.replace(tmp_path, state_path)
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
-    except Exception as exc:
-        logger.debug(f"Monitor state write failed (non-fatal): {exc!r}")
+    safe_atomic_write_json(
+        state_path,
+        state,
+        prefix=".monitor_state_tmp_",
+        log_label="Monitor state",
+    )
 
 
 def read_monitor_state(project_dir: Path) -> dict[str, Any] | None:

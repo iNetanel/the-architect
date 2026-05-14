@@ -1284,7 +1284,7 @@ class TestCancelCommandMore:
     """More tests for cancel command branches."""
 
     def test_cancel_confirm_kill(self, tmp_path: Path) -> None:
-        """Should send SIGTERM when user confirms kill."""
+        """Should send a termination signal when user confirms stop."""
         lock_dir = tmp_path / ".architect"
         lock_dir.mkdir()
         (lock_dir / "runner.lock").write_text("12345", encoding="utf-8")
@@ -1293,11 +1293,13 @@ class TestCancelCommandMore:
             mock_kill.return_value = None
             runner = CliRunner()
             result = runner.invoke(main, ["cancel", "-p", str(tmp_path)], input="y\n")
-            # Should attempt to kill the process
+            # The output should confirm a termination action was taken.
             assert (
-                "SIGTERM" in result.output
-                or "Terminated" in result.output
+                "termination" in result.output.lower()
+                or "terminated" in result.output.lower()
+                or "sigterm" in result.output.lower()
                 or "kill" in result.output.lower()
+                or "signal" in result.output.lower()
             )
 
     def test_cancel_unlink_fails(self, tmp_path: Path) -> None:

@@ -146,6 +146,9 @@ def alternate_screen() -> Generator[None, None, None]:
     # Enable VT processing on Windows so the ANSI escapes work in conhost.exe
     # (Windows Terminal / PowerShell 7 have VT on by default, but this is
     # harmless there and required for PowerShell 5.1 / classic cmd.exe).
+    # INVALID_HANDLE_VALUE is 0xFFFFFFFF (unsigned) which ctypes returns as a
+    # large positive integer on 64-bit Python, or as -1 on 32-bit. We compare
+    # against both to be safe.
     if sys.platform == "win32":
         try:
             import ctypes
@@ -153,10 +156,11 @@ def alternate_screen() -> Generator[None, None, None]:
 
             ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
             ENABLE_PROCESSED_OUTPUT = 0x0001
+            INVALID_HANDLE_VALUE = 0xFFFFFFFFFFFFFFFF  # 64-bit; ctypes also returns -1 on 32-bit
             kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
             for handle_id in (-10, -11, -12):  # stdin, stdout, stderr
                 handle = kernel32.GetStdHandle(handle_id)
-                if handle and handle != -1:
+                if handle and handle not in (0xFFFFFFFF, INVALID_HANDLE_VALUE, -1):
                     mode = ctypes.wintypes.DWORD(0)
                     if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
                         kernel32.SetConsoleMode(
@@ -5486,27 +5490,16 @@ def cancel(project: Path | None) -> None:
         console.print(f"[yellow]⚠  The Architect is still running (PID {pid}).[/yellow]")
         console.print()
         import signal
-        import sys as _sys
 
-        _on_windows = _sys.platform == "win32"
-        _term_label = "terminate" if _on_windows else "SIGTERM"
-        _term_detail = (
-            "  [dim](on Windows this terminates the process immediately)[/dim]"
-            if _on_windows
-            else ""
-        )
-        if click.confirm(f"  Send {_term_label} to PID {pid} to stop it?", default=False):
-            if _term_detail:
-                console.print(_term_detail)
+        if click.confirm(f"  Stop PID {pid}?", default=False):
             try:
-                if _on_windows:
-                    # On Windows, SIGTERM maps to TerminateProcess (immediate kill).
-                    # Use it explicitly so the intent is clear.
-                    os.kill(pid, signal.SIGTERM)
-                    console.print(f"[dim]Terminated PID {pid}.[/dim]")
-                else:
-                    os.kill(pid, signal.SIGTERM)
-                    console.print(f"[dim]Sent SIGTERM to PID {pid}.[/dim]")
+                # SIGTERM is the standard cross-platform signal for requesting
+                # graceful shutdown.  On POSIX it gives the process a chance
+                # to clean up; on Windows os.kill(SIGTERM) calls
+                # TerminateProcess which is immediate — both are correct for
+                # the intent of "stop this stale architect process".
+                os.kill(pid, signal.SIGTERM)
+                console.print(f"[dim]Sent termination signal to PID {pid}.[/dim]")
             except (ProcessLookupError, PermissionError) as sig_err:
                 console.print(f"[yellow]Could not terminate process: {sig_err}[/yellow]")
         else:

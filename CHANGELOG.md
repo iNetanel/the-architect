@@ -18,6 +18,17 @@ empty [Unreleased] above it. Use Keep a Changelog section headings:
 Added / Changed / Deprecated / Removed / Fixed / Security.
 -->
 
+### Added
+
+- **Cross-platform atomic file I/O helper (`the_architect.core.fileutil`).** Introduced `atomic_write_text` and `atomic_write_json` with an exponential-backoff retry loop on `PermissionError` so atomic temp-file renames are safe even when a reader process briefly holds the destination file open. All three atomic-write call sites (`monitor_state.py`, `token_ledger.py`, `architect_md.py`) now use this shared helper (build 10403).
+
+### Fixed
+
+- **`runner.py` used `signal.SIGKILL` directly for exit-code comparison.** `signal.SIGKILL` does not exist on Windows, causing an `AttributeError` on any code path that calls `_task_outcome_summary_for_exit`. The comparison now uses `_FORCED_TERMINATION_EXIT_CODE`, which is already correctly guarded with `getattr(signal, "SIGKILL", signal.SIGTERM)` at module load time (build 10403).
+- **`tui/terminal.py` attempted to open `/dev/tty` unconditionally.** `/dev/tty` does not exist on Windows. The call was already wrapped in `except Exception` so it never crashed, but the intent was unclear. The path is now a named constant and the open is explicitly guarded by `sys.platform != "win32"` with a clear comment explaining the POSIX-only nature (build 10403).
+- **`alternate_screen()` INVALID_HANDLE_VALUE check was incomplete.** `GetStdHandle` on 64-bit Windows returns `0xFFFFFFFFFFFFFFFF` for invalid handles, which Python ctypes represents as a large positive integer — not as `-1`. The check now covers both the 32-bit (`-1`) and 64-bit (`0xFFFFFFFF` / `0xFFFFFFFFFFFFFFFF`) representations (build 10403).
+- **`cancel` command stop-process UI was needlessly platform-specific.** The two branches for Windows vs POSIX called the exact same `os.kill(pid, SIGTERM)` but printed different labels. Collapsed into one platform-agnostic path with a neutral "Sent termination signal" message (build 10403).
+
 ## [1.2.9] (build 10402) — 2026-05-14
 
 ### Fixed

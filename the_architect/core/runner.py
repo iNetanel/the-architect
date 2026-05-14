@@ -2246,7 +2246,9 @@ def _extract_task_outcome_summary(text: str) -> str:
 def _task_outcome_summary_for_exit(text: str, exit_code: int | None) -> str:
     """Return a task outcome summary with explicit killed-process diagnostics."""
     summary = _extract_task_outcome_summary(text)
-    if exit_code == -signal.SIGKILL:
+    # ``signal.SIGKILL`` does not exist on Windows — use the module-level
+    # constant which was already guarded with getattr() at definition time.
+    if exit_code == _FORCED_TERMINATION_EXIT_CODE:
         killed = (
             "Provider process killed (SIGKILL / exit -9); no reliable task output was produced."
         )

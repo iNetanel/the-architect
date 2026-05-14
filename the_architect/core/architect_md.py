@@ -37,13 +37,12 @@ Writes are atomic: temp file then rename, so readers never see partial content.
 
 from __future__ import annotations
 
-import os
-import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
 from loguru import logger
 
+from the_architect.core.fileutil import atomic_write_text
 from the_architect.core.structure import Component, StructureReport, format_structure_report
 
 # ---------------------------------------------------------------------------
@@ -362,27 +361,15 @@ def extract_structure_section(content: str) -> str:
 def _atomic_write(path: Path, content: str) -> None:
     """Write content to a file atomically using temp file + rename.
 
+    Delegates to :func:`~the_architect.core.fileutil.atomic_write_text`
+    which handles cross-platform rename retries.
+
     Args:
         path: Target file path.
         content: Content to write.
     """
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_path = tempfile.mkstemp(
-            dir=path.parent,
-            prefix=".architect_md_tmp_",
-            suffix=".md",
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(content)
-            os.replace(tmp_path, path)
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+        atomic_write_text(path, content, prefix=".architect_md_tmp_")
     except Exception as exc:
         logger.warning(f"ARCHITECT.md atomic write failed: {exc!r}")
 
