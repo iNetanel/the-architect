@@ -839,7 +839,7 @@ class TestPreRunScreen:
             # Click the second radio button — RadioSet should unselect the first
             rb2 = screen.query_one("#rb_prov_1")
             rb2.value = True
-            await pilot.pause()
+            await pilot.pause(0.05)
 
             pressed_count = sum(1 for btn in rs.query("RadioButton") if btn.value)
             assert pressed_count == 1
@@ -849,7 +849,7 @@ class TestPreRunScreen:
             # Click the third — again only one pressed
             rb3 = screen.query_one("#rb_prov_2")
             rb3.value = True
-            await pilot.pause()
+            await pilot.pause(0.05)
 
             pressed_count = sum(1 for btn in rs.query("RadioButton") if btn.value)
             assert pressed_count == 1
