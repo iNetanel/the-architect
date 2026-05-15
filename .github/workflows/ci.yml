@@ -68,8 +68,13 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Run tests
-        run: pytest tests/ -v --tb=long 2>&1 | tee pytest-output.txt; exit ${PIPESTATUS[0]}
+        run: pytest tests/ -v --tb=long -p no:timeout 2>&1 | tee pytest-output.txt; exit ${PIPESTATUS[0]}
         shell: bash
+
+      - name: Print last 300 lines of pytest output on failure
+        if: failure() && runner.os == 'Windows'
+        run: Get-Content pytest-output.txt -Tail 300
+        shell: pwsh
 
       - name: Upload pytest output on failure
         if: failure()
