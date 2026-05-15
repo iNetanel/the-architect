@@ -54,12 +54,12 @@ class TestProviderSelectionScreen:
         )
         harness = _Harness(screen)
         async with harness.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             lv = screen.query_one("#provider_list", ListView)
             lv.index = 1
-            await pilot.pause()
+            await pilot.pause(0.05)
             screen.action_confirm()
-            await pilot.pause()
+            await pilot.pause(0.05)
         assert harness.dismissed == 1
 
     @pytest.mark.asyncio
@@ -67,9 +67,9 @@ class TestProviderSelectionScreen:
         screen = ProviderSelectionScreen(options=[_fake_provider("A"), _fake_provider("B")])
         harness = _Harness(screen)
         async with harness.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             screen.action_cancel()
-            await pilot.pause()
+            await pilot.pause(0.05)
         assert harness.dismissed is None
 
 
@@ -79,9 +79,9 @@ class TestScopeScreen:
         screen = ScopeScreen()
         harness = _Harness(screen)
         async with harness.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             screen.action_confirm()
-            await pilot.pause()
+            await pilot.pause(0.05)
         assert harness.dismissed == "standard"
 
     @pytest.mark.asyncio
@@ -89,12 +89,12 @@ class TestScopeScreen:
         screen = ScopeScreen()
         harness = _Harness(screen)
         async with harness.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             lv = screen.query_one("#scope_list", ListView)
             lv.index = 1
-            await pilot.pause()
+            await pilot.pause(0.05)
             screen.action_confirm()
-            await pilot.pause()
+            await pilot.pause(0.05)
         assert harness.dismissed == "simple"
 
     @pytest.mark.asyncio
@@ -102,12 +102,12 @@ class TestScopeScreen:
         screen = ScopeScreen()
         harness = _Harness(screen)
         async with harness.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             lv = screen.query_one("#scope_list", ListView)
             lv.index = 2
-            await pilot.pause()
+            await pilot.pause(0.05)
             screen.action_confirm()
-            await pilot.pause()
+            await pilot.pause(0.05)
         assert harness.dismissed == "complex"
 
     @pytest.mark.asyncio
@@ -115,9 +115,9 @@ class TestScopeScreen:
         screen = ScopeScreen()
         harness = _Harness(screen)
         async with harness.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             screen.action_cancel()
-            await pilot.pause()
+            await pilot.pause(0.05)
         assert harness.dismissed is None
 
 
@@ -132,9 +132,9 @@ class TestBackNavigation:
         screen = ScopeScreen()
         harness = _Harness(screen)
         async with harness.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             screen.action_go_back()
-            await pilot.pause()
+            await pilot.pause(0.05)
         assert harness.dismissed is BACK_SENTINEL
 
     @pytest.mark.asyncio
@@ -144,9 +144,9 @@ class TestBackNavigation:
         )
         harness = _Harness(screen)
         async with harness.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             screen.action_go_back()
-            await pilot.pause()
+            await pilot.pause(0.05)
         assert harness.dismissed is BACK_SENTINEL
 
     @pytest.mark.asyncio
@@ -154,9 +154,9 @@ class TestBackNavigation:
         screen = StringListPickerScreen(title="Test", hint="Pick", choices=[("a", "A"), ("b", "B")])
         harness = _Harness(screen)
         async with harness.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             screen.action_go_back()
-            await pilot.pause()
+            await pilot.pause(0.05)
         assert harness.dismissed is BACK_SENTINEL
 
 
@@ -171,7 +171,7 @@ class TestPreFill:
         screen = ScopeScreen(initial_scope="complex")
         harness = _Harness(screen)
         async with harness.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             lv = screen.query_one("#scope_list", ListView)
             assert lv.index == 2
 
@@ -180,7 +180,7 @@ class TestPreFill:
         screen = ScopeScreen(initial_scope="simple")
         harness = _Harness(screen)
         async with harness.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             lv = screen.query_one("#scope_list", ListView)
             assert lv.index == 1
 
@@ -192,7 +192,7 @@ class TestPreFill:
         screen = ProviderSelectionScreen(options=opts, initial_provider_name="claude-code")
         harness = _Harness(screen)
         async with harness.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             lv = screen.query_one("#provider_list", ListView)
             assert lv.index == 1
 
@@ -206,6 +206,6 @@ class TestPreFill:
         )
         harness = _Harness(screen)
         async with harness.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             lv = screen.query_one("#picker_list", ListView)
             assert lv.index == 1

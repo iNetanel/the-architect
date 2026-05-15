@@ -16,7 +16,7 @@ async def test_config_screen_shows_all_rows() -> None:
     config = ArchitectConfig()
     app = ConfigApp(config=config, toml_path=Path("/tmp/architect.toml"), has_toml=False)
     async with app.run_test() as pilot:
-        await pilot.pause()
+        await pilot.pause(0.05)
         table = app.query_one(DataTable)
         assert table.row_count == 20  # known row count; update when adding new fields
 
@@ -26,7 +26,7 @@ async def test_config_screen_renders_integrity_field() -> None:
     config = ArchitectConfig(integrity=False)
     app = ConfigApp(config=config, toml_path=Path("/tmp/architect.toml"), has_toml=True)
     async with app.run_test() as pilot:
-        await pilot.pause()
+        await pilot.pause(0.05)
         table = app.query_one(DataTable)
         # Find the row with "integrity" key.
         rows = [
@@ -42,7 +42,7 @@ async def test_config_screen_quits_on_q() -> None:
     config = ArchitectConfig()
     app = ConfigApp(config=config, toml_path=Path("/tmp/architect.toml"), has_toml=False)
     async with app.run_test() as pilot:
-        await pilot.pause()
+        await pilot.pause(0.05)
         await pilot.press("q")
-        await pilot.pause()
+        await pilot.pause(0.05)
     # App exits cleanly; no assertion needed beyond no-exception.

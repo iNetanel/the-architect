@@ -37,7 +37,7 @@ class TestListApp:
         proj = _make_project(tmp_path)
         app = ListApp(project=proj)
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             table = app.query_one(DataTable)
             assert table.row_count == 2
 
@@ -45,7 +45,7 @@ class TestListApp:
     async def test_handles_missing_tasks_dir(self, tmp_path: Path) -> None:
         app = ListApp(project=tmp_path)
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             table = app.query_one(DataTable)
             assert table.row_count == 0
 
@@ -56,7 +56,7 @@ class TestStatusApp:
         proj = _make_project(tmp_path)
         app = StatusApp(project=proj)
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             tasks_table = app.query_one("#tasks_table", DataTable)
             assert tasks_table.row_count == 2
 
@@ -66,7 +66,7 @@ class TestLogsApp:
     async def test_handles_empty_log_dir(self, tmp_path: Path) -> None:
         app = LogsApp(project=tmp_path, task_prefix="", tail=50)
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             table = app.query_one("#logs_table", DataTable)
             assert table.row_count == 0
 
@@ -77,7 +77,7 @@ class TestLogsApp:
         (log_dir / "T01_first.log").write_text("hello\nworld\n", encoding="utf-8")
         app = LogsApp(project=tmp_path, task_prefix="T01", tail=50)
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             table = app.query_one("#logs_table", DataTable)
             assert table.row_count == 1
 
@@ -88,7 +88,7 @@ class TestCircuitApp:
         proj = _make_project(tmp_path)
         app = CircuitApp(project=proj)
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             table = app.query_one(DataTable)
             # Two tasks defined; both should appear with CLOSED (no circuit state yet).
             assert table.row_count == 2
@@ -99,7 +99,7 @@ class TestMonitorApp:
     async def test_handles_missing_state_file(self, tmp_path: Path) -> None:
         app = MonitorApp(project=tmp_path)
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             # No crash; content static must mention the missing state file.
             from textual.widgets import Static
 
@@ -128,7 +128,7 @@ class TestMonitorApp:
 
         app = MonitorApp(project=tmp_path)
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             from textual.widgets import Static
 
             content = app.query_one("#monitor_content", Static)

@@ -165,7 +165,7 @@ class TestSuccessScreenRendering:
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen)
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert isinstance(app.screen, SuccessScreen)
             # Header and Footer are composed by the SuccessScreen
             assert screen.query_one("Header")
@@ -185,7 +185,7 @@ class TestSuccessScreenRendering:
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen)
-            await pilot.pause()
+            await pilot.pause(0.05)
             headline = screen.query_one("#success_headline", Static)
             rendered = str(headline.render())
             assert "2" in rendered
@@ -208,7 +208,7 @@ class TestSuccessScreenRendering:
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen)
-            await pilot.pause()
+            await pilot.pause(0.05)
             headline = screen.query_one("#success_headline", Static)
             rendered = str(headline.render())
             assert "1" in rendered
@@ -228,7 +228,7 @@ class TestSuccessScreenRendering:
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen)
-            await pilot.pause()
+            await pilot.pause(0.05)
             rain = screen.query_one("#success_rain", MatrixRain)
             assert rain.region.width == MatrixRain.COLS
             assert rain.region.height == MatrixRain.ROWS
@@ -247,7 +247,7 @@ class TestSuccessScreenRendering:
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen)
-            await pilot.pause()
+            await pilot.pause(0.05)
             summary = screen.query_one("#success_summary_line", Static)
             rendered = str(summary.render())
             assert "2:05" in rendered  # duration
@@ -267,7 +267,7 @@ class TestSuccessScreenRendering:
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen)
-            await pilot.pause()
+            await pilot.pause(0.05)
             summary = screen.query_one("#success_summary_line", Static)
             rendered = str(summary.render())
             assert "2 retr" in rendered  # 3 attempts - 1 task = 2 retries
@@ -286,7 +286,7 @@ class TestSuccessScreenRendering:
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen)
-            await pilot.pause()
+            await pilot.pause(0.05)
             summary = screen.query_one("#success_summary_line", Static)
             rendered = str(summary.render())
             assert "1 rate-limited" in rendered
@@ -305,7 +305,7 @@ class TestSuccessScreenRendering:
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen)
-            await pilot.pause()
+            await pilot.pause(0.05)
             table = screen.query_one("#success_task_table", Static)
             rendered = str(table.render())
             assert "T01" in rendered
@@ -333,7 +333,7 @@ class TestSuccessScreenRendering:
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen)
-            await pilot.pause()
+            await pilot.pause(0.05)
             retro = screen.query_one("#success_retro", Static)
             rendered = str(retro.render())
             assert "Retrospective" in rendered
@@ -355,7 +355,7 @@ class TestSuccessScreenRendering:
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen)
-            await pilot.pause()
+            await pilot.pause(0.05)
             # The retro widget should not be composed
             retro_widgets = list(screen.query("#success_retro"))
             assert len(retro_widgets) == 0
@@ -375,7 +375,7 @@ class TestSuccessScreenRendering:
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen)
-            await pilot.pause()
+            await pilot.pause(0.05)
             file_widget = screen.query_one("#success_file", Static)
             rendered = str(file_widget.render())
             assert "SUMMARY.md" in rendered
@@ -395,7 +395,7 @@ class TestSuccessScreenRendering:
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen)
-            await pilot.pause()
+            await pilot.pause(0.05)
             file_widgets = list(screen.query("#success_file"))
             assert len(file_widgets) == 0
 
@@ -413,7 +413,7 @@ class TestSuccessScreenRendering:
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen)
-            await pilot.pause()
+            await pilot.pause(0.05)
             hint = screen.query_one("#success_hint", Static)
             rendered = str(hint.render())
             assert "exit" in rendered.lower() or "Exit" in rendered
@@ -432,7 +432,7 @@ class TestSuccessScreenRendering:
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen)
-            await pilot.pause()
+            await pilot.pause(0.05)
             totals = screen.query_one("#success_totals", Static)
             rendered = str(totals.render())
             assert "2/2" in rendered
@@ -459,9 +459,9 @@ class TestSuccessScreenExit:
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen, callback=lambda result: setattr(app, "_dismiss_result", result))
-            await pilot.pause()
+            await pilot.pause(0.05)
             screen.action_exit_screen()
-            await pilot.pause()
+            await pilot.pause(0.05)
             # The screen should have been dismissed
             assert not isinstance(app.screen, SuccessScreen)
             # The dismiss callback should have received True
@@ -481,9 +481,9 @@ class TestSuccessScreenExit:
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen)
-            await pilot.pause()
+            await pilot.pause(0.05)
             await pilot.press("q")
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert not isinstance(app.screen, SuccessScreen)
 
     @pytest.mark.asyncio
@@ -500,9 +500,9 @@ class TestSuccessScreenExit:
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen)
-            await pilot.pause()
+            await pilot.pause(0.05)
             await pilot.press("enter")
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert not isinstance(app.screen, SuccessScreen)
 
     @pytest.mark.asyncio
@@ -519,9 +519,9 @@ class TestSuccessScreenExit:
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen)
-            await pilot.pause()
+            await pilot.pause(0.05)
             await pilot.press("escape")
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert not isinstance(app.screen, SuccessScreen)
 
 
@@ -544,7 +544,7 @@ class TestSuccessScreenEdgeCases:
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen)
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert isinstance(app.screen, SuccessScreen)
 
     @pytest.mark.asyncio
@@ -561,7 +561,7 @@ class TestSuccessScreenEdgeCases:
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen)
-            await pilot.pause()
+            await pilot.pause(0.05)
             summary = screen.query_one("#success_summary_line", Static)
             rendered = str(summary.render())
             # Should show duration but not "0K tokens"
@@ -590,7 +590,7 @@ class TestSuccessScreenEdgeCases:
         app = _HostApp()
         async with app.run_test() as pilot:
             app.push_screen(screen)
-            await pilot.pause()
+            await pilot.pause(0.05)
             retro = screen.query_one("#success_retro", Static)
             rendered = str(retro.render())
             assert "no issues found" in rendered

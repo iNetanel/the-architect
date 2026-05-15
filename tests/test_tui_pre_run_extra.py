@@ -44,9 +44,9 @@ class TestStringListPicker:
         )
         harness = _Harness(screen)
         async with harness.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             screen.action_confirm()
-            await pilot.pause()
+            await pilot.pause(0.05)
         assert harness.dismissed == "a"
 
     @pytest.mark.asyncio
@@ -58,12 +58,12 @@ class TestStringListPicker:
         )
         harness = _Harness(screen)
         async with harness.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             lv = screen.query_one("#picker_list", ListView)
             lv.index = 1
-            await pilot.pause()
+            await pilot.pause(0.05)
             screen.action_confirm()
-            await pilot.pause()
+            await pilot.pause(0.05)
         assert harness.dismissed == "b"
 
     @pytest.mark.asyncio
@@ -75,9 +75,9 @@ class TestStringListPicker:
         )
         harness = _Harness(screen)
         async with harness.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             screen.action_cancel()
-            await pilot.pause()
+            await pilot.pause(0.05)
         assert harness.dismissed is None
 
 
@@ -87,9 +87,9 @@ class TestUpdateActionScreen:
         screen = UpdateActionScreen(update_msg="outdated", install_hint="pip install -U x")
         harness = _Harness(screen)
         async with harness.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             screen.action_confirm()
-            await pilot.pause()
+            await pilot.pause(0.05)
         assert harness.dismissed == "continue"
 
     @pytest.mark.asyncio
@@ -97,9 +97,9 @@ class TestUpdateActionScreen:
         screen = UpdateActionScreen(update_msg="outdated", install_hint="pip install -U x")
         harness = _Harness(screen)
         async with harness.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             screen.action_exit()
-            await pilot.pause()
+            await pilot.pause(0.05)
         assert harness.dismissed == "exit"
 
     @pytest.mark.asyncio
@@ -107,9 +107,9 @@ class TestUpdateActionScreen:
         screen = UpdateActionScreen(update_msg="outdated", install_hint="pip install -U x")
         harness = _Harness(screen)
         async with harness.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             screen.action_update()
-            await pilot.pause()
+            await pilot.pause(0.05)
         assert harness.dismissed == "update"
 
 
@@ -119,9 +119,9 @@ class TestPendingTasksScreen:
         screen = PendingTasksScreen(pending=["T03_api", "T04_tests"])
         harness = _Harness(screen)
         async with harness.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             screen.action_confirm()
-            await pilot.pause()
+            await pilot.pause(0.05)
         assert harness.dismissed is True
 
     @pytest.mark.asyncio
@@ -129,9 +129,9 @@ class TestPendingTasksScreen:
         screen = PendingTasksScreen(pending=["T03_api"])
         harness = _Harness(screen)
         async with harness.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             screen.action_abort()
-            await pilot.pause()
+            await pilot.pause(0.05)
         assert harness.dismissed is False
 
 

@@ -23,7 +23,7 @@ async def test_app_mounts_splash_by_default() -> None:
     """The app opens on the centered SplashScreen, not the execution viewport."""
     app = ArchitectApp()
     async with app.run_test() as pilot:
-        await pilot.pause()
+        await pilot.pause(0.05)
         assert any(isinstance(s, SplashScreen) for s in app.screen_stack)
         assert app._execution_screen is None
 
@@ -49,7 +49,7 @@ async def test_splash_shows_title_and_spinner() -> None:
     """The splash renders the app name and a visible Matrix rain animation."""
     app = ArchitectApp()
     async with app.run_test() as pilot:
-        await pilot.pause()
+        await pilot.pause(0.05)
         assert isinstance(app.screen, SplashScreen)
         title = app.screen.query_one("#splash_title", Static)
         assert "The Architect" in str(title.render())
@@ -64,7 +64,7 @@ async def test_splash_is_centered() -> None:
     """The splash body card is centered in the viewport on a normal terminal."""
     app = ArchitectApp()
     async with app.run_test(size=(80, 24)) as pilot:
-        await pilot.pause()
+        await pilot.pause(0.05)
         body = app.screen.query_one("#splash_body")
         # 48-wide card in an 80-wide terminal → x should be (80-48)/2 = 16
         assert body.region.x == 16
@@ -77,7 +77,7 @@ async def test_splash_animation_fits_short_startup_panes() -> None:
     """Startup rain renders above the subtitle on a normal terminal."""
     app = ArchitectApp()
     async with app.run_test(size=(100, 28)) as pilot:
-        await pilot.pause()
+        await pilot.pause(0.05)
         rain = app.screen.query_one("#splash_rain", MatrixRain)
         subtitle = app.screen.query_one("#splash_subtitle", Static)
         assert rain.region.width == MatrixRain.COLS
@@ -101,7 +101,7 @@ async def test_splash_rain_styles_are_rich_parseable() -> None:
 
     app = ArchitectApp()
     async with app.run_test() as pilot:
-        await pilot.pause()
+        await pilot.pause(0.05)
         rain = app.screen.query_one("#splash_rain", MatrixRain)
         for _ in range(6):
             rain._tick()
@@ -118,12 +118,12 @@ async def test_switch_to_execution_creates_and_activates_it() -> None:
     """``switch_to_execution`` creates the execution screen lazily."""
     app = ArchitectApp()
     async with app.run_test() as pilot:
-        await pilot.pause()
+        await pilot.pause(0.05)
         assert app._execution_screen is None
         app._ensure_execution_screen()
         assert isinstance(app.screen, SplashScreen)
         app.switch_to_execution()
-        await pilot.pause()
+        await pilot.pause(0.05)
         assert isinstance(app._execution_screen, ExecutionScreen)
         assert app.screen is app._execution_screen
 
@@ -132,11 +132,11 @@ async def test_switch_to_execution_creates_and_activates_it() -> None:
 async def test_push_output_line_appears_in_output_tab() -> None:
     app = ArchitectApp()
     async with app.run_test() as pilot:
-        await pilot.pause()
+        await pilot.pause(0.05)
         app.switch_to_execution()
-        await pilot.pause()
+        await pilot.pause(0.05)
         app.push_output_line("hello world")
-        await pilot.pause()
+        await pilot.pause(0.05)
         assert app._execution_screen is not None
         log = app._execution_screen.query_one("#exec_output", RichLog)
         assert len(log.lines) >= 1
@@ -146,12 +146,12 @@ async def test_push_output_line_appears_in_output_tab() -> None:
 async def test_update_footer_sets_status_text() -> None:
     app = ArchitectApp()
     async with app.run_test() as pilot:
-        await pilot.pause()
+        await pilot.pause(0.05)
         app.switch_to_execution()
-        await pilot.pause()
+        await pilot.pause(0.05)
         app.update_footer("T01 | attempt 1/3")
-        await pilot.pause()
-        await pilot.pause()
+        await pilot.pause(0.05)
+        await pilot.pause(0.05)
         assert app._execution_screen is not None
         footer = app._execution_screen.query_one("#exec_footer", Static)
         assert "T01" in str(footer.render())
@@ -161,12 +161,12 @@ async def test_update_footer_sets_status_text() -> None:
 async def test_update_details_merges_fields() -> None:
     app = ArchitectApp()
     async with app.run_test() as pilot:
-        await pilot.pause()
+        await pilot.pause(0.05)
         app.switch_to_execution()
-        await pilot.pause()
+        await pilot.pause(0.05)
         app.update_details(task="T01 demo", phase="executing", attempt="1/3")
-        await pilot.pause()
-        await pilot.pause()
+        await pilot.pause(0.05)
+        await pilot.pause(0.05)
         assert app._execution_screen is not None
         progress = app._execution_screen.query_one("#exec_progress_text", Static)
         text = str(progress.render())
@@ -178,9 +178,9 @@ async def test_update_details_merges_fields() -> None:
 async def test_update_execution_settings_populates_settings_tab() -> None:
     app = ArchitectApp()
     async with app.run_test() as pilot:
-        await pilot.pause()
+        await pilot.pause(0.05)
         app.switch_to_execution()
-        await pilot.pause()
+        await pilot.pause(0.05)
         app.update_execution_settings(
             {
                 "Provider": "Claude Code",
@@ -188,8 +188,8 @@ async def test_update_execution_settings_populates_settings_tab() -> None:
                 "Free mode": "disabled",
             }
         )
-        await pilot.pause()
-        await pilot.pause()
+        await pilot.pause(0.05)
+        await pilot.pause(0.05)
         assert app._execution_screen is not None
         settings = app._execution_screen.query_one("#exec_settings_text", Static)
         text = str(settings.render())
@@ -202,9 +202,9 @@ async def test_update_execution_settings_populates_settings_tab() -> None:
 async def test_execution_screen_includes_matrix_rain() -> None:
     app = ArchitectApp()
     async with app.run_test() as pilot:
-        await pilot.pause()
+        await pilot.pause(0.05)
         app.switch_to_execution()
-        await pilot.pause()
+        await pilot.pause(0.05)
         assert app._execution_screen is not None
         rain = app._execution_screen.query_one("#exec_rain", MatrixRain)
         assert rain.region.width == MatrixRain.COLS
@@ -215,9 +215,9 @@ async def test_execution_screen_includes_matrix_rain() -> None:
 async def test_update_progress_tasks_shows_overall_task_picture() -> None:
     app = ArchitectApp()
     async with app.run_test() as pilot:
-        await pilot.pause()
+        await pilot.pause(0.05)
         app.switch_to_execution()
-        await pilot.pause()
+        await pilot.pause(0.05)
         app.update_progress_tasks(
             [
                 {"prefix": "T01", "title": "First task", "status": "done"},
@@ -225,7 +225,7 @@ async def test_update_progress_tasks_shows_overall_task_picture() -> None:
                 {"prefix": "T03", "title": "Third task", "status": "pending"},
             ]
         )
-        await pilot.pause()
+        await pilot.pause(0.05)
         assert app._execution_screen is not None
         progress = app._execution_screen.query_one("#exec_progress_text", Static)
         text = str(progress.render())
@@ -239,10 +239,10 @@ async def test_update_progress_tasks_shows_overall_task_picture() -> None:
 async def test_execution_tab_bodies_are_scrollable_and_focusable() -> None:
     app = ArchitectApp()
     async with app.run_test() as pilot:
-        await pilot.pause()
+        await pilot.pause(0.05)
         app.switch_to_execution()
-        await pilot.pause()
-        await pilot.pause()
+        await pilot.pause(0.05)
+        await pilot.pause(0.05)
         assert app._execution_screen is not None
         screen = app._execution_screen
 
@@ -257,13 +257,13 @@ async def test_execution_tab_bodies_are_scrollable_and_focusable() -> None:
         assert diagnostics.can_focus is True
 
         screen.action_switch_tab("tab_progress")
-        await pilot.pause()
-        await pilot.pause()
+        await pilot.pause(0.05)
+        await pilot.pause(0.05)
         assert screen.focused is progress
 
         screen.action_switch_tab("tab_settings")
-        await pilot.pause()
-        await pilot.pause()
+        await pilot.pause(0.05)
+        await pilot.pause(0.05)
         assert screen.focused is settings
 
 
@@ -272,10 +272,10 @@ async def test_execution_screen_mount_placeholders() -> None:
     """Once the execution screen is created, its default placeholders appear."""
     app = ArchitectApp()
     async with app.run_test() as pilot:
-        await pilot.pause()
+        await pilot.pause(0.05)
         app.switch_to_execution()
-        await pilot.pause()
-        await pilot.pause()
+        await pilot.pause(0.05)
+        await pilot.pause(0.05)
         assert app._execution_screen is not None
         output = app._execution_screen.query_one("#exec_output", RichLog)
         assert len(output.lines) >= 1
@@ -296,7 +296,7 @@ async def test_output_before_mount_does_not_show_placeholder() -> None:
     """
     app = ArchitectApp()
     async with app.run_test() as pilot:
-        await pilot.pause()
+        await pilot.pause(0.05)
         # Switch to execution and immediately queue lines (before mount settles)
         app.switch_to_execution()
         assert app._execution_screen is not None
@@ -304,9 +304,9 @@ async def test_output_before_mount_does_not_show_placeholder() -> None:
         # Bypass the thread-safe path and queue directly into pending so we can
         # precisely simulate output arriving before on_mount's deferred callbacks run.
         screen._pending_output.extend(["pending line 1", "pending line 2"])
-        await pilot.pause()
-        await pilot.pause()
-        await pilot.pause()
+        await pilot.pause(0.05)
+        await pilot.pause(0.05)
+        await pilot.pause(0.05)
         log = screen.query_one("#exec_output", RichLog)
         rendered = " ".join(str(line) for line in log.lines)
         # Real lines must be present
@@ -330,20 +330,20 @@ async def test_push_event_line_does_not_crash_on_diagnostics_tab() -> None:
 
     app = ArchitectApp()
     async with app.run_test() as pilot:
-        await pilot.pause()
+        await pilot.pause(0.05)
         app.switch_to_execution()
-        await pilot.pause()
-        await pilot.pause()
+        await pilot.pause(0.05)
+        await pilot.pause(0.05)
         assert app._execution_screen is not None
         screen = app._execution_screen
         # Push an event — this must not raise.
         screen.push_event_line("task_start", {"task": "T01", "attempt": "1"})
-        await pilot.pause()
+        await pilot.pause(0.05)
         # Switch to the Diagnostics tab (simulates the user clicking it).
         tabs = screen.query_one("#exec_tabs", TabbedContent)
         tabs.active = "tab_diagnostics"
-        await pilot.pause()
-        await pilot.pause()
+        await pilot.pause(0.05)
+        await pilot.pause(0.05)
         log = screen.query_one("#exec_diagnostics", RichLog)
         # At least one line was written (placeholder + our event).
         assert len(log.lines) >= 1
@@ -365,20 +365,20 @@ async def test_hide_wait_dismisses_overlay_without_reinstalling_execution() -> N
     """
     app = ArchitectApp()
     async with app.run_test() as pilot:
-        await pilot.pause()
+        await pilot.pause(0.05)
         app.switch_to_execution()
-        await pilot.pause()
+        await pilot.pause(0.05)
         execution = app._execution_screen
         assert execution is not None
 
         app.show_wait("Planning next iteration")
-        await pilot.pause()
+        await pilot.pause(0.05)
         assert isinstance(app.screen, WaitScreen)
         assert execution in app.screen_stack
 
         app.hide_wait()
-        await pilot.pause()
-        await pilot.pause()
+        await pilot.pause(0.05)
+        await pilot.pause(0.05)
 
         assert app.screen is execution
         assert app._execution_screen is execution
@@ -391,17 +391,17 @@ async def test_switch_to_execution_dismisses_wait_overlay_when_execution_underne
     """Switching to execution during a wait overlay must not duplicate screens."""
     app = ArchitectApp()
     async with app.run_test() as pilot:
-        await pilot.pause()
+        await pilot.pause(0.05)
         app.switch_to_execution()
-        await pilot.pause()
+        await pilot.pause(0.05)
         execution = app._execution_screen
         assert execution is not None
 
         app.show_wait("Retrospective")
-        await pilot.pause()
+        await pilot.pause(0.05)
         app.switch_to_execution()
-        await pilot.pause()
-        await pilot.pause()
+        await pilot.pause(0.05)
+        await pilot.pause(0.05)
 
         assert app.screen is execution
         assert app.screen_stack.count(execution) == 1
@@ -413,20 +413,20 @@ async def test_show_wait_recovers_from_stale_wait_reference() -> None:
     """A stale wait reference must not make later waits invisible."""
     app = ArchitectApp()
     async with app.run_test() as pilot:
-        await pilot.pause()
+        await pilot.pause(0.05)
         app.switch_to_execution()
-        await pilot.pause()
+        await pilot.pause(0.05)
 
         app.show_wait("First wait")
-        await pilot.pause()
+        await pilot.pause(0.05)
         stale_wait = app._wait_screen
         assert isinstance(stale_wait, WaitScreen)
         stale_wait.dismiss()
-        await pilot.pause()
+        await pilot.pause(0.05)
         assert stale_wait not in app.screen_stack
 
         app.show_wait("Second wait")
-        await pilot.pause()
+        await pilot.pause(0.05)
 
         assert isinstance(app.screen, WaitScreen)
         assert app._wait_screen is not stale_wait
@@ -439,21 +439,21 @@ async def test_hide_wait_preserves_pause_menu_above_wait() -> None:
 
     app = ArchitectApp()
     async with app.run_test() as pilot:
-        await pilot.pause()
+        await pilot.pause(0.05)
         app.switch_to_execution()
-        await pilot.pause()
+        await pilot.pause(0.05)
 
         app.show_wait("Planning")
-        await pilot.pause()
+        await pilot.pause(0.05)
         wait = app._wait_screen
         assert isinstance(wait, WaitScreen)
         app.push_screen(PauseMenuScreen())
-        await pilot.pause()
+        await pilot.pause(0.05)
         assert isinstance(app.screen, PauseMenuScreen)
 
         app.hide_wait()
-        await pilot.pause()
-        await pilot.pause()
+        await pilot.pause(0.05)
+        await pilot.pause(0.05)
 
         assert app.screen is not wait
         assert wait in app.screen_stack
@@ -466,11 +466,11 @@ async def test_empty_screen_stack_is_repaired() -> None:
     """The active TUI should recover instead of exiting if its stack is emptied."""
     app = ArchitectApp()
     async with app.run_test() as pilot:
-        await pilot.pause()
+        await pilot.pause(0.05)
         app.screen_stack.clear()
 
         app._ensure_screen_stack_sync("test_empty_stack")
-        await pilot.pause()
+        await pilot.pause(0.05)
 
         assert len(app.screen_stack) >= 1
         assert isinstance(app.screen, ExecutionScreen | SplashScreen)

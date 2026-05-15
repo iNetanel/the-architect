@@ -181,7 +181,7 @@ class _Harness:
         TestApp._dismissed = "<not-dismissed>"
 
         async with TestApp().run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
         return TestApp._dismissed
 
 
@@ -218,11 +218,11 @@ class TestPreRunScreen:
                     result = value
 
             async with CApp().run_test() as pilot:
-                await pilot.pause()
-                await pilot.pause()
+                await pilot.pause(0.05)
+                await pilot.pause(0.05)
                 screen.action_cancel()
-                await pilot.pause()
-                await pilot.pause()
+                await pilot.pause(0.05)
+                await pilot.pause(0.05)
 
         await _run_cancel()
         assert result is None
@@ -255,9 +255,9 @@ class TestPreRunScreen:
                     dismissed = value
 
             async with SApp().run_test() as pilot:
-                await pilot.pause()
+                await pilot.pause(0.05)
                 screen.action_submit()
-                await pilot.pause()
+                await pilot.pause(0.05)
                 goal_area = screen.query_one("#goal_text", TextArea)
 
         await _run_short()
@@ -290,12 +290,12 @@ class TestPreRunScreen:
                     result = value
 
             async with CApp().run_test() as pilot:
-                await pilot.pause()
+                await pilot.pause(0.05)
                 area = screen.query_one("#goal_text", TextArea)
                 area.text = "Build the feature"
-                await pilot.pause()
+                await pilot.pause(0.05)
                 screen.action_submit()
-                await pilot.pause()
+                await pilot.pause(0.05)
 
         await _run_complete()
         assert isinstance(result, PreRunValues)
@@ -318,10 +318,10 @@ class TestPreRunScreen:
                 self.push_screen(screen, lambda value: None)
 
         async with LoopDefaultApp().run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert screen.query_one("#chk_infinite_loop", Checkbox).value is False
             screen.action_cancel()
-            await pilot.pause()
+            await pilot.pause(0.05)
 
     @pytest.mark.asyncio
     async def test_infinite_loop_requires_confirmation_and_cancel_disables_it(self) -> None:
@@ -344,24 +344,24 @@ class TestPreRunScreen:
                 result = value
 
         async with LoopCancelApp().run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             screen.query_one("#goal_text", TextArea).text = "Build the feature"
             screen.query_one("#chk_infinite_loop", Checkbox).value = True
             screen.action_submit()
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert isinstance(screen.app.screen, InfiniteLoopConfirmScreen)
             screen.app.screen.action_choose(False)
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert result == "<not-dismissed>"
             assert screen.query_one("#chk_infinite_loop", Checkbox).value is False
             screen.query_one("#chk_infinite_loop", Checkbox).value = True
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert isinstance(screen.app.screen, InfiniteLoopConfirmScreen)
             screen.app.screen.action_choose(False)
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert screen.query_one("#chk_infinite_loop", Checkbox).value is False
             screen.action_cancel()
-            await pilot.pause()
+            await pilot.pause(0.05)
 
     @pytest.mark.asyncio
     async def test_infinite_loop_confirmation_submits_enabled_value(self) -> None:
@@ -384,14 +384,14 @@ class TestPreRunScreen:
                 result = value
 
         async with LoopConfirmApp().run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             screen.query_one("#goal_text", TextArea).text = "Build the feature"
             screen.query_one("#chk_infinite_loop", Checkbox).value = True
             screen.action_submit()
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert isinstance(screen.app.screen, InfiniteLoopConfirmScreen)
             screen.app.screen.action_choose(True)
-            await pilot.pause()
+            await pilot.pause(0.05)
 
         assert isinstance(result, PreRunValues)
         assert result.infinite_loop is True
@@ -431,11 +431,11 @@ class TestPreRunScreen:
                 result = value
 
         async with CApp().run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert screen.query_one("#goal_text", TextArea).display is False
             assert screen.query_one("#scope_set").display is False
             screen.action_submit()
-            await pilot.pause()
+            await pilot.pause(0.05)
 
         assert isinstance(result, PreRunValues)
         assert result.action == "execute"
@@ -476,17 +476,17 @@ class TestPreRunScreen:
                 result = value
 
         async with CApp().run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert screen.query_one("#goal_text", TextArea).display is True
             assert screen.query_one("#scope_set").display is True
             assert screen.focused is screen.query_one("#goal_text", TextArea)
             screen.action_submit()
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert result == "<not-dismissed>"
             area = screen.query_one("#goal_text", TextArea)
             area.text = "Build a replacement plan"
             screen.action_submit()
-            await pilot.pause()
+            await pilot.pause(0.05)
 
         assert isinstance(result, PreRunValues)
         assert result.action == "replan"
@@ -520,14 +520,14 @@ class TestPreRunScreen:
                 self.push_screen(screen, lambda value: None)
 
         async with CApp().run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert screen.query_one("#goal_text", TextArea).display is False
             assert screen.query_one("#pending_tasks_summary", Static).display is True
             rb_replan = screen.query_one("#rb_action_replan")
             rb_replan.value = True
             screen._update_replan_controls_visibility()
-            await pilot.pause()
-            await pilot.pause()
+            await pilot.pause(0.05)
+            await pilot.pause(0.05)
             assert screen.query_one("#goal_text", TextArea).display is True
             assert screen.query_one("#scope_set").display is True
             assert screen.query_one("#pending_tasks_summary", Static).display is False
@@ -577,14 +577,14 @@ class TestPreRunScreen:
                 self.push_screen(screen, lambda v: None)
 
         async with SubApp().run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             subtitle = screen.query_one("#prerun_subtitle")
             # The rendered content should contain the project path
             rendered = subtitle.render()
             assert str(project_dir) in str(rendered)
             assert list(screen.query(Footer)) == []
             screen.action_cancel()
-            await pilot.pause()
+            await pilot.pause(0.05)
 
     @pytest.mark.asyncio
     async def test_model_fetch_error_shows_warning(self) -> None:
@@ -604,12 +604,12 @@ class TestPreRunScreen:
                 self.push_screen(screen, lambda v: None)
 
         async with ErrApp().run_test() as pilot:
-            await pilot.pause()
-            await pilot.pause()
+            await pilot.pause(0.05)
+            await pilot.pause(0.05)
             # After mount, model_fetch_error should be True
             assert screen._model_fetch_error is True
             screen.action_cancel()
-            await pilot.pause()
+            await pilot.pause(0.05)
 
     @pytest.mark.asyncio
     async def test_persisted_model_coerced_when_missing(self) -> None:
@@ -631,12 +631,12 @@ class TestPreRunScreen:
                 self.push_screen(screen, lambda v: None)
 
         async with CoerceApp().run_test() as pilot:
-            await pilot.pause()
-            await pilot.pause()
+            await pilot.pause(0.05)
+            await pilot.pause(0.05)
             # model-z was coerced to None
             assert screen._values.architect_model is None
             screen.action_cancel()
-            await pilot.pause()
+            await pilot.pause(0.05)
 
     @pytest.mark.asyncio
     async def test_provider_tab_hidden_for_single_provider(self) -> None:
@@ -686,7 +686,7 @@ class TestPreRunScreen:
                 self.push_screen(screen, lambda v: None)
 
         async with ScopeApp().run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             tabs = screen.query_one("#prerun_tabs", TabbedContent)
             # Goal tab is active by default
             assert tabs.active == "tab_goal"
@@ -706,7 +706,7 @@ class TestPreRunScreen:
             area = screen.query_one("#goal_text", TextArea)
             assert area is not None
             screen.action_cancel()
-            await pilot.pause()
+            await pilot.pause(0.05)
 
     @pytest.mark.asyncio
     async def test_switching_provider_does_not_crash(self) -> None:
@@ -742,8 +742,8 @@ class TestPreRunScreen:
                 self.push_screen(screen, lambda v: None)
 
         async with SwitchApp().run_test() as pilot:
-            await pilot.pause()
-            await pilot.pause()
+            await pilot.pause(0.05)
+            await pilot.pause(0.05)
             # After mount, OpenCode is active; agent_list should have items
             assert screen._models == ["model-a1", "model-a2"]
             assert screen._agents == ["build", "backend"]
@@ -753,12 +753,12 @@ class TestPreRunScreen:
             rb_codex.value = True
             # Trigger the change handler
             screen._on_provider_changed()
-            await pilot.pause()
+            await pilot.pause(0.05)
             # No crash — models refreshed, agents empty
             assert screen._models == ["gpt-5", "gpt-4.1"]
             assert screen._agents == []
             screen.action_cancel()
-            await pilot.pause()
+            await pilot.pause(0.05)
 
     def test_stale_provider_fetch_results_are_ignored(self) -> None:
         """Late model results from a previous provider must not overwrite current state."""
@@ -829,7 +829,7 @@ class TestPreRunScreen:
                 self.push_screen(screen, lambda v: None)
 
         async with MultiApp().run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             rs = screen.query_one("#provider_set", RadioSet)
 
             # Exactly one radio button should be pressed initially
@@ -857,7 +857,7 @@ class TestPreRunScreen:
             assert rs.pressed_button.id == "rb_prov_2"
 
             screen.action_cancel()
-            await pilot.pause()
+            await pilot.pause(0.05)
 
     @pytest.mark.asyncio
     async def test_enter_submits_from_goal_textarea(self) -> None:
@@ -886,14 +886,14 @@ class TestPreRunScreen:
                 result = value
 
         async with EnterApp().run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             area = screen.query_one("#goal_text", GoalTextArea)
             area.focus()
             area.text = "Build something reasonable"
-            await pilot.pause()
+            await pilot.pause(0.05)
             await pilot.press("enter")
-            await pilot.pause()
-            await pilot.pause()
+            await pilot.pause(0.05)
+            await pilot.pause(0.05)
 
         assert isinstance(result, PreRunValues)
         assert result.goal == "Build something reasonable"
@@ -920,23 +920,23 @@ class TestPreRunScreen:
                 self.push_screen(screen, lambda v: None)
 
         async with ShiftApp().run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             area = screen.query_one("#goal_text", GoalTextArea)
             area.focus()
             area.text = "line 1"
             # Move cursor to end so the newline lands after "line 1"
             area.move_cursor(area.document.end)
-            await pilot.pause()
+            await pilot.pause(0.05)
             await pilot.press("shift+enter")
             # Continue typing
             for ch in "line 2":
                 await pilot.press(ch)
-            await pilot.pause()
+            await pilot.pause(0.05)
 
             assert "\n" in area.text
             assert area.text.startswith("line 1")
             screen.action_cancel()
-            await pilot.pause()
+            await pilot.pause(0.05)
 
     @pytest.mark.asyncio
     async def test_right_key_binding_wired_to_next_tab(self) -> None:
@@ -973,22 +973,22 @@ class TestPreRunScreen:
                 self.push_screen(screen, lambda v: None)
 
         async with FocusApp().run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             area = screen.query_one("#goal_text", GoalTextArea)
             area.focus()
-            await pilot.pause()
+            await pilot.pause(0.05)
 
             # up from goal_text → scope_set RadioSet (RadioSet has
             # can_focus_children=False, so we focus the container itself)
             screen.action_focus_previous()
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert getattr(screen.focused, "id", None) == "scope_set"
 
             # down from scope_set first moves the radio cursor only; it must not
             # change the selected scope until the user presses Space/clicks.
             rs = screen.query_one("#scope_set", RadioSet)
             screen.action_focus_next()
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert rs.pressed_button is not None
             assert rs.pressed_button.id == "rb_standard"
             assert getattr(screen.focused, "id", None) == "scope_set"
@@ -996,17 +996,17 @@ class TestPreRunScreen:
             # Continue down to the end of the radio cursor range, then leave
             # the Scope section for goal_text without changing the selection.
             screen.action_focus_next()
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert rs.pressed_button is not None
             assert rs.pressed_button.id == "rb_standard"
             assert getattr(screen.focused, "id", None) == "scope_set"
 
             screen.action_focus_next()
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert getattr(screen.focused, "id", None) == "goal_text"
 
             screen.action_cancel()
-            await pilot.pause()
+            await pilot.pause(0.05)
 
     @pytest.mark.asyncio
     async def test_up_down_move_model_list_selection_before_next_section(self) -> None:
@@ -1025,27 +1025,26 @@ class TestPreRunScreen:
                 self.push_screen(screen, lambda value: None)
 
         async with ModelApp().run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             screen.action_jump_tab_2()
-            await pilot.pause()
+            await pilot.pause(0.05)
             model_list = screen.query_one("#model_list", ListView)
             model_list.focus()
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert model_list.index == 0
 
             screen.action_focus_next()
-            await pilot.pause()
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert model_list.index == 1
             assert screen._collect_values().architect_model is None
 
             screen.action_focus_next()
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert model_list.index == 2
             assert screen._collect_values().architect_model is None
 
             await pilot.press("space")
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert screen._collect_values().architect_model == "model-b"
             selected_label = model_list.children[2].query_one(Label).render()
             default_label = model_list.children[0].query_one(Label).render()
@@ -1054,11 +1053,11 @@ class TestPreRunScreen:
 
             # At the last model row, down leaves the model list for the agent list.
             screen.action_focus_next()
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert getattr(screen.focused, "id", None) == "agent_list"
 
             screen.action_cancel()
-            await pilot.pause()
+            await pilot.pause(0.05)
 
     @pytest.mark.asyncio
     async def test_existing_run_action_arrows_hover_replan_until_space_selects(self) -> None:
@@ -1089,26 +1088,26 @@ class TestPreRunScreen:
                 self.push_screen(screen, lambda value: None)
 
         async with RunApp().run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             action_set = screen.query_one("#action_set", RadioSet)
             action_set.focus()
             assert action_set.pressed_button is not None
             assert action_set.pressed_button.id == "rb_action_execute"
 
             screen.action_focus_next()
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert action_set.pressed_button is not None
             assert action_set.pressed_button.id == "rb_action_execute"
             assert screen.query_one("#goal_text", TextArea).display is False
 
             await pilot.press("space")
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert action_set.pressed_button is not None
             assert action_set.pressed_button.id == "rb_action_replan"
             assert screen.query_one("#goal_text", TextArea).display is True
 
             screen.action_cancel()
-            await pilot.pause()
+            await pilot.pause(0.05)
 
     @pytest.mark.asyncio
     async def test_provider_tab_focus_next_handles_content_tabs_focus(self) -> None:
@@ -1128,21 +1127,21 @@ class TestPreRunScreen:
                 self.push_screen(screen, lambda value: None)
 
         async with RunApp().run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             screen._try_activate_tab("tab_provider")
-            await pilot.pause()
+            await pilot.pause(0.05)
             tabs = screen.query_one("#prerun_tabs", TabbedContent)
             assert tabs.active == "tab_provider"
             screen.query_one(ContentTabs).focus()
 
             screen.action_focus_next()
-            await pilot.pause()
+            await pilot.pause(0.05)
 
             assert getattr(screen.focused, "id", None) == "provider_set"
             assert screen.query_one("#provider_set", RadioSet).pressed_button is not None
 
             screen.action_cancel()
-            await pilot.pause()
+            await pilot.pause(0.05)
 
     @pytest.mark.asyncio
     async def test_options_tab_left_right_switches_tabs(self) -> None:
@@ -1168,45 +1167,45 @@ class TestPreRunScreen:
                 self.push_screen(screen, lambda v: None)
 
         async with ModeApp().run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
 
             # action_next_tab / action_prev_tab must not raise
             screen.action_next_tab()
-            await pilot.pause()
+            await pilot.pause(0.05)
             screen.action_prev_tab()
-            await pilot.pause()
+            await pilot.pause(0.05)
 
             # Navigate to the Options tab by number key
             screen.action_jump_tab_4()
-            await pilot.pause()
+            await pilot.pause(0.05)
             tabs = screen.query_one("#prerun_tabs", TabbedContent)
             assert tabs.active == "tab_mode"
 
             # Focus chk_free — first focusable widget in Options tab
             chk_free = screen.query_one("#chk_free")
             chk_free.focus()
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert getattr(screen.focused, "id", None) == "chk_free"
 
             # down key → moves focus within Options tab (chk_persistent)
             screen.action_focus_next()
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert getattr(screen.focused, "id", None) == "chk_persistent"
 
             screen.action_focus_next()
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert getattr(screen.focused, "id", None) == "chk_integrity"
 
             screen.action_focus_next()
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert getattr(screen.focused, "id", None) == "chk_force_reassessment"
 
             screen.action_focus_next()
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert getattr(screen.focused, "id", None) == "chk_infinite_loop"
 
             screen.action_cancel()
-            await pilot.pause()
+            await pilot.pause(0.05)
 
     @pytest.mark.asyncio
     async def test_arrow_always_switches_tab_even_from_goal_textarea(self) -> None:
@@ -1232,11 +1231,11 @@ class TestPreRunScreen:
                 self.push_screen(screen, lambda v: None)
 
         async with EditorApp().run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             area = screen.query_one("#goal_text", GoalTextArea)
             area.focus()
             area.text = "hello world"
-            await pilot.pause()
+            await pilot.pause(0.05)
 
             # Verify the binding targets next_tab (not next_tab_smart)
             bindings = {b.key: b.action for b in screen.BINDINGS}
@@ -1246,14 +1245,14 @@ class TestPreRunScreen:
             tabs = screen.query_one("#prerun_tabs", TabbedContent)
             assert tabs.active == "tab_goal"
             screen.action_next_tab()
-            await pilot.pause()
-            await pilot.pause()
+            await pilot.pause(0.05)
+            await pilot.pause(0.05)
             assert tabs.active == "tab_models"
 
             # action_prev_tab callable too
             screen.action_prev_tab()
-            await pilot.pause()
-            await pilot.pause()
+            await pilot.pause(0.05)
+            await pilot.pause(0.05)
             assert tabs.active == "tab_goal"
 
             # Smart methods no longer exist
@@ -1261,7 +1260,7 @@ class TestPreRunScreen:
             assert not hasattr(screen, "_focus_is_in_goal_textarea")
 
             screen.action_cancel()
-            await pilot.pause()
+            await pilot.pause(0.05)
 
     @pytest.mark.asyncio
     async def test_right_arrow_actually_switches_tab_from_radioset(self) -> None:
@@ -1290,8 +1289,8 @@ class TestPreRunScreen:
                 self.push_screen(screen, lambda v: None)
 
         async with ArrowApp().run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            await pilot.pause()
+            await pilot.pause(0.05)
+            await pilot.pause(0.05)
 
             tabs = screen.query_one("#prerun_tabs", TabbedContent)
             assert tabs.active == "tab_goal"
@@ -1299,27 +1298,27 @@ class TestPreRunScreen:
             # Focus the RadioSet (scope_set) on the Goal tab
             rs = screen.query_one("#scope_set", RadioSet)
             rs.focus()
-            await pilot.pause()
+            await pilot.pause(0.05)
 
             # Press right — must switch to the next tab (tab_models, no Provider tab)
             await pilot.press("right")
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert tabs.active == "tab_models", (
                 f"right arrow from RadioSet did not switch tab: still on {tabs.active!r}"
             )
 
             # Press right again — should reach Options tab
             await pilot.press("right")
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert tabs.active == "tab_mode"
 
             # Press left — back to Models
             await pilot.press("left")
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert tabs.active == "tab_models"
 
             screen.action_cancel()
-            await pilot.pause()
+            await pilot.pause(0.05)
 
     @pytest.mark.asyncio
     async def test_tab_and_shift_tab_switch_tabs(self) -> None:
@@ -1338,17 +1337,17 @@ class TestPreRunScreen:
                 self.push_screen(screen, lambda value: None)
 
         async with TabApp().run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             tabs = screen.query_one("#prerun_tabs", TabbedContent)
             assert tabs.active == "tab_goal"
 
             await pilot.press("tab")
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert tabs.active == "tab_models"
 
             await pilot.press("shift+tab")
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert tabs.active == "tab_goal"
 
             screen.action_cancel()
-            await pilot.pause()
+            await pilot.pause(0.05)

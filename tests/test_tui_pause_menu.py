@@ -20,11 +20,11 @@ class TestPauseMenuScreenDecision:
     async def test_continue_dismisses_with_continue(self) -> None:
         app = _HarnessApp()
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             app.push_screen(PauseMenuScreen(), app._on_dismiss)
-            await pilot.pause()
+            await pilot.pause(0.05)
             await pilot.press("c")
-            await pilot.pause()
+            await pilot.pause(0.05)
         assert app.decision == "continue"
 
     @pytest.mark.asyncio
@@ -33,22 +33,22 @@ class TestPauseMenuScreenDecision:
         another pause menu — the user already saw the options."""
         app = _HarnessApp()
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             app.push_screen(PauseMenuScreen(), app._on_dismiss)
-            await pilot.pause()
+            await pilot.pause(0.05)
             await pilot.press("escape")
-            await pilot.pause()
+            await pilot.pause(0.05)
         assert app.decision == "continue"
 
     @pytest.mark.asyncio
     async def test_exit_key_dismisses_with_exit(self) -> None:
         app = _HarnessApp()
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             app.push_screen(PauseMenuScreen(), app._on_dismiss)
-            await pilot.pause()
+            await pilot.pause(0.05)
             await pilot.press("e")
-            await pilot.pause()
+            await pilot.pause(0.05)
         assert app.decision == "exit"
 
     @pytest.mark.asyncio
@@ -56,11 +56,11 @@ class TestPauseMenuScreenDecision:
         """Ctrl+C inside the menu should still mean hard-stop."""
         app = _HarnessApp()
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             app.push_screen(PauseMenuScreen(), app._on_dismiss)
-            await pilot.pause()
+            await pilot.pause(0.05)
             await pilot.press("ctrl+c")
-            await pilot.pause()
+            await pilot.pause(0.05)
         assert app.decision == "exit"
 
 
@@ -80,12 +80,12 @@ class TestPauseMenuDetachBehaviour:
         with patch("the_architect.tui.screens.pause.is_inside_tmux", return_value=False):
             app = _HarnessApp()
             async with app.run_test() as pilot:
-                await pilot.pause()
+                await pilot.pause(0.05)
                 menu = PauseMenuScreen()
                 app.push_screen(menu, app._on_dismiss)
-                await pilot.pause()
+                await pilot.pause(0.05)
                 await pilot.press("d")
-                await pilot.pause()
+                await pilot.pause(0.05)
         # No dismiss happened — decision is still None.
         assert app.decision is None
 
@@ -100,11 +100,11 @@ class TestPauseMenuDetachBehaviour:
         ):
             app = _HarnessApp()
             async with app.run_test() as pilot:
-                await pilot.pause()
+                await pilot.pause(0.05)
                 app.push_screen(PauseMenuScreen(), app._on_dismiss)
-                await pilot.pause()
+                await pilot.pause(0.05)
                 await pilot.press("d")
-                await pilot.pause()
+                await pilot.pause(0.05)
         mock_detach.assert_called_once()
         assert app.decision == "detach"
 
@@ -124,11 +124,11 @@ class TestPauseMenuDetachBehaviour:
         ):
             app = _HarnessApp()
             async with app.run_test() as pilot:
-                await pilot.pause()
+                await pilot.pause(0.05)
                 app.push_screen(PauseMenuScreen(), app._on_dismiss)
-                await pilot.pause()
+                await pilot.pause(0.05)
                 await pilot.press("d")
-                await pilot.pause()
+                await pilot.pause(0.05)
         assert app.decision is None
 
 
@@ -140,9 +140,9 @@ class TestExecutionScreenEscapeOpensPauseMenu:
     async def test_escape_on_execution_pushes_pause_menu(self) -> None:
         app = ArchitectApp(initial_screen=ExecutionScreen())
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             await pilot.press("escape")
-            await pilot.pause()
+            await pilot.pause(0.05)
             # The active screen on top of the stack should now be the
             # pause menu overlay.
             assert isinstance(app.screen, PauseMenuScreen)
@@ -160,11 +160,11 @@ class TestExecutionScreenEscapeOpensPauseMenu:
         ):
             app = ArchitectApp(initial_screen=ExecutionScreen())
             async with app.run_test() as pilot:
-                await pilot.pause()
+                await pilot.pause(0.05)
                 await pilot.press("escape")
-                await pilot.pause()
+                await pilot.pause(0.05)
                 await pilot.press("e")
-                await pilot.pause()
+                await pilot.pause(0.05)
 
                 assert isinstance(app.screen, SplashScreen)
                 subtitle = app.screen.query_one("#splash_subtitle", Static)
@@ -189,32 +189,32 @@ class TestPauseMenuArrowNavigation:
         """
         app = _HarnessApp()
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             app.push_screen(PauseMenuScreen(), app._on_dismiss)
-            await pilot.pause()
+            await pilot.pause(0.05)
             # Focus starts on Continue (wired in on_mount).
             first = app.focused
             assert first is not None
             assert first.id == "btn_continue"
 
             await pilot.press("down")
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert app.focused is not None
             assert app.focused.id == "btn_detach"
 
             await pilot.press("down")
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert app.focused is not None
             assert app.focused.id == "btn_exit"
 
             # And Up walks back Exit → Detach → Continue.
             await pilot.press("up")
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert app.focused is not None
             assert app.focused.id == "btn_detach"
 
             await pilot.press("up")
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert app.focused is not None
             assert app.focused.id == "btn_continue"
 
@@ -225,14 +225,14 @@ class TestPauseMenuArrowNavigation:
         """
         app = _HarnessApp()
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             app.push_screen(PauseMenuScreen(), app._on_dismiss)
-            await pilot.pause()
+            await pilot.pause(0.05)
             await pilot.press("down")  # Continue → Detach
             await pilot.press("down")  # Detach → Exit
-            await pilot.pause()
+            await pilot.pause(0.05)
             await pilot.press("enter")
-            await pilot.pause()
+            await pilot.pause(0.05)
         assert app.decision == "exit"
 
     @pytest.mark.asyncio
@@ -250,12 +250,12 @@ class TestPauseMenuArrowNavigation:
         with patch("the_architect.tui.screens.pause.is_inside_tmux", return_value=False):
             app = _HarnessApp()
             async with app.run_test() as pilot:
-                await pilot.pause()
+                await pilot.pause(0.05)
                 menu = _PMS()
                 app.push_screen(menu, app._on_dismiss)
-                await pilot.pause()
+                await pilot.pause(0.05)
                 await pilot.press("d")
-                await pilot.pause()
+                await pilot.pause(0.05)
                 # Menu is still on top of the stack — decision is None
                 # because dismiss was never called.
                 assert app.decision is None

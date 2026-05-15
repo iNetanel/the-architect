@@ -15,7 +15,7 @@ class TestWaitApp:
     async def test_initial_title_rendered(self) -> None:
         app = WaitApp(title="planning")
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             title = app._screen.query_one("#wait_title", Static)
             assert "planning" in str(title.render())
             rain = app._screen.query_one("#wait_rain", MatrixRain)
@@ -27,9 +27,9 @@ class TestWaitApp:
     async def test_set_title_updates_static(self) -> None:
         app = WaitApp(title="initial")
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             app.set_title("updated")
-            await pilot.pause()
+            await pilot.pause(0.05)
             title = app._screen.query_one("#wait_title", Static)
             assert "updated" in str(title.render())
 
@@ -37,9 +37,9 @@ class TestWaitApp:
     async def test_set_detail_updates_static(self) -> None:
         app = WaitApp(title="wait")
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             app.set_detail("Goal: demo\nScope: standard")
-            await pilot.pause()
+            await pilot.pause(0.05)
             detail = app._screen.query_one("#wait_detail", Static)
             rendered = str(detail.render())
             assert "Goal: demo" in rendered
@@ -49,10 +49,10 @@ class TestWaitApp:
     async def test_append_log_writes_line(self) -> None:
         app = WaitApp(title="wait")
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             app.append_log("first line")
             app.append_log("second line")
-            await pilot.pause()
+            await pilot.pause(0.05)
             log = app._screen.query_one("#wait_log", RichLog)
             assert len(log.lines) >= 2
 
@@ -66,8 +66,8 @@ class TestWaitApp:
         app.append_log("second provider line")
 
         async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.pause()
+            await pilot.pause(0.05)
+            await pilot.pause(0.05)
             detail = app._screen.query_one("#wait_detail", Static)
             rendered = str(detail.render())
             assert "Goal: demo" in rendered
@@ -79,11 +79,11 @@ class TestWaitApp:
     async def test_spinner_advances_frame(self) -> None:
         app = WaitApp(title="spin")
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             first_frame = app._current_frame
             # Force one extra tick directly (avoids depending on interval timing).
             app._tick_spinner()
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert app._current_frame != first_frame
 
 
@@ -110,9 +110,9 @@ class TestArchitectAppWaitOverlay:
 
         app = ArchitectApp()
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             app._show_wait_sync("planning", "goal: demo")
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert app._wait_screen is not None
             assert isinstance(app.screen, WaitScreen)
 
@@ -123,11 +123,11 @@ class TestArchitectAppWaitOverlay:
 
         app = ArchitectApp()
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             app._show_wait_sync("wait", "")
-            await pilot.pause()
+            await pilot.pause(0.05)
             app._hide_wait_sync()
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert app._wait_screen is None
             # Hide must not pop the final screen off the stack. Infinite Loop
             # uses wait overlays between planning iterations; if the wait
@@ -141,11 +141,11 @@ class TestArchitectAppWaitOverlay:
 
         app = ArchitectApp()
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             app._show_wait_sync("phase A", "")
-            await pilot.pause()
+            await pilot.pause(0.05)
             app._update_wait_sync("phase B", "new detail")
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert app._wait_screen is not None
             title = app._wait_screen.query_one("#wait_title", Static)
             detail = app._wait_screen.query_one("#wait_detail", Static)
@@ -159,15 +159,15 @@ class TestArchitectAppWaitOverlay:
 
         app = ArchitectApp()
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             app._show_wait_sync("planning", "goal: demo")
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert isinstance(app.screen, WaitScreen)
 
             # Provider output may arrive while the wait overlay is visible.
             # That must not switch the visible screen away from the overlay.
             app.push_output_line("provider line")
-            await pilot.pause()
+            await pilot.pause(0.05)
 
             assert isinstance(app.screen, WaitScreen)
             assert app._wait_screen is not None
@@ -178,7 +178,7 @@ class TestArchitectAppWaitOverlay:
 
         app = ArchitectApp()
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             app._show_wait_sync("planning", "")
             assert app._wait_screen is not None
 
@@ -186,8 +186,8 @@ class TestArchitectAppWaitOverlay:
             app._wait_screen.append_log("provider line before mount")
             app._wait_screen.set_detail("Goal: demo")
 
-            await pilot.pause()
-            await pilot.pause()
+            await pilot.pause(0.05)
+            await pilot.pause(0.05)
 
             detail = app._wait_screen.query_one("#wait_detail", Static)
             assert "Goal: demo" in str(detail.render())
@@ -206,16 +206,16 @@ class TestArchitectAppWaitOverlay:
 
         app = ArchitectApp()
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             app._show_wait_sync("planning", "")
-            await pilot.pause()
+            await pilot.pause(0.05)
             dummy = DummyOverlay()
             app.push_screen(dummy)
-            await pilot.pause()
+            await pilot.pause(0.05)
 
             assert app.screen is dummy
             app.hide_wait()
-            await pilot.pause()
+            await pilot.pause(0.05)
 
             # hide_wait should only dismiss the wait overlay when it is
             # actually on top, not pop whatever screen currently happens

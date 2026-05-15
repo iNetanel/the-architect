@@ -67,7 +67,7 @@ class TestPushAndWait:
         captured: dict[str, Any] = {}
 
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
 
             def _worker() -> None:
                 screen = _SimpleDismissScreen("from-worker")
@@ -81,13 +81,13 @@ class TestPushAndWait:
 
             # Let the worker push the screen, then dismiss from the
             # main thread (the event loop thread).
-            await pilot.pause()
-            await pilot.pause()
+            await pilot.pause(0.05)
+            await pilot.pause(0.05)
             # The screen is now active — trigger its action to dismiss.
             active_screen = app.screen
             assert isinstance(active_screen, _SimpleDismissScreen)
             active_screen.action_go()
-            await pilot.pause()
+            await pilot.pause(0.05)
 
             t.join(timeout=2.0)
 
@@ -101,7 +101,7 @@ class TestArchitectAppTitle:
     async def test_title_is_the_architect(self) -> None:
         app = ArchitectApp()
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert app.TITLE == "The Architect"
 
 
@@ -112,18 +112,18 @@ class TestArchitectAppStatus:
     async def test_set_status_updates_sub_title(self) -> None:
         app = ArchitectApp()
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             app._set_status_sync("T01 · starting · Implement auth")
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert app.sub_title == "T01 · starting · Implement auth"
 
     @pytest.mark.asyncio
     async def test_set_status_empty_clears_sub_title(self) -> None:
         app = ArchitectApp()
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             app._set_status_sync("phase X")
-            await pilot.pause()
+            await pilot.pause(0.05)
             app._set_status_sync("")
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert app.sub_title == ""

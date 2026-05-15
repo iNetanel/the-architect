@@ -61,9 +61,9 @@ class TestHelpScreenRender:
         bindings = [("a", "Foo"), ("b", "Bar")]
         app = ArchitectApp()
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             app.push_screen(HelpScreen(bindings=bindings))
-            await pilot.pause()
+            await pilot.pause(0.05)
             help_screen = app.screen
             assert isinstance(help_screen, HelpScreen)
             table = help_screen.query_one(DataTable)
@@ -77,7 +77,7 @@ class TestActionHelp:
     async def test_action_help_pushes_help_screen(self) -> None:
         app = ArchitectApp()
         async with app.run_test() as pilot:
-            await pilot.pause()
+            await pilot.pause(0.05)
             app.action_help()
-            await pilot.pause()
+            await pilot.pause(0.05)
             assert isinstance(app.screen, HelpScreen)

@@ -54,9 +54,9 @@ async def test_execute_default_action() -> None:
     screen = ResumeScreen(pending_tasks=_make_pending_tasks(2), config=config, show_free=True)
     harness = _Harness(screen)
     async with harness.run_test() as pilot:
-        await pilot.pause()
+        await pilot.pause(0.05)
         screen.action_execute()
-        await pilot.pause()
+        await pilot.pause(0.05)
     assert isinstance(harness.dismissed, dict)
     assert harness.dismissed["action"] == "execute"
     assert harness.dismissed["free"] is False
@@ -70,9 +70,9 @@ async def test_replan_action() -> None:
     screen = ResumeScreen(pending_tasks=_make_pending_tasks(1), config=config, show_free=True)
     harness = _Harness(screen)
     async with harness.run_test() as pilot:
-        await pilot.pause()
+        await pilot.pause(0.05)
         screen.action_replan()
-        await pilot.pause()
+        await pilot.pause(0.05)
     assert isinstance(harness.dismissed, dict)
     assert harness.dismissed["action"] == "replan"
 
@@ -88,13 +88,13 @@ async def test_prefilled_from_config() -> None:
     screen = ResumeScreen(pending_tasks=_make_pending_tasks(1), config=config, show_free=True)
     harness = _Harness(screen)
     async with harness.run_test() as pilot:
-        await pilot.pause()
+        await pilot.pause(0.05)
         assert screen.query_one("#chk_free", Checkbox).value is True
         assert screen.query_one("#chk_persistent", Checkbox).value is True
         assert screen.query_one("#chk_integrity", Checkbox).value is False
         assert screen.query_one("#inp_budget", Input).value == "250000"
         screen.action_execute()
-        await pilot.pause()
+        await pilot.pause(0.05)
     assert isinstance(harness.dismissed, dict)
     assert harness.dismissed["free"] is True
     assert harness.dismissed["persistent"] is True
@@ -108,9 +108,9 @@ async def test_cancel_returns_none() -> None:
     screen = ResumeScreen(pending_tasks=_make_pending_tasks(1), config=config, show_free=True)
     harness = _Harness(screen)
     async with harness.run_test() as pilot:
-        await pilot.pause()
+        await pilot.pause(0.05)
         screen.action_cancel()
-        await pilot.pause()
+        await pilot.pause(0.05)
     assert harness.dismissed is None
 
 
@@ -120,10 +120,10 @@ async def test_hides_free_tier_when_disabled() -> None:
     screen = ResumeScreen(pending_tasks=_make_pending_tasks(1), config=config, show_free=False)
     harness = _Harness(screen)
     async with harness.run_test() as pilot:
-        await pilot.pause()
+        await pilot.pause(0.05)
         assert len(screen.query("#chk_free")) == 0
         screen.action_execute()
-        await pilot.pause()
+        await pilot.pause(0.05)
     assert isinstance(harness.dismissed, dict)
     assert harness.dismissed["free"] is False
 
@@ -142,7 +142,7 @@ async def test_arrow_keys_move_focus_between_fields() -> None:
     screen = ResumeScreen(pending_tasks=_make_pending_tasks(2), config=config, show_free=True)
     harness = _Harness(screen)
     async with harness.run_test() as pilot:
-        await pilot.pause()
+        await pilot.pause(0.05)
         first_focused = harness.focused.id if harness.focused else None
         assert first_focused is not None, "on_mount should focus the first Checkbox"
 
@@ -150,7 +150,7 @@ async def test_arrow_keys_move_focus_between_fields() -> None:
             first_focused = getattr(screen.query("RadioButton").first(), "id", first_focused)
 
         await pilot.press("down")
-        await pilot.pause()
+        await pilot.pause(0.05)
         second_focused = harness.focused.id if harness.focused else None
         if second_focused == "action_set":
             second_focused = getattr(screen.query("RadioButton").first(), "id", second_focused)
@@ -161,7 +161,7 @@ async def test_arrow_keys_move_focus_between_fields() -> None:
         )
 
         await pilot.press("up")
-        await pilot.pause()
+        await pilot.pause(0.05)
         back_focused = harness.focused.id if harness.focused else None
         if back_focused == "action_set":
             back_focused = getattr(screen.query("RadioButton").first(), "id", back_focused)
@@ -169,4 +169,4 @@ async def test_arrow_keys_move_focus_between_fields() -> None:
             f"Up arrow did not move focus back: expected {first_focused!r}, got {back_focused!r}."
         )
         screen.action_cancel()
-        await pilot.pause()
+        await pilot.pause(0.05)
