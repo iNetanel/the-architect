@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from prompt_toolkit.output import Output
     from prompt_toolkit.styles import Style as PromptStyle
 
 from datetime import UTC
@@ -647,7 +648,7 @@ def _padded_window(content: Any) -> Any:
     )
 
 
-def _get_prompt_toolkit_output() -> object:
+def _get_prompt_toolkit_output() -> Output | None:
     """Return a safe prompt_toolkit Output, falling back to DummyOutput on Windows CI.
 
     On Windows without a real console (e.g. CI runners, piped stdout),
@@ -656,16 +657,20 @@ def _get_prompt_toolkit_output() -> object:
     DummyOutput so interactive prompts degrade gracefully instead of crashing.
 
     Returns:
-        A prompt_toolkit Output instance appropriate for the current environment.
+        A prompt_toolkit Output instance appropriate for the current environment,
+        or None to let prompt_toolkit use its default.
     """
     try:
         from prompt_toolkit.output.defaults import create_output
 
         return create_output()
     except Exception:
-        from prompt_toolkit.output import DummyOutput
+        try:
+            from prompt_toolkit.output import DummyOutput
 
-        return DummyOutput()
+            return DummyOutput()
+        except Exception:
+            return None
 
 
 def _prompt_text_input(
