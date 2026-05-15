@@ -1,11 +1,30 @@
 # Coverage Improvement Plan
 
-**Current:** 84% overall (3039 tests, 0 failures)  
-**Target:** 92%+ overall — the threshold where an AI agent can safely self-modify without breaking
+**Last updated:** build 10422  
+**Current:** 84.2% overall (3039 tests, 0 failures, all platforms)  
+**Target:** 92%+ — the threshold where an AI agent can safely self-modify without breaking
 undetected paths.
 
-**Guiding principle:** Every new test must pass on Linux, macOS, and Windows. No hardcoded POSIX paths
-(`/tmp`, `/home`), no unguarded POSIX-only calls, `encoding="utf-8"` on all file writes.
+---
+
+## Status
+
+### Completed (since plan was first written)
+
+| What | Result |
+|------|--------|
+| Full Windows CI support — 9-matrix test runs (3 OS × 3 Python) | ✅ Done |
+| Live cost tracking tests (`tests/test_costs_tab.py`, 16 tests) | ✅ Done |
+| `MonitorStateWriter` cost accumulation coverage | ✅ Done |
+| `ExecutionScreen.update_costs` / `_render_costs` coverage | ✅ Done |
+| `SuccessScreen` session cost display coverage | ✅ Done |
+| `TuiSession.update_costs` coverage | ✅ Done |
+| All Windows-incompatible test assumptions fixed | ✅ Done |
+| Coverage plan written and committed | ✅ Done |
+
+The overall percentage has not moved because the fixes were correctness fixes, not coverage
+additions. All new tests cover code that was already exercised but tested wrongly (wrong paths,
+wrong encodings). The plan below remains valid and unchanged in scope.
 
 ---
 
@@ -14,26 +33,24 @@ undetected paths.
 The uncovered 16% is almost entirely:
 1. **Exception/error branches** — the paths an AI agent is most likely to accidentally break when
    refactoring happy paths.
-2. **Windows-specific code paths** — already exercised in CI but untested in unit tests.
-3. **Provider version/update detection** — called on startup; a broken check silently degrades UX.
-4. **Structured task outcome parsing** — the most complex text-parsing logic in the codebase; bugs
+2. **Provider version/update detection** — called on startup; a broken check silently degrades UX.
+3. **Structured task outcome parsing** — the most complex text-parsing logic in the codebase; bugs
    here cause the circuit breaker to misfire.
+4. **TUI session dispatch paths** — only the no-op (`app is None`) paths are currently tested.
 
 ---
 
 ## Priority Tiers
 
-### Tier 1 — High value, easy to write (do first)
-
-These are well-defined functions with clear inputs/outputs. Tests are straightforward mocks.
-Estimated gain: **+4–5%**
+### Tier 1 — High value, easy to write (pure Python, no Textual)
+**Estimated gain: +4–5% | ~50 new tests**
 
 #### 1a. `the_architect/core/gemini_cli_provider.py` (69% → 85%)
 
 | Gap | What to test |
 |-----|-------------|
 | `get_version()` timeout/error branches (L131–133) | `subprocess.TimeoutExpired` → returns `"unknown"` |
-| `has_models()` when not installed + subprocess error (L145–154) | not installed → `False`; subprocess raises → `False` |
+| `has_models()` not installed + subprocess error (L145–154) | not installed → `False`; subprocess raises → `False` |
 | `install_hint()` non-npm fallback (L160) | no `npm` on PATH → returns URL string |
 | `check_update_available()` full flow (L169–208) | mock `urllib.request.urlopen`; installed < latest → update string; installed == latest → `""`; network error → `""`; bad version string → `""` |
 | `get_resolved_model()` cache hit (L285) | pre-populate cache key, verify immediate return |
@@ -121,14 +138,15 @@ Estimated gain: **+4–5%**
 
 ---
 
-### Tier 2 — Medium value, requires Textual async harness (do second)
+### Tier 2 — Medium value, requires Textual async harness
+**Estimated gain: +3–4% | ~45 new tests**
 
-These need `async with app.run_test()` patterns. Estimated gain: **+3–4%**
+> **Cross-platform note:** All Textual interaction tests must use `pilot.pause(0.05)` (with a
+> small real delay) after any widget state mutation (`.value = True`, `action_*` calls) to give
+> the Windows event loop enough time to process callbacks. Plain `await pilot.pause()` with no
+> delay is a single-tick yield and is not reliable on slower Windows CI runners.
 
 #### 2a. `the_architect/tui/screens/execution.py` (81% → 92%)
-
-Most uncovered lines are exception-swallowing branches in Textual widget callbacks — they only fire
-when `query_one()` raises because the DOM isn't mounted yet (pre-mount buffer flush paths).
 
 | Gap | What to test |
 |-----|-------------|
@@ -179,7 +197,6 @@ through to the app. Currently only the `app is None` no-op path is tested.
 | `update_costs()` exception swallowed (L98–99) | mock app raises → no crash |
 | `update_footer()` with live app mock (L105–108) | same pattern |
 | `tui_execution_session()` reuses runner app (L137–160) | mock active runner → session uses runner's app, no new thread |
-| `tui_execution_session()` ImportError fallback (L137–138) | the import path is always present; test the `runner = None` branch by mocking `active_runner` to raise |
 | All `TuiWaitSession` dispatch methods (L236–395) | same mock-app pattern for `set_title`, `set_detail`, `append_log`, `show`, `hide`, `update` |
 
 **File:** `tests/test_tui_session.py` (extend)
@@ -190,17 +207,17 @@ through to the app. Currently only the `app is None` no-op path is tested.
 
 | File | Current | Gap | Notes |
 |------|---------|-----|-------|
-| `tui/app.py` | 66% | Thread-safe delegation methods | All uncovered lines are `_thread_safe_call` → screen method chains. Hard to exercise without a live Textual app. Use `run_test()` harness + worker threads. Partial improvement achievable with 10–15 focused tests. |
-| `tui/screens/pause.py` | 69% | Pause menu actions | Action handlers (`action_resume`, `action_stop`, etc.) need `ArchitectApp` running. Use `run_test()`. |
-| `tui/screens/pre_run_tabbed.py` | 83% | Provider model loading callbacks | Async callbacks fired during mount. Use `run_test()` + `await pilot.pause()`. |
-| `cli.py` | 64% | Interactive CLI commands | 1121 uncovered lines. Mostly the `run` command's full orchestration. Use Click's `CliRunner` for the helper functions (lines 804–922) and the config/model selection prompts. The full `run` command flow is an integration test, not a unit test. |
+| `tui/app.py` | 66% | Thread-safe delegation methods | All uncovered lines are `_thread_safe_call` → screen method chains. Hard to exercise without a live Textual app. Use `run_test()` harness + worker threads. |
+| `tui/screens/pause.py` | 69% | Pause menu actions | Action handlers need `ArchitectApp` running. Use `run_test()`. |
+| `tui/screens/pre_run_tabbed.py` | 83% | Provider model loading callbacks | Async callbacks fired during mount. Use `run_test()` + `await pilot.pause(0.05)`. |
+| `cli.py` | 64% | Interactive CLI commands | 1121 uncovered lines. Mostly the `run` command's full orchestration. Use Click's `CliRunner` for helper functions. The full `run` command flow is an integration test, not a unit test. |
 | `core/project_intelligence.py` | 82% | Intelligence extraction edge cases | Add tests for empty/malformed input to each extractor. |
 
 ---
 
 ## Implementation Order
 
-1. **Tier 1** (all pure-Python, no Textual): write in one session, ~40–50 new tests
+1. **Tier 1** (all pure-Python, no Textual): write in one session, ~50 new tests
 2. **Tier 2a** (`execution.py`): Textual `run_test()` harness, ~15 new tests
 3. **Tier 2b** (`runner.py`): extend existing phase17 tests, ~10 new tests
 4. **Tier 2c** (`session.py`): mock-app pattern, ~20 new tests
@@ -212,28 +229,30 @@ through to the app. Currently only the `app is None` no-op path is tested.
 
 - Use `tmp_path` (pytest fixture) for all file paths — never `Path("/tmp/...")` or `Path("C:/...")`
 - `write_text(..., encoding="utf-8")` on every `write_text` call
-- Guard POSIX-only tests with `if not hasattr(os, "killpg"): pytest.skip(...)`
+- Guard POSIX-only tests: `if not hasattr(os, "killpg"): pytest.skip(...)`
 - Guard signal tests: `if sys.platform == "win32": pytest.skip(...)`
-- Never patch `sys.platform` without also patching the platform-specific functions that depend on it
-  (e.g. `shlex_quote`, `_get_portable_shell`, `is_windows`)
+- Never patch `sys.platform` without also patching platform-specific functions that depend on it
+  (e.g. `_get_portable_shell`, `is_windows`)
 - Mock `urllib.request.urlopen` for any network-touching tests — never make real HTTP calls
+- Use `pilot.pause(0.05)` (with delay) after widget state mutations in Textual tests — plain
+  `await pilot.pause()` is a single-tick yield and is not reliable on Windows CI runners
 
 ---
 
 ## Tracking
 
-| Tier | File(s) | Est. new tests | Est. coverage gain |
-|------|---------|---------------|-------------------|
-| 1a | `test_gemini_cli_provider.py` | 15 | +1.1% |
-| 1b | `test_codex_cli_provider.py` | 12 | +0.8% |
-| 1c | `test_runner.py` | 10 | +0.7% |
-| 1d | `test_monitor.py` | 8 | +0.1% |
-| 1e | `test_fileutil.py` | 2 | +0.1% |
-| 1f | `test_terminal.py` | 4 | +0.1% |
-| 2a | `test_tui_execution_screen.py` | 15 | +0.7% |
-| 2b | `test_tui_phase17_runner.py` | 10 | +0.5% |
-| 2c | `test_tui_session.py` | 20 | +1.3% |
-| 3  | `test_cli.py`, `test_tui_app.py` | 20–30 | +1.5% |
-| **Total** | | **~116–126** | **~7%** |
+| Tier | File(s) | Est. new tests | Est. coverage gain | Status |
+|------|---------|---------------|-------------------|--------|
+| 1a | `test_gemini_cli_provider.py` | 15 | +1.1% | pending |
+| 1b | `test_codex_cli_provider.py` | 12 | +0.8% | pending |
+| 1c | `test_runner.py` | 10 | +0.7% | pending |
+| 1d | `test_monitor.py` | 8 | +0.1% | pending |
+| 1e | `test_fileutil.py` | 2 | +0.1% | pending |
+| 1f | `test_terminal.py` | 4 | +0.1% | pending |
+| 2a | `test_tui_execution_screen.py` | 15 | +0.7% | pending |
+| 2b | `test_tui_phase17_runner.py` | 10 | +0.5% | pending |
+| 2c | `test_tui_session.py` | 20 | +1.3% | pending |
+| 3  | `test_cli.py`, `test_tui_app.py` | 20–30 | +1.5% | pending |
+| **Total** | | **~116–126** | **~7%** | |
 
 Target after Tier 1+2: **~91%**. After Tier 3: **~92–93%**.
