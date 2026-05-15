@@ -1035,6 +1035,7 @@ class TestPreRunScreen:
 
             screen.action_focus_next()
             await pilot.pause()
+            await pilot.pause()
             assert model_list.index == 1
             assert screen._collect_values().architect_model is None
 
@@ -1245,6 +1246,7 @@ class TestPreRunScreen:
             tabs = screen.query_one("#prerun_tabs", TabbedContent)
             assert tabs.active == "tab_goal"
             screen.action_next_tab()
+            await pilot.pause()
             await pilot.pause()
             assert tabs.active == "tab_models"
 

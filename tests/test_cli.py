@@ -502,11 +502,13 @@ class TestMoreHelperFunctions:
             TaskResult(prefix="T04", status="failed", outcome_summary="No summary")
         )
 
+        from prompt_toolkit.output import DummyOutput
+
         import the_architect.cli as cli_mod
 
         with (
             patch("prompt_toolkit.application.application.Application.run", return_value=None),
-            patch("the_architect.cli._get_prompt_toolkit_output", return_value=None),
+            patch("the_architect.cli._get_prompt_toolkit_output", return_value=DummyOutput()),
             patch("the_architect.cli.console.print") as mock_print,
         ):
             result = cli_mod._prompt_text_input("Title", "Instruction")

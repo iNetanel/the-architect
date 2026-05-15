@@ -258,9 +258,11 @@ async def test_execution_tab_bodies_are_scrollable_and_focusable() -> None:
 
         screen.action_switch_tab("tab_progress")
         await pilot.pause()
+        await pilot.pause()
         assert screen.focused is progress
 
         screen.action_switch_tab("tab_settings")
+        await pilot.pause()
         await pilot.pause()
         assert screen.focused is settings
 

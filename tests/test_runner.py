@@ -635,7 +635,7 @@ class TestStreamProviderSubprocess:
                 exit_code=0,
             )
             with patch("sys.stdout"):
-                result = await stream_provider("test", Path("/tmp"), provider)
+                result = await stream_provider("test", self.project_dir, provider)
                 assert isinstance(result, StreamResult)
 
     @pytest.mark.asyncio
@@ -655,7 +655,7 @@ class TestStreamProviderSubprocess:
         with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.return_value = mock_process
             with patch("sys.stdout"):
-                result = await stream_provider("test", Path("/tmp"), provider)
+                result = await stream_provider("test", self.project_dir, provider)
 
         assert "Provider produced no stdout" in result.accumulated_text
         assert mock_process.kill.called

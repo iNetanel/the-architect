@@ -648,7 +648,7 @@ def _padded_window(content: Any) -> Any:
     )
 
 
-def _get_prompt_toolkit_output() -> Output | None:
+def _get_prompt_toolkit_output() -> Output:
     """Return a safe prompt_toolkit Output, falling back to DummyOutput on Windows CI.
 
     On Windows without a real console (e.g. CI runners, piped stdout),
@@ -657,20 +657,16 @@ def _get_prompt_toolkit_output() -> Output | None:
     DummyOutput so interactive prompts degrade gracefully instead of crashing.
 
     Returns:
-        A prompt_toolkit Output instance appropriate for the current environment,
-        or None to let prompt_toolkit use its default.
+        A prompt_toolkit Output instance appropriate for the current environment.
     """
     try:
         from prompt_toolkit.output.defaults import create_output
 
         return create_output()
     except Exception:
-        try:
-            from prompt_toolkit.output import DummyOutput
+        from prompt_toolkit.output import DummyOutput
 
-            return DummyOutput()
-        except Exception:
-            return None
+        return DummyOutput()
 
 
 def _prompt_text_input(

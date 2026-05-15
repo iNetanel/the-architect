@@ -779,22 +779,22 @@ class TestPaddedConsole:
 
     def test_width_reduced_in_tmux(self) -> None:
         """Inside tmux, width should be reduced by _SIDE_PANEL_GAP."""
+        from rich.console import Console
+
         with patch("the_architect.core.tmux.is_inside_tmux", return_value=True):
             pc = tmux_mod.PaddedConsole()
-            # Get the actual base width from the parent Console, then verify the gap
-            from rich.console import Console
-
-            base = Console().width
+            # Measure base width the same way PaddedConsole does: via super().width
+            base = Console.width.fget(pc)  # type: ignore[attr-defined]
             assert pc.width == max(base - tmux_mod._SIDE_PANEL_GAP, 20)
 
     def test_width_normal_outside_tmux(self) -> None:
-        """Outside tmux, width should be the same as a regular Console."""
+        """Outside tmux, width should equal the Console base width."""
         from rich.console import Console
 
         with patch("the_architect.core.tmux.is_inside_tmux", return_value=False):
             pc = tmux_mod.PaddedConsole()
-            base_console = Console()
-            assert pc.width == base_console.width
+            base = Console.width.fget(pc)  # type: ignore[attr-defined]
+            assert pc.width == base
 
 
 class TestStreamWidthGap:
