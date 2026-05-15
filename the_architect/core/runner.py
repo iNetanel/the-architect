@@ -2283,7 +2283,8 @@ def _task_outcome_summary_for_exit(text: str, exit_code: int | None) -> str:
     # constant which was already guarded with getattr() at definition time.
     if exit_code == _FORCED_TERMINATION_EXIT_CODE:
         killed = (
-            "Provider process killed (SIGKILL / exit -9); no reliable task output was produced."
+            f"Provider process killed (SIGKILL / exit {_FORCED_TERMINATION_EXIT_CODE});"
+            " no reliable task output was produced."
         )
         return f"{summary}\n{killed}" if summary else killed
     return summary

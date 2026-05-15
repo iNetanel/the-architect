@@ -39,12 +39,13 @@ def mock_project(tmp_path: Path) -> Path:
         "**Tasks completed:** 0\n"
         "**Next task to run:** T00\n\n"
         "| Task | Title | Status | Completed |\n"
-        "|---------|-------|--------|-----------|\n"
+        "|---------|-------|--------|-----------|\n",
+        encoding="utf-8",
     )
 
     # Create a task file
     task_file = tasks_dir / "T00_test.md"
-    task_file.write_text("# T00 — Test Task\n\nTask 1 done.\n")
+    task_file.write_text("# T00 — Test Task\n\nTask 1 done.\n", encoding="utf-8")
 
     return tmp_path
 
@@ -70,7 +71,7 @@ async def test_full_headless_flow(tmp_path: Path) -> None:
     """End-to-end: discover pending task, run it (mocked), verify Done state."""
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
-    (tasks_dir / "T00_test.md").write_text("# T00\n\nTask.\n")
+    (tasks_dir / "T00_test.md").write_text("# T00\n\nTask.\n", encoding="utf-8")
 
     progress_file = tmp_path / "PROGRESS.md"
     progress_file.write_text(
@@ -79,7 +80,8 @@ async def test_full_headless_flow(tmp_path: Path) -> None:
         "**Next task to run:** T00\n\n"
         "| Task | Title | Status | Completed |\n"
         "|---------|-------|--------|-----------|\n"
-        "| T00 | Test | Pending | |\n"
+        "| T00 | Test | Pending | |\n",
+        encoding="utf-8",
     )
 
     config = ArchitectConfig(
@@ -101,7 +103,8 @@ async def test_full_headless_flow(tmp_path: Path) -> None:
             "**Next task to run:** T01\n\n"
             "| Task | Title | Status | Completed |\n"
             "|---------|-------|--------|-----------|\n"
-            "| T00 | Test | Done | 2026-01-01 |\n"
+            "| T00 | Test | Done | 2026-01-01 |\n",
+            encoding="utf-8",
         )
         return TaskResult(
             prefix=task.prefix,
@@ -129,8 +132,8 @@ async def test_resume_from_progress(tmp_path: Path) -> None:
     """Tasks already marked Done in PROGRESS.md are skipped on resume."""
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
-    (tasks_dir / "T00_done.md").write_text("# T00\n\nAlready done.\n")
-    (tasks_dir / "T01_pending.md").write_text("# T01\n\nStill pending.\n")
+    (tasks_dir / "T00_done.md").write_text("# T00\n\nAlready done.\n", encoding="utf-8")
+    (tasks_dir / "T01_pending.md").write_text("# T01\n\nStill pending.\n", encoding="utf-8")
 
     progress_file = tmp_path / "PROGRESS.md"
     progress_file.write_text(
@@ -140,7 +143,8 @@ async def test_resume_from_progress(tmp_path: Path) -> None:
         "| Task | Title | Status | Completed |\n"
         "|---------|-------|--------|-----------|\n"
         "| T00 | Done  | Done    | 2026-01-01 |\n"
-        "| T01 | Todo  | Pending | |\n"
+        "| T01 | Todo  | Pending | |\n",
+        encoding="utf-8",
     )
 
     config = ArchitectConfig(
@@ -172,7 +176,8 @@ async def test_resume_from_progress(tmp_path: Path) -> None:
             "| Task | Title | Status | Completed |\n"
             "|---------|-------|--------|-----------|\n"
             "| T00 | Done  | Done | 2026-01-01 |\n"
-            "| T01 | Todo  | Done | 2026-01-02 |\n"
+            "| T01 | Todo  | Done | 2026-01-02 |\n",
+            encoding="utf-8",
         )
         return TaskResult(
             prefix=task.prefix,
@@ -200,7 +205,7 @@ async def test_all_done_exits_cleanly(tmp_path: Path) -> None:
     """If every task is already Done, run_all returns True without executing anything."""
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
-    (tasks_dir / "T00.md").write_text("# T00\n\nDone.\n")
+    (tasks_dir / "T00.md").write_text("# T00\n\nDone.\n", encoding="utf-8")
 
     progress_file = tmp_path / "PROGRESS.md"
     progress_file.write_text(
@@ -209,7 +214,8 @@ async def test_all_done_exits_cleanly(tmp_path: Path) -> None:
         "**Next task to run:** T01\n\n"
         "| Task | Title | Status | Completed |\n"
         "|---------|-------|--------|-----------|\n"
-        "| T00 | Done | Done | 2026-01-01 |\n"
+        "| T00 | Done | Done | 2026-01-01 |\n",
+        encoding="utf-8",
     )
 
     config = ArchitectConfig(
@@ -242,7 +248,7 @@ async def test_retry_with_model_fallback(tmp_path: Path) -> None:
     """Task fails attempts 1 and 2 with model fallbacks, succeeds on attempt 3."""
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
-    (tasks_dir / "T00_test.md").write_text("# T00\n\nTask.\n")
+    (tasks_dir / "T00_test.md").write_text("# T00\n\nTask.\n", encoding="utf-8")
 
     progress_file = tmp_path / "PROGRESS.md"
     progress_file.write_text(
@@ -251,7 +257,8 @@ async def test_retry_with_model_fallback(tmp_path: Path) -> None:
         "**Next task to run:** T00\n\n"
         "| Task | Title | Status | Completed |\n"
         "|---------|-------|--------|-----------|\n"
-        "| T00 | Test | Pending | |\n"
+        "| T00 | Test | Pending | |\n",
+        encoding="utf-8",
     )
 
     config = ArchitectConfig(
@@ -284,7 +291,8 @@ async def test_retry_with_model_fallback(tmp_path: Path) -> None:
             "**Next task to run:** T01\n\n"
             "| Task | Title | Status | Completed |\n"
             "|---------|-------|--------|-----------|\n"
-            "| T00 | Test | Done | 2026-04-12 |\n"
+            "| T00 | Test | Done | 2026-04-12 |\n",
+            encoding="utf-8",
         )
         return TaskResult(
             prefix=task.prefix,
@@ -314,7 +322,7 @@ def test_existing_opencode_json_not_overwritten(tmp_path: Path) -> None:
     # Create existing opencode.json
     existing_config = {"model": "existing-model", "provider": "anthropic"}
     opencode_json = tmp_path / "opencode.json"
-    opencode_json.write_text(json.dumps(existing_config))
+    opencode_json.write_text(json.dumps(existing_config), encoding="utf-8")
 
     config = ArchitectConfig(
         tasks_dir=tmp_path / "tasks",
@@ -401,7 +409,7 @@ def test_opencode_not_installed_shows_helpful_error() -> None:
 def test_malformed_progress_returns_defaults(tmp_path: Path) -> None:
     """Malformed PROGRESS.md — read_progress returns safe defaults, never crashes."""
     progress_file = tmp_path / "PROGRESS.md"
-    progress_file.write_text("This is not a valid PROGRESS.md file at all!!!")
+    progress_file.write_text("This is not a valid PROGRESS.md file at all!!!", encoding="utf-8")
 
     state = read_progress(progress_file)
 
@@ -442,7 +450,7 @@ def test_opencode_nonzero_but_task_done(tmp_path: Path) -> None:
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
 
-    (tasks_dir / "T00_test.md").write_text("# T00\n\nTask.\n")
+    (tasks_dir / "T00_test.md").write_text("# T00\n\nTask.\n", encoding="utf-8")
 
     progress_file = tmp_path / "PROGRESS.md"
     # Mark task as Done even though we simulate non-zero exit
@@ -452,7 +460,8 @@ def test_opencode_nonzero_but_task_done(tmp_path: Path) -> None:
         "**Next task to run:** T01\n\n"
         "| Task | Title | Status | Completed |\n"
         "|---------|-------|--------|-----------|\n"
-        "| T00 | Test | Done | 2026-04-12 |\n"
+        "| T00 | Test | Done | 2026-04-12 |\n",
+        encoding="utf-8",
     )
 
     # Verify task is marked done regardless of exit code
@@ -508,7 +517,7 @@ async def test_interrupted_run_cleanup(tmp_path: Path) -> None:
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
 
-    (tasks_dir / "T00_test.md").write_text("# T00\n\nTask.\n")
+    (tasks_dir / "T00_test.md").write_text("# T00\n\nTask.\n", encoding="utf-8")
 
     progress_file = tmp_path / "PROGRESS.md"
     progress_file.write_text(
@@ -517,7 +526,8 @@ async def test_interrupted_run_cleanup(tmp_path: Path) -> None:
         "**Next task to run:** T00\n\n"
         "| Task | Title | Status | Completed |\n"
         "|---------|-------|--------|-----------|\n"
-        "| T00 | Test | Pending | |\n"
+        "| T00 | Test | Pending | |\n",
+        encoding="utf-8",
     )
 
     # Simulate interruption

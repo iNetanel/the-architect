@@ -227,13 +227,18 @@ class TestBuildOpencodeCommand:
 
 
 class TestStreamProviderSubprocess:
+    @pytest.fixture(autouse=True)
+    def _project_dir(self, tmp_path: Path) -> None:
+        """Provide a real directory so stream_provider's is_dir() check passes on all OS."""
+        self.project_dir = tmp_path
+
     @pytest.mark.asyncio
     async def test_stdout_none_returns_failed_result(self):
         """When process.stdout is None, returns StreamResult with exit_code=-1."""
         provider = _make_mock_provider()
         with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.return_value = _make_mock_process(stdout_none=True)
-            result = await stream_provider("test", Path("/tmp"), provider)
+            result = await stream_provider("test", self.project_dir, provider)
             assert result.exit_code == -1
 
     def test_managed_execution_renderer_lifecycle(self) -> None:
@@ -276,7 +281,7 @@ class TestStreamProviderSubprocess:
                 stdout_lines=[b'{"type":"text"}\n'],
                 exit_code=0,
             )
-            result = await stream_provider("test", Path("/tmp"), provider)
+            result = await stream_provider("test", self.project_dir, provider)
             assert result.accumulated_text == "hello"
 
     @pytest.mark.asyncio
@@ -295,7 +300,7 @@ class TestStreamProviderSubprocess:
 
         with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.return_value = _make_mock_process(stdout_lines=[raw], exit_code=0)
-            result = await stream_provider("test", Path("/tmp"), provider)
+            result = await stream_provider("test", self.project_dir, provider)
 
         assert "out_of_credits" in result.accumulated_text
 
@@ -317,7 +322,7 @@ class TestStreamProviderSubprocess:
                 stdout_lines=[b"rl\n"],
                 exit_code=0,
             )
-            result = await stream_provider("test", Path("/tmp"), provider)
+            result = await stream_provider("test", self.project_dir, provider)
             assert result.rate_limit_hit is True
 
     @pytest.mark.asyncio
@@ -338,7 +343,7 @@ class TestStreamProviderSubprocess:
                 stdout_lines=[b"mnf\n"],
                 exit_code=0,
             )
-            result = await stream_provider("test", Path("/tmp"), provider)
+            result = await stream_provider("test", self.project_dir, provider)
             assert result.rate_limit_hit is True
 
     @pytest.mark.asyncio
@@ -353,7 +358,7 @@ class TestStreamProviderSubprocess:
 
             mock_process.stdout.readline = raise_cancelled
             mock_exec.return_value = mock_process
-            result = await stream_provider("test", Path("/tmp"), provider)
+            result = await stream_provider("test", self.project_dir, provider)
             assert isinstance(result, StreamResult)
 
     @pytest.mark.asyncio
@@ -367,7 +372,7 @@ class TestStreamProviderSubprocess:
 
             mock_process.stdout.readline = raise_value
             mock_exec.return_value = mock_process
-            result = await stream_provider("test", Path("/tmp"), provider)
+            result = await stream_provider("test", self.project_dir, provider)
             assert isinstance(result, StreamResult)
 
     @pytest.mark.asyncio
@@ -381,7 +386,7 @@ class TestStreamProviderSubprocess:
 
             mock_process.stdout.readline = raise_runtime
             mock_exec.return_value = mock_process
-            result = await stream_provider("test", Path("/tmp"), provider)
+            result = await stream_provider("test", self.project_dir, provider)
             assert isinstance(result, StreamResult)
 
     @pytest.mark.asyncio
@@ -390,7 +395,7 @@ class TestStreamProviderSubprocess:
         with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.side_effect = FileNotFoundError("not found")
             with pytest.raises(FileNotFoundError):
-                await stream_provider("test", Path("/tmp/nonexistent"), provider)
+                await stream_provider("test", self.project_dir / "nonexistent", provider)
 
     @pytest.mark.asyncio
     async def test_generic_exception_kills_process(self):
@@ -413,7 +418,7 @@ class TestStreamProviderSubprocess:
 
             # Make the reader wait path raise without leaking the awaitable passed to wait_for.
             with patch("the_architect.core.runner.asyncio.wait_for", side_effect=raise_runtime):
-                result = await stream_provider("test", Path("/tmp"), provider)
+                result = await stream_provider("test", self.project_dir, provider)
             assert result.exit_code == -1
 
     @pytest.mark.asyncio
@@ -422,7 +427,7 @@ class TestStreamProviderSubprocess:
         with patch.dict(os.environ, {}, clear=True):
             with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
                 mock_exec.return_value = _make_mock_process(stdout_none=True)
-                result = await stream_provider("test", Path("/tmp"), provider)
+                result = await stream_provider("test", self.project_dir, provider)
                 # Should not raise - the error is caught and returns exit_code=-1
                 assert result.exit_code == -1
 
@@ -432,7 +437,7 @@ class TestStreamProviderSubprocess:
         log_path = tmp_path / "deep" / "nested" / "test.log"
         with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.return_value = _make_mock_process(stdout_lines=[], exit_code=0)
-            await stream_provider("test", Path("/tmp"), provider, log_path=log_path)
+            await stream_provider("test", self.project_dir, provider, log_path=log_path)
             assert log_path.parent.exists()
 
     @pytest.mark.asyncio
@@ -447,7 +452,7 @@ class TestStreamProviderSubprocess:
         provider = _make_mock_provider()
         with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.return_value = _make_mock_process(stdout_lines=[], exit_code=0)
-            await stream_provider("test", Path("/tmp"), provider)
+            await stream_provider("test", self.project_dir, provider)
             _, kwargs = mock_exec.call_args
             assert kwargs.get("start_new_session") is True
 
@@ -466,7 +471,7 @@ class TestStreamProviderSubprocess:
         mock_proc.wait = AsyncMock(return_value=0)
         with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.return_value = mock_proc
-            await stream_provider("test", Path("/tmp"), provider)
+            await stream_provider("test", self.project_dir, provider)
             # The finally block called kill() (via _kill_process_tree).
             assert mock_proc.kill.called
 
@@ -533,7 +538,7 @@ class TestStreamProviderSubprocess:
             mock_exec.return_value = _make_mock_process(stdout_lines=[], exit_code=0)
             result = await stream_provider(
                 "test",
-                Path("/tmp"),
+                self.project_dir,
                 provider,
                 agent_override="backend",
             )
@@ -545,18 +550,19 @@ class TestStreamProviderSubprocess:
     @pytest.mark.asyncio
     async def test_log_file_open_failure(self):
         provider = _make_mock_provider()
-        log_path = Path("/tmp/test_stream.log")
+        log_path = self.project_dir / "test_stream.log"
         with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.return_value = _make_mock_process(stdout_lines=[b"line\n"], exit_code=0)
             with patch("builtins.open", side_effect=OSError("read-only")):
-                result = await stream_provider("test", Path("/tmp"), provider, log_path=log_path)
+                result = await stream_provider(
+                    "test", self.project_dir, provider, log_path=log_path
+                )
                 assert isinstance(result, StreamResult)
 
     @pytest.mark.asyncio
     async def test_log_file_write_failure(self):
         provider = _make_mock_provider()
-        log_path = Path("/tmp/test_stream2.log")
-        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path = self.project_dir / "test_stream2.log"
         with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.return_value = _make_mock_process(stdout_lines=[b"line\n"], exit_code=0)
             mock_file = MagicMock()
@@ -564,14 +570,15 @@ class TestStreamProviderSubprocess:
             mock_file.flush = MagicMock()
             mock_file.close = MagicMock()
             with patch("builtins.open", return_value=mock_file):
-                result = await stream_provider("test", Path("/tmp"), provider, log_path=log_path)
+                result = await stream_provider(
+                    "test", self.project_dir, provider, log_path=log_path
+                )
                 assert isinstance(result, StreamResult)
 
     @pytest.mark.asyncio
     async def test_log_file_close_failure(self):
         provider = _make_mock_provider()
-        log_path = Path("/tmp/test_stream3.log")
-        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path = self.project_dir / "test_stream3.log"
         with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.return_value = _make_mock_process(stdout_lines=[b"line\n"], exit_code=0)
             mock_file = MagicMock()
@@ -579,7 +586,9 @@ class TestStreamProviderSubprocess:
             mock_file.flush = MagicMock()
             mock_file.close.side_effect = OSError("close fail")
             with patch("builtins.open", return_value=mock_file):
-                result = await stream_provider("test", Path("/tmp"), provider, log_path=log_path)
+                result = await stream_provider(
+                    "test", self.project_dir, provider, log_path=log_path
+                )
                 assert isinstance(result, StreamResult)
 
     @pytest.mark.asyncio
@@ -596,7 +605,7 @@ class TestStreamProviderSubprocess:
             mock_exec.return_value = mock_process
 
             with patch("the_architect.core.runner.asyncio.wait_for", side_effect=TimeoutError):
-                result = await stream_provider("test", Path("/tmp"), provider)
+                result = await stream_provider("test", self.project_dir, provider)
                 assert isinstance(result, StreamResult)
 
     @pytest.mark.asyncio
@@ -613,7 +622,7 @@ class TestStreamProviderSubprocess:
         provider.parse_output_line = MagicMock(return_value=event)
         with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.return_value = _make_mock_process(stdout_lines=[b"ev\n"], exit_code=0)
-            result = await stream_provider("test", Path("/tmp"), provider)
+            result = await stream_provider("test", self.project_dir, provider)
             assert result.cooldown_until == 1700000000
 
     @pytest.mark.asyncio
@@ -670,7 +679,7 @@ class TestStreamProviderSubprocess:
             mock_exec.return_value = mock_process
             with patch("the_architect.core.runner.time.time", side_effect=[100.0, 101.0]):
                 with patch("sys.stdout"):
-                    result = await stream_provider("test", Path("/tmp"), provider)
+                    result = await stream_provider("test", self.project_dir, provider)
 
         assert result.interrupted is True
         assert result.interruption_reason == "sleep_wake_gap"
@@ -785,11 +794,13 @@ class TestTaskOutcomeSummaryForExit:
     """Tests for interrupted provider diagnostics."""
 
     def test_includes_sigkill_diagnostic(self) -> None:
-        """Exit -9 should be explicit, not hidden as generic no-progress."""
-        summary = _task_outcome_summary_for_exit("", -9)
+        """Exit _FORCED_TERMINATION_EXIT_CODE should be explicit, not hidden as generic no-progress."""
+        from the_architect.core.runner import _FORCED_TERMINATION_EXIT_CODE
+
+        summary = _task_outcome_summary_for_exit("", _FORCED_TERMINATION_EXIT_CODE)
 
         assert "Provider process killed" in summary
-        assert "exit -9" in summary
+        assert str(_FORCED_TERMINATION_EXIT_CODE) in summary
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2658,7 +2669,7 @@ class TestStreamOpencodeCompat:
     """Test the backward-compat stream_opencode shim."""
 
     @pytest.mark.asyncio
-    async def test_stream_opencode_delegates(self):
+    async def test_stream_opencode_delegates(self, tmp_path: Path):
         """stream_opencode should delegate to stream_provider."""
         from the_architect.core.runner import stream_opencode
 
@@ -2666,7 +2677,7 @@ class TestStreamOpencodeCompat:
         with patch(
             "the_architect.core.runner.stream_provider", return_value=mock_result
         ) as mock_sp:
-            result = await stream_opencode("test", Path("/tmp"))
+            result = await stream_opencode("test", tmp_path)
             assert result.exit_code == 0
             mock_sp.assert_called_once()
 
@@ -3395,7 +3406,7 @@ class TestStreamProviderTokenAccumulation:
     """Cover accumulated_tokens addition (L667)."""
 
     @pytest.mark.asyncio
-    async def test_tokens_accumulated(self):
+    async def test_tokens_accumulated(self, tmp_path: Path):
         provider = _make_mock_provider()
         # Provider returns ParsedEvent with tokens
         token_event = ParsedEvent(
@@ -3410,7 +3421,7 @@ class TestStreamProviderTokenAccumulation:
                 stdout_lines=[b'{"type":"step_finish"}\n'],
                 exit_code=0,
             )
-            result = await stream_provider("test", Path("/tmp"), provider)
+            result = await stream_provider("test", tmp_path, provider)
         assert result.tokens.input_tokens == 100
         assert result.tokens.output_tokens == 50
 

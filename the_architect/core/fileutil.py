@@ -88,8 +88,15 @@ def atomic_write_text(path: Path, content: str, prefix: str = ".tmp_") -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(content)
+        fd = -1  # fdopen took ownership and closed it
         _replace_with_retry(tmp, path)
     except Exception:
+        if fd != -1:
+            # fdopen failed before taking ownership — close the raw fd first
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         try:
             os.unlink(tmp)
         except OSError:

@@ -506,6 +506,7 @@ class TestMoreHelperFunctions:
 
         with (
             patch("prompt_toolkit.application.application.Application.run", return_value=None),
+            patch("the_architect.cli._get_prompt_toolkit_output", return_value=None),
             patch("the_architect.cli.console.print") as mock_print,
         ):
             result = cli_mod._prompt_text_input("Title", "Instruction")

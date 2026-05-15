@@ -57,11 +57,11 @@ class TestArchitectConfig:
 
         assert not hasattr(config, "unknown_field")
 
-    def test_config_project_root_property(self) -> None:
+    def test_config_project_root_property(self, tmp_path: Path) -> None:
         """project_root should return the parent of progress_file."""
-        config = ArchitectConfig().resolve(Path("/project/root"))
+        config = ArchitectConfig().resolve(tmp_path)
 
-        assert config.project_root == Path("/project/root")
+        assert config.project_root == tmp_path
         assert config.project_root == config.tasks_dir.parent
 
 

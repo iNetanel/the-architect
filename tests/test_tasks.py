@@ -275,7 +275,7 @@ class TestExtractTitle:
         """Should extract title after 'T01 — ' in heading."""
         with tempfile.TemporaryDirectory() as tmpdir:
             f = Path(tmpdir) / "T01_changelog.md"
-            f.write_text("# T01 — Implement CHANGELOG\n")
+            f.write_text("# T01 — Implement CHANGELOG\n", encoding="utf-8")
             result = _extract_title(f, "T01_changelog")
             assert result == "Implement CHANGELOG"
 
@@ -283,7 +283,7 @@ class TestExtractTitle:
         """Should extract title after 'T01 - ' in heading."""
         with tempfile.TemporaryDirectory() as tmpdir:
             f = Path(tmpdir) / "T02_runner.md"
-            f.write_text("# T02 - Run the tasks\n")
+            f.write_text("# T02 - Run the tasks\n", encoding="utf-8")
             result = _extract_title(f, "T02_runner")
             assert result == "Run the tasks"
 
@@ -291,7 +291,7 @@ class TestExtractTitle:
         """Should extract title after 'T01 – ' (en dash) in heading."""
         with tempfile.TemporaryDirectory() as tmpdir:
             f = Path(tmpdir) / "T01_test.md"
-            f.write_text("# T01 – Some title\n")
+            f.write_text("# T01 – Some title\n", encoding="utf-8")
             result = _extract_title(f, "T01_test")
             assert result == "Some title"
 
@@ -299,7 +299,7 @@ class TestExtractTitle:
         """Should extract title after 'T01 ' with no dash separator."""
         with tempfile.TemporaryDirectory() as tmpdir:
             f = Path(tmpdir) / "T01_test.md"
-            f.write_text("# T01 Some title here\n")
+            f.write_text("# T01 Some title here\n", encoding="utf-8")
             result = _extract_title(f, "T01_test")
             assert result == "Some title here"
 
@@ -307,7 +307,7 @@ class TestExtractTitle:
         """Should derive title from filename when no heading found."""
         with tempfile.TemporaryDirectory() as tmpdir:
             f = Path(tmpdir) / "T01_changelog_and_version.md"
-            f.write_text("Some content without heading\n")
+            f.write_text("Some content without heading\n", encoding="utf-8")
             result = _extract_title(f, "T01_changelog_and_version")
             assert result == "Changelog and version"
 
@@ -320,7 +320,7 @@ class TestExtractTitle:
         """Should handle T-prefix task headings."""
         with tempfile.TemporaryDirectory() as tmpdir:
             f = Path(tmpdir) / "T01_test.md"
-            f.write_text("# T01 — Setup project\n")
+            f.write_text("# T01 — Setup project\n", encoding="utf-8")
             result = _extract_title(f, "T01_test")
             assert result == "Setup project"
 
@@ -332,8 +332,8 @@ class TestDiscoverTasksWithTitle:
         """Should extract human-readable title from task file heading."""
         with tempfile.TemporaryDirectory() as tmpdir:
             tasks_dir = Path(tmpdir)
-            (tasks_dir / "T01_changelog.md").write_text("# T01 — Implement CHANGELOG\n")
-            (tasks_dir / "T02_runner.md").write_text("# T02 — Build runner engine\n")
+            (tasks_dir / "T01_changelog.md").write_text("# T01 — Implement CHANGELOG\n", encoding="utf-8")
+            (tasks_dir / "T02_runner.md").write_text("# T02 — Build runner engine\n", encoding="utf-8")
 
             tasks = discover_tasks(tasks_dir)
 
@@ -410,7 +410,7 @@ class TestIsRelativeTo:
         inner = tmp_path / "inner"
         inner.mkdir()
         target_file = inner / "real.txt"
-        target_file.write_text("content")
+        target_file.write_text("content", encoding="utf-8")
 
         # Should NOT be filtered (is inside root)
         assert not (not target_file.resolve().is_relative_to(tmp_path.resolve()))

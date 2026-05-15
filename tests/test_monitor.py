@@ -415,6 +415,7 @@ class TestMaybeLaunchTmux:
         session_name = get_session_name(tmp_path)
 
         with (
+            patch("the_architect.core.tmux.is_windows", return_value=False),
             patch("the_architect.core.tmux.is_tmux_available", return_value=True),
             patch("the_architect.core.tmux.is_inside_tmux", return_value=False),
             patch("sys.stdout.isatty", return_value=True),
@@ -435,6 +436,7 @@ class TestMaybeLaunchTmux:
         monkeypatch.delenv("TMUX", raising=False)
 
         with (
+            patch("the_architect.core.tmux.is_windows", return_value=False),
             patch("the_architect.core.tmux.is_tmux_available", return_value=True),
             patch("the_architect.core.tmux.is_inside_tmux", return_value=False),
             patch("sys.stdout.isatty", return_value=True),
@@ -452,6 +454,7 @@ class TestMaybeLaunchTmux:
         monkeypatch.delenv("TMUX", raising=False)
 
         with (
+            patch("the_architect.core.tmux.is_windows", return_value=False),
             patch("the_architect.core.tmux.is_tmux_available", return_value=True),
             patch("the_architect.core.tmux.is_inside_tmux", return_value=False),
             patch("sys.stdout.isatty", return_value=True),
@@ -472,6 +475,7 @@ class TestMaybeLaunchTmux:
         monkeypatch.delenv("TMUX", raising=False)
 
         with (
+            patch("the_architect.core.tmux.is_windows", return_value=False),
             patch("the_architect.core.tmux.is_tmux_available", return_value=True),
             patch("the_architect.core.tmux.is_inside_tmux", return_value=False),
             patch("sys.stdout.isatty", return_value=True),

@@ -647,6 +647,27 @@ def _padded_window(content: Any) -> Any:
     )
 
 
+def _get_prompt_toolkit_output() -> object:
+    """Return a safe prompt_toolkit Output, falling back to DummyOutput on Windows CI.
+
+    On Windows without a real console (e.g. CI runners, piped stdout),
+    prompt_toolkit's Win32Output tries to call GetConsoleScreenBufferInfo and
+    raises NoConsoleScreenBufferError.  We detect this up front and return a
+    DummyOutput so interactive prompts degrade gracefully instead of crashing.
+
+    Returns:
+        A prompt_toolkit Output instance appropriate for the current environment.
+    """
+    try:
+        from prompt_toolkit.output.defaults import create_output
+
+        return create_output()
+    except Exception:
+        from prompt_toolkit.output import DummyOutput
+
+        return DummyOutput()
+
+
 def _prompt_text_input(
     title: str,
     instruction: str,
@@ -703,6 +724,7 @@ def _prompt_text_input(
         key_bindings=kb,
         style=pt_style,
         full_screen=False,
+        output=_get_prompt_toolkit_output(),
     )
     app.run()
 
@@ -890,6 +912,7 @@ def _prompt_provider_selection(available: list[ArchitectProvider]) -> ArchitectP
         key_bindings=kb,
         style=pt_style,
         full_screen=False,
+        output=_get_prompt_toolkit_output(),
     )
     app.run()
 
@@ -988,6 +1011,7 @@ def _prompt_update_action(update_msg: str, install_hint: str) -> str:
         key_bindings=kb,
         style=pt_style,
         full_screen=False,
+        output=_get_prompt_toolkit_output(),
     )
     app.run()
     return result
@@ -1140,6 +1164,7 @@ def _prompt_provider_issue_warning(message: str) -> None:
             ]
         ),
         full_screen=False,
+        output=_get_prompt_toolkit_output(),
     )
     app.run()
 
@@ -1219,6 +1244,7 @@ def _prompt_self_update_action(current_version: str, latest_version: str) -> str
         key_bindings=kb,
         style=pt_style,
         full_screen=False,
+        output=_get_prompt_toolkit_output(),
     )
     app.run()
     return result
@@ -1501,6 +1527,7 @@ def _prompt_mode_selection(
         key_bindings=kb,
         style=pt_style,
         full_screen=False,
+        output=_get_prompt_toolkit_output(),
     )
     app.run()
 
@@ -1796,6 +1823,7 @@ def _prompt_resume_screen(
         key_bindings=kb,
         style=pt_style,
         full_screen=False,
+        output=_get_prompt_toolkit_output(),
     )
     app.run()
 

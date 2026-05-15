@@ -437,7 +437,8 @@ class TestBuildWindowCommand:
         original = sys.platform
         sys.platform = "linux"
         try:
-            result = _build_window_command(["/usr/bin/architect"], "gnome-terminal")
+            with patch("the_architect.core.tmux._get_portable_shell", return_value="/bin/sh"):
+                result = _build_window_command(["/usr/bin/architect"], "gnome-terminal")
             assert result is not None
             assert "gnome-terminal" in result
         finally:
@@ -448,7 +449,8 @@ class TestBuildWindowCommand:
         original = sys.platform
         sys.platform = "linux"
         try:
-            result = _build_window_command(["/usr/bin/architect"], "xterm")
+            with patch("the_architect.core.tmux._get_portable_shell", return_value="/bin/sh"):
+                result = _build_window_command(["/usr/bin/architect"], "xterm")
             assert result is not None
             assert "xterm" in result
         finally:
@@ -459,7 +461,8 @@ class TestBuildWindowCommand:
         original = sys.platform
         sys.platform = "linux"
         try:
-            result = _build_window_command(["/usr/bin/architect"], "unknown-terminal-xyz")
+            with patch("the_architect.core.tmux._get_portable_shell", return_value="/bin/sh"):
+                result = _build_window_command(["/usr/bin/architect"], "unknown-terminal-xyz")
             assert result is None
         finally:
             sys.platform = original
@@ -469,7 +472,10 @@ class TestBuildWindowCommand:
         original = sys.platform
         sys.platform = "linux"
         try:
-            result = _build_window_command(["/usr/bin/architect", "--project", "/tmp/x"], "xterm")
+            with patch("the_architect.core.tmux._get_portable_shell", return_value="/bin/sh"):
+                result = _build_window_command(
+                    ["/usr/bin/architect", "--project", "/tmp/x"], "xterm"
+                )
             assert result is not None
             assert "--no-monitor" in " ".join(result)
         finally:
