@@ -332,8 +332,12 @@ class TestDiscoverTasksWithTitle:
         """Should extract human-readable title from task file heading."""
         with tempfile.TemporaryDirectory() as tmpdir:
             tasks_dir = Path(tmpdir)
-            (tasks_dir / "T01_changelog.md").write_text("# T01 — Implement CHANGELOG\n", encoding="utf-8")
-            (tasks_dir / "T02_runner.md").write_text("# T02 — Build runner engine\n", encoding="utf-8")
+            (tasks_dir / "T01_changelog.md").write_text(
+                "# T01 — Implement CHANGELOG\n", encoding="utf-8"
+            )
+            (tasks_dir / "T02_runner.md").write_text(
+                "# T02 — Build runner engine\n", encoding="utf-8"
+            )
 
             tasks = discover_tasks(tasks_dir)
 

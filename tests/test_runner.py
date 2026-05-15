@@ -794,7 +794,7 @@ class TestTaskOutcomeSummaryForExit:
     """Tests for interrupted provider diagnostics."""
 
     def test_includes_sigkill_diagnostic(self) -> None:
-        """Exit _FORCED_TERMINATION_EXIT_CODE should be explicit, not hidden as generic no-progress."""
+        """Exit _FORCED_TERMINATION_EXIT_CODE should not be hidden as generic no-progress."""
         from the_architect.core.runner import _FORCED_TERMINATION_EXIT_CODE
 
         summary = _task_outcome_summary_for_exit("", _FORCED_TERMINATION_EXIT_CODE)
