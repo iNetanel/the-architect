@@ -1253,6 +1253,7 @@ class TestPreRunScreen:
             # action_prev_tab callable too
             screen.action_prev_tab()
             await pilot.pause()
+            await pilot.pause()
             assert tabs.active == "tab_goal"
 
             # Smart methods no longer exist
