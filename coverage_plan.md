@@ -1,258 +1,104 @@
 # Coverage Improvement Plan
 
-**Last updated:** build 10422  
-**Current:** 84.2% overall (3039 tests, 0 failures, all platforms)  
-**Target:** 92%+ — the threshold where an AI agent can safely self-modify without breaking
-undetected paths.
+**Last updated:** build 10423
+**Current coverage:** 84.2% (3039 tests, 0 failures, Linux + macOS + Windows)
+**Target:** 92%
 
 ---
 
-## Status
+## Why this matters
 
-### Completed (since plan was first written)
-
-| What | Result |
-|------|--------|
-| Full Windows CI support — 9-matrix test runs (3 OS × 3 Python) | ✅ Done |
-| Live cost tracking tests (`tests/test_costs_tab.py`, 16 tests) | ✅ Done |
-| `MonitorStateWriter` cost accumulation coverage | ✅ Done |
-| `ExecutionScreen.update_costs` / `_render_costs` coverage | ✅ Done |
-| `SuccessScreen` session cost display coverage | ✅ Done |
-| `TuiSession.update_costs` coverage | ✅ Done |
-| All Windows-incompatible test assumptions fixed | ✅ Done |
-| Coverage plan written and committed | ✅ Done |
-
-The overall percentage has not moved because the fixes were correctness fixes, not coverage
-additions. All new tests cover code that was already exercised but tested wrongly (wrong paths,
-wrong encodings). The plan below remains valid and unchanged in scope.
+The Architect is designed to be self-developed by AI agents. At 84% coverage an agent can introduce
+a bug in one of the uncovered paths, all tests pass, and the bug ships. At 92% the uncovered surface
+is small enough that an agent can reason about it confidently. The uncovered 16% today is almost
+entirely exception branches, provider error handling, structured output parsing, and TUI session
+dispatch — exactly the code an agent is most likely to break when refactoring.
 
 ---
 
-## Why 92%?
+## What needs to be covered
 
-The uncovered 16% is almost entirely:
-1. **Exception/error branches** — the paths an AI agent is most likely to accidentally break when
-   refactoring happy paths.
-2. **Provider version/update detection** — called on startup; a broken check silently degrades UX.
-3. **Structured task outcome parsing** — the most complex text-parsing logic in the codebase; bugs
-   here cause the circuit breaker to misfire.
-4. **TUI session dispatch paths** — only the no-op (`app is None`) paths are currently tested.
+The biggest gains come from four areas. Work them in this order.
 
----
+**Provider error and version detection** (`gemini_cli_provider.py` at 69%, `codex_cli_provider.py`
+at 80%). Both providers have nearly identical uncovered paths: the timeout and subprocess-error
+branches in `get_version()` and `has_models()`, the npm-not-installed fallback in `install_hint()`,
+the full `check_update_available()` flow including network error handling and version comparison
+edge cases, the `get_resolved_model()` cache-hit branch, the `_read_*_model_from_config()` helpers
+that read from `~/.gemini/settings.json` and `~/.codex/config.toml`, and the bundle/JS model
+extraction in Gemini's `_list_models_from_bundle()`. For network calls, mock
+`urllib.request.urlopen` — never make real HTTP requests in tests. For filesystem calls, use
+`tmp_path`. These tests are pure Python with no Textual, so they are fast and straightforward.
+Target files: `tests/test_gemini_cli_provider.py` and `tests/test_codex_cli_provider.py`.
 
-## Priority Tiers
+**Structured task outcome parsing and runner error branches** (`runner.py` at 92%). The
+`_extract_task_outcome_summary()` function has a structured-section parser (`=== TASK OUTCOME ===`)
+that is completely untested — this is the function that feeds the circuit breaker's
+downstream-impact signal, so bugs here directly cause wrong retry behaviour. Cover the full parsing
+path including files extraction, verification extraction, and impact field detection. Also cover the
+bad-env-var paths in `_get_provider_idle_timeout()` and `_get_provider_sleep_wake_gap()` (invalid
+string → warning logged, default returned), the `OSError` branch in `_is_lock_stale()`, the
+`ProcessLookupError` branch in `_kill_process_tree()`, the `on_task_start` callback exception path,
+and the provider-update-required early-exit branch in `run_task()`. Target file:
+`tests/test_runner.py`.
 
-### Tier 1 — High value, easy to write (pure Python, no Textual)
-**Estimated gain: +4–5% | ~50 new tests**
+**TUI session dispatch** (`session.py` at 62%). Every method in `TuiSession` and `TuiWaitSession`
+has two branches: `app is None` (no-op) and `app is not None` (delegates to app). Currently only
+the `app is None` branch is tested. The `app is not None` branch is where real bugs would appear
+— a refactored method signature, a renamed app method, a swallowed exception. Cover all dispatch
+methods (`push_event`, `update_details`, `update_progress_tasks`, `update_settings`, `update_costs`,
+`update_footer`, and all `TuiWaitSession` methods) by passing a `MagicMock()` as the app and
+asserting the right method was called. Also cover the exception-swallowing paths by making the mock
+raise. The `tui_execution_session()` runner-reuse branch (where an active `ArchitectAppRunner`
+exists and its app is reused instead of creating a new one) is also uncovered. Target file:
+`tests/test_tui_session.py`.
 
-#### 1a. `the_architect/core/gemini_cli_provider.py` (69% → 85%)
+**Execution screen and TUI runner** (`execution.py` at 81%, `runner.py` at 85%). The execution
+screen has uncovered pre-mount buffer-flush paths — when `update_footer()`, `push_diagnostic()`, or
+`update_costs()` are called before the Textual DOM is mounted, they should be stored in pending
+buffers and flushed on mount. These are important correctness paths because the CLI callbacks fire
+immediately when a task completes, which can happen before the screen has finished mounting. Cover
+these by calling the update methods on an unmounted `ExecutionScreen()` instance and asserting the
+pending buffers are populated. The `_render_progress()` method branches for model, tokens,
+current_op and last_activity fields are also uncovered. The TUI runner (`tui/runner.py`) has
+uncovered SIGINT handler registration failures, the unexpected-app-exit path, atexit cleanup, and
+the `_atexit_kill_subprocesses` hook. Target files: new `tests/test_tui_execution_screen.py` and
+extended `tests/test_tui_phase17_runner.py`.
 
-| Gap | What to test |
-|-----|-------------|
-| `get_version()` timeout/error branches (L131–133) | `subprocess.TimeoutExpired` → returns `"unknown"` |
-| `has_models()` not installed + subprocess error (L145–154) | not installed → `False`; subprocess raises → `False` |
-| `install_hint()` non-npm fallback (L160) | no `npm` on PATH → returns URL string |
-| `check_update_available()` full flow (L169–208) | mock `urllib.request.urlopen`; installed < latest → update string; installed == latest → `""`; network error → `""`; bad version string → `""` |
-| `get_resolved_model()` cache hit (L285) | pre-populate cache key, verify immediate return |
-| `list_models()` returns `""` fallback (L305) | no env var, no config, empty catalog → `""` |
-| `_read_gemini_model_from_config()` (L650–658) | `tmp_path` with valid JSON → model name; missing file → `""`; bad JSON → `""` |
-| `_list_models_from_bundle()` (L678–718) | no `gemini` binary → `[]`; mock binary path with fake JS files containing model names → returns sorted list; `OSError` on read → skips file |
-| Output parsing: list content blocks (L532–537) | raw content as list of `{"text": "..."}` dicts → display lines extracted |
-| Output parsing: tool call detail extraction (L560–569) | tool call with input dict → `→ tool detail` line rendered |
+**Smaller gaps** worth closing before moving to harder work: `fileutil.py` (96%) is missing the
+`os.close()` exception path when `os.fdopen` fails and the fd must be cleaned up manually before
+unlinking the temp file. `terminal.py` (83%) is missing the `isatty()` exception path, the
+non-TTY early return, and the write-exception handler. `monitor_state.py` (94%) is missing the
+cost-estimation-raises exception paths, the model rotation counter, cooldown tz-naive datetime
+handling, and the free-rotator exception handler. These are all small, targeted, pure-Python tests.
 
-**File:** `tests/test_gemini_cli_provider.py`
-
----
-
-#### 1b. `the_architect/core/codex_cli_provider.py` (80% → 92%)
-
-| Gap | What to test |
-|-----|-------------|
-| `get_version()` timeout/error branches (L139–141) | same pattern as Gemini |
-| `has_models()` not installed + error (L151–162) | same pattern |
-| `install_hint()` non-npm fallback (L168) | no `npm` → URL string |
-| `check_update_available()` full flow (L177–217) | same structure as Gemini — mock `urlopen` |
-| `list_models()` subprocess debug fallback error (L265–272) | subprocess raises → logs and falls through |
-| `list_agents()` returns `[]` (L293) | always returns `[]` |
-| `get_resolved_model()` cache hit (L319) + config file path (L330–331) + empty fallback (L339) | pre-populated cache; env var match; no config → `""` |
-| `_read_codex_model_from_config()` (L702–710) | `tmp_path` with valid TOML → model; missing file → `""`; bad TOML → `""` |
-| Output parser: truncate long command (L613) | command > 80 chars → truncated with `…` |
-
-**File:** `tests/test_codex_cli_provider.py`
-
----
-
-#### 1c. `the_architect/core/runner.py` — structured outcome parsing (92% → 95%)
-
-| Gap | What to test |
-|-----|-------------|
-| `_extract_task_outcome_summary()` with `=== TASK OUTCOME ===` section (L2220–2243) | text with structured section → parses Summary/Files/Verification/Downstream fields |
-| `_extract_task_outcome_summary()` files extraction (L2250) | text contains modified file paths → `Files: a.py, b.py` |
-| `_extract_task_outcome_summary()` verification extraction (L2258–2259) | text with "verified X" sentences → `Verification: ...` |
-| `_get_provider_idle_timeout()` bad env var (L802–807) | set `ARCHITECT_PROVIDER_IDLE_TIMEOUT_SECONDS=abc` → logs warning, returns default |
-| `_get_provider_sleep_wake_gap()` bad env var (L818–823) | same pattern |
-| `_is_lock_stale()` OSError on `os.kill` (L496–497) | mock `os.kill` raises `OSError` → returns `False` |
-| `_kill_process_tree()` `ProcessLookupError` on `proc.kill` (L775–778) | mock `proc.kill` raises `ProcessLookupError` → no crash |
-| `run_task()` `on_task_start` callback raises (L3409–3412) | callback raises `RuntimeError` → run continues |
-| `run_task()` provider update required branch (L3028–3032) | `check_update_available()` returns non-empty → task breaks after first attempt |
-
-**File:** `tests/test_runner.py`
+**Lower-priority work** (do last): `tui/app.py` (66%) has uncovered thread-safe delegation chains
+that require a live Textual app with worker threads — complex to test but important for ensuring
+refactors don't break the `_thread_safe_call` path. `tui/screens/pause.py` (69%) and `cli.py`
+(64%) are similar — the CLI's 1121 uncovered lines are mostly the interactive `run` command
+orchestration which is more of an integration test than a unit test. Use Click's `CliRunner` for
+the helper functions and accept that the full run-command flow is tested by real use rather than
+unit tests.
 
 ---
 
-#### 1d. `the_architect/core/monitor_state.py` (94% → 98%)
+## Rules every new test must follow
 
-| Gap | What to test |
-|-----|-------------|
-| `read_monitor_state()` valid file but no data key (L106) | write JSON without expected keys → returns `None` |
-| `clear_flags()` OSError on unlink (L170–171) | mock `unlink` raises `OSError` → no crash |
-| `on_task_done()` / `on_task_failed()` cost estimation raises (L293–294, L335–336) | mock `estimate_cost_detailed` raises → session cost stays 0 |
-| `on_model_update()` model rotation counter (L349) | call twice with different models → `_model_rotation_count == 1` |
-| `_flush()` free_rotator exception (L495–496) | mock `_free_rotator` raises on `remaining_count` → `free_remaining = 0` |
-| `_flush()` cooldown tz-naive datetime (L505) | set `_cooldown_started_at` to naive ISO string → gets UTC tzinfo added |
-| `_flush()` cooldown calculation exception (L509–510) | mock datetime parse raises → `cooldown_remaining_seconds = None` |
-
-**File:** `tests/test_monitor.py` (extend existing class)
+All tests must pass on Linux, macOS, and Windows without modification. Use `tmp_path` (the pytest
+fixture) for any file path that gets written to or read from — never hardcode `/tmp/...` or
+`C:/...`. Always pass `encoding="utf-8"` to `write_text()`. For POSIX-only behaviour like
+`os.killpg` or `signal.SIGKILL`, guard with `if not hasattr(os, "killpg"): pytest.skip(...)` or
+`if sys.platform == "win32": pytest.skip(...)`. Never patch `sys.platform` without also patching
+the platform-specific functions that branch on it (e.g. `is_windows()`, `_get_portable_shell()`).
+Never make real network calls — mock `urllib.request.urlopen`. In Textual async tests, always use
+`await pilot.pause(0.05)` with a real delay after any widget state mutation — plain
+`await pilot.pause()` is a single-tick yield and races on slow Windows CI runners.
 
 ---
 
-#### 1e. `the_architect/core/fileutil.py` (96% → 100%)
+## Expected outcome
 
-| Gap | What to test |
-|-----|-------------|
-| `atomic_write_text()` fd close on `os.fdopen` failure (L98–99) | mock `os.fdopen` raises; mock `os.close` raises `OSError` → no crash, temp file removed |
-
-**File:** `tests/test_fileutil.py`
-
----
-
-#### 1f. `the_architect/tui/terminal.py` (83% → 100%)
-
-| Gap | What to test |
-|-----|-------------|
-| `_stream_is_tty()` exception path (L34–35) | mock stream with `isatty` raising `AttributeError` → returns `False` |
-| `_write_restore_sequence()` early return when not TTY (L41) | non-TTY stream with `require_tty=True` → nothing written |
-| `_write_restore_sequence()` write exception (L45–46) | stream raises on `write` → no crash |
-
-**File:** `tests/test_tui_phase17_runner.py` or new `tests/test_terminal.py`
-
----
-
-### Tier 2 — Medium value, requires Textual async harness
-**Estimated gain: +3–4% | ~45 new tests**
-
-> **Cross-platform note:** All Textual interaction tests must use `pilot.pause(0.05)` (with a
-> small real delay) after any widget state mutation (`.value = True`, `action_*` calls) to give
-> the Windows event loop enough time to process callbacks. Plain `await pilot.pause()` with no
-> delay is a single-tick yield and is not reliable on slower Windows CI runners.
-
-#### 2a. `the_architect/tui/screens/execution.py` (81% → 92%)
-
-| Gap | What to test |
-|-----|-------------|
-| `_fmt_tokens()` < 1000 branch (L44) | `_fmt_tokens(500)` → `"500"` |
-| `_idle_footer_text()` inside tmux (L57) | set `TMUX` env var → footer includes detach hint |
-| Pre-mount buffer flush (L255–269) | call `update_footer()`, `push_diagnostic()`, `update_costs()` before mount; after mount verify they appear |
-| `push_output_line()` → clears placeholder (L281–282) | verify placeholder is cleared on first real output |
-| `push_diagnostic()` pre-mount path (L360–362) | call before mount → stored in `_pending_diagnostics` |
-| `update_footer()` pre-mount path (L383–385) | call before mount → stored in `_pending_footer` |
-| `_render_progress()` with model/tokens/current_op/last_activity (L493–499) | populate `_details` with all fields, verify each appears in render |
-| `_render_costs()` "unknown model" branch (L584–585) | tokens > 0, cost == 0 → shows `—  (model not in pricing table)` |
-| `_render_costs()` model short name with zero cost (L596) | model_costs dict with 0.0 cost → shows name without `$` |
-| `action_pause_menu()` exception swallowed (L450–453) | call action on bare Screen (no `show_pause_menu`) → no crash |
-
-**File:** `tests/test_tui_execution_screen.py` (new)
-
----
-
-#### 2b. `the_architect/tui/runner.py` (85% → 95%)
-
-| Gap | What to test |
-|-----|-------------|
-| `push_and_wait()` (L108) | call from worker thread while runner is active → returns dismiss value |
-| SIGINT handler registration failure (L185–190) | mock `signal.signal` raises `ValueError` → `_prev_sigint = None`, no crash |
-| Unexpected app exit path (L228–235) | app exits before `_flow_done` is set → `unexpected_app_exit=True`, subprocesses killed |
-| SIGINT restore failure (L246–247) | mock `signal.signal` raises on restore → no crash |
-| Subprocess cleanup exception (L261–262) | mock `kill_active_subprocesses` raises → no crash |
-| Worker join after timeout (L270) | long-running worker → joins with timeout |
-| `atexit` unregister exception (L280–281) | mock `atexit.unregister` raises → no crash |
-| `_atexit_kill_subprocesses()` (L297–303) | call directly → invokes `kill_active_subprocesses` and `_restore_terminal_input_modes` |
-| `_sigint_kill_handler()` subprocess kill exception (L320–321) | mock `kill_active_subprocesses` raises → still raises `KeyboardInterrupt` |
-
-**File:** `tests/test_tui_phase17_runner.py` (extend)
-
----
-
-#### 2c. `the_architect/tui/session.py` (62% → 82%)
-
-All uncovered lines are the `app is not None` dispatch paths — the branches that actually call
-through to the app. Currently only the `app is None` no-op path is tested.
-
-| Gap | What to test |
-|-----|-------------|
-| `push_event()` with live app mock (L55–58) | mock app; call `push_event()` → `app.push_event_line` called |
-| `update_details()` with live app mock (L64–67) | same pattern |
-| `update_progress_tasks()` with live app mock (L71–76) | same |
-| `update_settings()` with live app mock (L80–85) | same |
-| `update_costs()` exception swallowed (L98–99) | mock app raises → no crash |
-| `update_footer()` with live app mock (L105–108) | same pattern |
-| `tui_execution_session()` reuses runner app (L137–160) | mock active runner → session uses runner's app, no new thread |
-| All `TuiWaitSession` dispatch methods (L236–395) | same mock-app pattern for `set_title`, `set_detail`, `append_log`, `show`, `hide`, `update` |
-
-**File:** `tests/test_tui_session.py` (extend)
-
----
-
-### Tier 3 — Lower ROI, complex setup (do last or skip)
-
-| File | Current | Gap | Notes |
-|------|---------|-----|-------|
-| `tui/app.py` | 66% | Thread-safe delegation methods | All uncovered lines are `_thread_safe_call` → screen method chains. Hard to exercise without a live Textual app. Use `run_test()` harness + worker threads. |
-| `tui/screens/pause.py` | 69% | Pause menu actions | Action handlers need `ArchitectApp` running. Use `run_test()`. |
-| `tui/screens/pre_run_tabbed.py` | 83% | Provider model loading callbacks | Async callbacks fired during mount. Use `run_test()` + `await pilot.pause(0.05)`. |
-| `cli.py` | 64% | Interactive CLI commands | 1121 uncovered lines. Mostly the `run` command's full orchestration. Use Click's `CliRunner` for helper functions. The full `run` command flow is an integration test, not a unit test. |
-| `core/project_intelligence.py` | 82% | Intelligence extraction edge cases | Add tests for empty/malformed input to each extractor. |
-
----
-
-## Implementation Order
-
-1. **Tier 1** (all pure-Python, no Textual): write in one session, ~50 new tests
-2. **Tier 2a** (`execution.py`): Textual `run_test()` harness, ~15 new tests
-3. **Tier 2b** (`runner.py`): extend existing phase17 tests, ~10 new tests
-4. **Tier 2c** (`session.py`): mock-app pattern, ~20 new tests
-5. **Tier 3**: pick off `cli.py` helpers and `app.py` delegation methods as time permits
-
----
-
-## Cross-Platform Rules for All New Tests
-
-- Use `tmp_path` (pytest fixture) for all file paths — never `Path("/tmp/...")` or `Path("C:/...")`
-- `write_text(..., encoding="utf-8")` on every `write_text` call
-- Guard POSIX-only tests: `if not hasattr(os, "killpg"): pytest.skip(...)`
-- Guard signal tests: `if sys.platform == "win32": pytest.skip(...)`
-- Never patch `sys.platform` without also patching platform-specific functions that depend on it
-  (e.g. `_get_portable_shell`, `is_windows`)
-- Mock `urllib.request.urlopen` for any network-touching tests — never make real HTTP calls
-- Use `pilot.pause(0.05)` (with delay) after widget state mutations in Textual tests — plain
-  `await pilot.pause()` is a single-tick yield and is not reliable on Windows CI runners
-
----
-
-## Tracking
-
-| Tier | File(s) | Est. new tests | Est. coverage gain | Status |
-|------|---------|---------------|-------------------|--------|
-| 1a | `test_gemini_cli_provider.py` | 15 | +1.1% | pending |
-| 1b | `test_codex_cli_provider.py` | 12 | +0.8% | pending |
-| 1c | `test_runner.py` | 10 | +0.7% | pending |
-| 1d | `test_monitor.py` | 8 | +0.1% | pending |
-| 1e | `test_fileutil.py` | 2 | +0.1% | pending |
-| 1f | `test_terminal.py` | 4 | +0.1% | pending |
-| 2a | `test_tui_execution_screen.py` | 15 | +0.7% | pending |
-| 2b | `test_tui_phase17_runner.py` | 10 | +0.5% | pending |
-| 2c | `test_tui_session.py` | 20 | +1.3% | pending |
-| 3  | `test_cli.py`, `test_tui_app.py` | 20–30 | +1.5% | pending |
-| **Total** | | **~116–126** | **~7%** | |
-
-Target after Tier 1+2: **~91%**. After Tier 3: **~92–93%**.
+Completing the provider error paths, runner outcome parsing, and TUI session dispatch (the first
+three areas above) will bring coverage to approximately 91%. Adding the execution screen, TUI
+runner, and small gap closures will reach the 92% target. The lower-priority app and CLI work takes
+it to 93–94% and can be done incrementally. The full effort is approximately 116–126 new tests.
