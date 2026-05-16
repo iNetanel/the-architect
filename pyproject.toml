@@ -101,4 +101,11 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-timeout = 60
+filterwarnings = [
+    # pytest-timeout is disabled via -p no:timeout in CI; suppress the
+    # resulting config warning so the output stays clean.
+    "ignore::pytest.PytestConfigWarning:_pytest",
+    # Textual Header widget has an async on_mount that is not always
+    # awaited in headless test harnesses — this is a Textual internal.
+    "ignore:coroutine 'Header._on_mount.*' was never awaited:RuntimeWarning",
+]

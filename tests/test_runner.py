@@ -3441,11 +3441,16 @@ class TestInstructionViaStdin:
     async def test_stdin_provider_writes_instruction_to_stdin(self, tmp_path: Path) -> None:
         """When instruction_via_stdin=True the instruction is written to process.stdin."""
         from unittest.mock import AsyncMock as _AsyncMock
+        from unittest.mock import MagicMock as _MagicMock
 
         provider = _make_mock_provider(instruction_via_stdin=True)
         mock_process = _make_mock_process(stdout_lines=[], exit_code=0)
-        # Attach an AsyncMock stdin so we can assert it was written to.
-        mock_stdin = _AsyncMock()
+        # asyncio.StreamWriter.write() and close() are synchronous;
+        # drain() and wait_closed() are coroutines. Use MagicMock for
+        # the sync methods to avoid "coroutine never awaited" warnings.
+        mock_stdin = _MagicMock()
+        mock_stdin.drain = _AsyncMock()
+        mock_stdin.wait_closed = _AsyncMock()
         mock_process.stdin = mock_stdin
 
         with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
@@ -3459,11 +3464,15 @@ class TestInstructionViaStdin:
     @pytest.mark.asyncio
     async def test_stdin_provider_opens_stdin_pipe(self, tmp_path: Path) -> None:
         """When instruction_via_stdin=True the subprocess is opened with stdin=PIPE."""
+        from unittest.mock import AsyncMock as _AsyncMock
+        from unittest.mock import MagicMock as _MagicMock
+
         provider = _make_mock_provider(instruction_via_stdin=True)
         mock_process = _make_mock_process(stdout_lines=[], exit_code=0)
-        from unittest.mock import AsyncMock as _AsyncMock
-
-        mock_process.stdin = _AsyncMock()
+        mock_stdin = _MagicMock()
+        mock_stdin.drain = _AsyncMock()
+        mock_stdin.wait_closed = _AsyncMock()
+        mock_process.stdin = mock_stdin
 
         with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.return_value = mock_process
@@ -5069,6 +5078,8 @@ class TestKillProcessTreeProcessLookupError:
 
     def test_kill_process_tree_processlookuperror_on_kill(self):
         """ProcessLookupError on proc.kill() is caught and swallowed."""
+        if not hasattr(os, "killpg"):
+            pytest.skip("os.killpg is POSIX-only")
         mock_proc = MagicMock(spec=asyncio.subprocess.Process)
         mock_proc.returncode = None
         # Patch os.killpg to succeed, but proc.kill() raises ProcessLookupError
@@ -5083,6 +5094,8 @@ class TestKillProcessTreeProcessLookupError:
 
     def test_kill_process_tree_already_finished(self):
         """_kill_process_tree returns early when process already finished."""
+        if not hasattr(os, "killpg"):
+            pytest.skip("os.killpg is POSIX-only")
         mock_proc = MagicMock(spec=asyncio.subprocess.Process)
         mock_proc.returncode = 0  # already finished
         with patch("the_architect.core.runner.os.killpg") as mock_killpg:
