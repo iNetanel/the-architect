@@ -13,7 +13,7 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ---
 
-## [1.2.12] (build 10440) — 2026-05-15
+## [1.2.12] (build 10441) — 2026-05-15
 
 ### Removed
 

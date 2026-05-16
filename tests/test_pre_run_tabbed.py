@@ -1177,7 +1177,8 @@ class TestPreRunScreen:
 
             # Navigate to the Options tab by number key
             screen.action_jump_tab_4()
-            await pilot.pause(0.05)
+            await pilot.pause(0.1)
+            await pilot.pause(0.1)
             tabs = screen.query_one("#prerun_tabs", TabbedContent)
             assert tabs.active == "tab_mode"
 
