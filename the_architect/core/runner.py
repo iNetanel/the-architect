@@ -894,7 +894,7 @@ async def stream_provider(
     # instruction in the command list — we write it to the process stdin
     # instead.  This is the correct solution for the Windows CreateProcess
     # command-line length limit (32 767 chars), which is reliably exceeded
-    # when planning prompts + ARCHITECT.md + execution-protocol.md are all
+    # when planning prompts + ARCHITECT.md + execution.md are all
     # concatenated into one argument (FileNotFoundError error 206 on Windows).
     _use_stdin = getattr(provider, "instruction_via_stdin", False)
     _stdin_mode = asyncio.subprocess.PIPE if _use_stdin else None
@@ -2012,16 +2012,14 @@ def build_instruction(
     lines: list[str] = []
 
     # --- Execution protocol (explains The Architect to the user's agent) ---
-    local_protocol = config.project_root / ".architect" / "prompts" / "execution-protocol.md"
+    local_protocol = config.project_root / ".architect" / "prompts" / "execution.md"
     protocol_text = ""
     try:
         protocol_text = local_protocol.read_text(encoding="utf-8").strip()
     except OSError:
         protocol_text = ""
     if not protocol_text:
-        protocol_source = (
-            resources.files("the_architect.resources.prompts") / "execution-protocol.md"
-        )
+        protocol_source = resources.files("the_architect.resources.prompts") / "execution.md"
         protocol_text = protocol_source.read_text(encoding="utf-8").strip()
     lines.append(protocol_text)
 
@@ -2040,7 +2038,7 @@ def build_instruction(
     # --- Task-specific instruction ---
     project_root = str(config.project_root)
     progress_rel = config.progress_file.relative_to(config.project_root).as_posix()
-    task_rel = task.path.name
+    task_rel = task.path.relative_to(config.project_root).as_posix()
 
     lines.append(f"PROJECT ROOT: {project_root}")
     lines.append(

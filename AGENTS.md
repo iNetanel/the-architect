@@ -112,7 +112,7 @@ the_architect/
     prompts/
       architect.md    # Prompt for the planning agent
       reviewer.md     # Prompt for the retrospective reviewer agent
-      execution-protocol.md  # Injected into every task run
+      execution.md           # Injected into every task run
 
 dev/opencode/         # OpenCode config for developing The Architect itself
   opencode.json       # Agent definitions, model assignments, permissions

@@ -13,10 +13,10 @@ override your agent's delegation or orchestration instructions.
 ## What The Architect expects from you
 
 1. Read `ARCHITECT.md` — durable project intelligence (repo map, stack, contracts, decisions, constraints, lessons, best practices)
-2. Read `tasks/INSTRUCTIONS.md` — project context, stack, conventions, and full task list
+2. Read `tasks/INSTRUCTIONS.md` — project context, stack, conventions, and cross-task sequencing rules for this run
 3. Read `tasks/PROGRESS.md` — current state, what is done, what is next
 4. Read `AGENTS.md` or `CLAUDE.md` if either exists — the user's project rules (read it explicitly if your CLI doesn't auto-load it; OpenCode uses `AGENTS.md`, Claude Code uses `CLAUDE.md`)
-5. Read your task file in `tasks/` — your specific instructions for this task
+5. Read **your assigned task file** — the exact path is given in the instruction below (e.g. `tasks/T04_foo.md`). Do NOT glob or list `tasks/` to find it. Do NOT read other task files.
 6. Follow the task's Exploration Plan before editing — inspect the smallest relevant code slice first
 7. Complete every item in the task file — work autonomously without asking the human for confirmation
 8. Rewrite `tasks/PROGRESS.md` when done — this is how The Architect knows you finished

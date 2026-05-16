@@ -14,7 +14,7 @@ _REQUIRED_PROMPT_FILES = (
     "architect.md",
     "intelligence.md",
     "reviewer.md",
-    "execution-protocol.md",
+    "execution.md",
 )
 
 

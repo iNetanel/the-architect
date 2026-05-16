@@ -393,7 +393,7 @@ class ClaudeCodeProvider:
             "architect.md",
             "intelligence.md",
             "reviewer.md",
-            "execution-protocol.md",
+            "execution.md",
         ):
             source = package_prompts / filename
             target = prompts_dir / filename
@@ -482,7 +482,7 @@ class ClaudeCodeProvider:
         # See ``instruction_via_stdin`` property.  This avoids the Windows
         # CreateProcess command-line length limit (32 767 chars) which is
         # routinely exceeded when planning prompts + ARCHITECT.md +
-        # execution-protocol.md are all concatenated into one argument.
+        # execution.md are all concatenated into one argument.
 
         return cmd
 

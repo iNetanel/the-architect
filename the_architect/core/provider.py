@@ -213,7 +213,7 @@ class ArchitectProvider(Protocol):
         (e.g. ``claude --print`` with no positional argument).  It completely
         avoids the Windows ``CreateProcess`` command-line length limit of
         32 767 characters which is routinely hit when planning prompts,
-        ARCHITECT.md, and execution-protocol.md are all concatenated into a
+        ARCHITECT.md, and execution.md are all concatenated into a
         single argument.
 
         Providers that do not support stdin input should return ``False``

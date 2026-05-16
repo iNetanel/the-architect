@@ -1280,7 +1280,7 @@ class TestBuildInstruction:
     ):
         prompts_dir = config.project_root / ".architect" / "prompts"
         prompts_dir.mkdir(parents=True, exist_ok=True)
-        (prompts_dir / "execution-protocol.md").write_text(
+        (prompts_dir / "execution.md").write_text(
             "LOCAL EXECUTION PROTOCOL",
             encoding="utf-8",
         )

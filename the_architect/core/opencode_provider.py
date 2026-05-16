@@ -485,7 +485,7 @@ class OpenCodeProvider:
             "architect.md",
             "intelligence.md",
             "reviewer.md",
-            "execution-protocol.md",
+            "execution.md",
         ):
             source = package_prompts / filename
             target = prompts_dir / filename
@@ -989,7 +989,7 @@ def opencode_has_any_models() -> bool:
 
 
 def write_architect_prompts(project_dir: Path) -> None:
-    """Write architect.md and execution-protocol.md to project_dir/.architect/prompts/.
+    """Write architect.md and execution.md to project_dir/.architect/prompts/.
 
     Args:
         project_dir: The project root directory.

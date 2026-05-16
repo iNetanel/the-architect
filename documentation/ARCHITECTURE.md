@@ -548,7 +548,7 @@ When you run `architect`, The Architect enters execution mode:
 
 Each task's execution instruction is composed of three parts:
 
-1. **Execution Protocol** — The Architect's operating rules (from `resources/prompts/execution-protocol.md`), explaining how PROGRESS.md works, completion detection, and anti-hallucination guards
+1. **Execution Protocol** — The Architect's operating rules (from `resources/prompts/execution.md`), explaining how PROGRESS.md works, completion detection, and anti-hallucination guards
 2. **ARCHITECT.md content** — The full ARCHITECT.md is injected so the build agent has access to durable project intelligence: repo map, stack, key flows, shared contracts, code locations, decisions, constraints, lessons, and best practices
 3. **Task-specific instruction** — Project root boundary, PROGRESS.md and task file pointers, retry context (if applicable)
 
@@ -2147,7 +2147,7 @@ your-project/
 │   │   ├── architect.md
 │   │   ├── intelligence.md
 │   │   ├── reviewer.md
-│   │   └── execution-protocol.md
+│   │   └── execution.md
 │   ├── logs/                # Task execution logs
 │   │   ├── the_architect.log  # General log
 │   │   ├── architect.log    # Planning session transcript
@@ -2197,7 +2197,7 @@ the_architect/              # Python package (published to PyPI as "the-architec
         ├── architect.md        # Architect agent prompt (used by all providers)
         ├── intelligence.md     # Pre-planning project intelligence prompt
         ├── reviewer.md         # Retrospective reviewer agent prompt (used by all providers)
-        └── execution-protocol.md  # Execution protocol (injected at runtime)
+        └── execution.md            # Execution protocol (injected at runtime)
 ```
 
 ---

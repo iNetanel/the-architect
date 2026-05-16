@@ -377,7 +377,7 @@ class TestRetrospectiveEdgeCases:
             "architect.md",
             "intelligence.md",
             "reviewer.md",
-            "execution-protocol.md",
+            "execution.md",
         ):
             (prompts_dir / filename).write_text(f"{filename} prompt\n", encoding="utf-8")
         (architect_dir / "architect.json").write_text(
@@ -420,7 +420,7 @@ class TestRetrospectiveEdgeCases:
             "architect.md",
             "intelligence.md",
             "reviewer.md",
-            "execution-protocol.md",
+            "execution.md",
         ):
             (prompts_dir / filename).write_text(f"{filename} prompt\n", encoding="utf-8")
         (architect_dir / "architect.json").write_text("{}\n", encoding="utf-8")

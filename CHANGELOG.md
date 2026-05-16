@@ -13,6 +13,20 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ---
 
+## [1.2.13] (build 10451) — 2026-05-16
+
+### Fixed
+
+- **Execution agents no longer read every task file in `tasks/`.** Previously, the runner passed only the bare filename (`T04_foo.md`) to the agent rather than a full relative path (`tasks/T04_foo.md`). Without a directory prefix the agent couldn't locate its task file and would glob `tasks/T0*` to find it — accidentally reading all sibling task files and sometimes wandering into `tasks/archive/`. The instruction now supplies the exact path, so no discovery is needed.
+
+- **Execution prompt no longer invites agents to explore the task list.** The step that described `tasks/INSTRUCTIONS.md` as containing the "full task list" has been reworded to "cross-task sequencing rules", and the step that said "read your task file in `tasks/`" now explicitly names the assigned file and prohibits globbing or listing the directory. Agents stay focused on their assigned task.
+
+### Changed
+
+- **Test coverage improved from 85% to 86%.** Added 135 new tests across five critical-path modules: `project_intelligence.py` (82% → 100%), `tui/runner.py` (72% → 95%), `provider_setup.py` (83% → 100%), `baseline.py` (88% → 100%), and `monitor_state.py` (91% → 100%). Full test suite: 3,151 passed, 1 skipped (builds 10443–10451).
+
+---
+
 ## [1.2.12] (build 10441) — 2026-05-15
 
 ### Removed
@@ -93,7 +107,7 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ### Fixed
 
-- **Claude Code tasks no longer crash on Windows with "filename or extension is too long" (error 206).** Windows limits `CreateProcess` command lines to 32 767 characters. The Architect's planning prompts (`architect.md` ~23 KB + `execution-protocol.md` ~19 KB + `ARCHITECT.md` ~16 KB + task file) routinely exceed that limit, causing every task attempt to fail immediately. Claude Code now receives its instruction via **stdin** instead of a command-line argument, eliminating the limit entirely. The provider protocol gains a new `instruction_via_stdin` flag; all other providers (OpenCode, Codex, Gemini) are unaffected.
+- **Claude Code tasks no longer crash on Windows with "filename or extension is too long" (error 206).** Windows limits `CreateProcess` command lines to 32 767 characters. The Architect's planning prompts (`architect.md` ~23 KB + `execution.md` ~19 KB + `ARCHITECT.md` ~16 KB + task file) routinely exceed that limit, causing every task attempt to fail immediately. Claude Code now receives its instruction via **stdin** instead of a command-line argument, eliminating the limit entirely. The provider protocol gains a new `instruction_via_stdin` flag; all other providers (OpenCode, Codex, Gemini) are unaffected.
 
 - **Windows PowerShell and Windows Terminal now show the modern interactive TUI** instead of the old legacy text fallback. PowerShell never sets the `TERM` environment variable, which the auto-detection logic previously treated as `TERM=dumb`, silently disabling the entire Textual UI. The check now only disables the TUI when `TERM` is *explicitly* set to `dumb`.
 
@@ -145,7 +159,7 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 ### Fixed
 
 - **More resilient execution after computer sleep or suspend.** The provider streaming loop now detects large wall-clock gaps in an OS- and terminal-agnostic way, terminates stale provider subprocesses after wake, retries the attempt, and avoids counting local sleep interruptions against circuit breaker no-progress/same-error thresholds (build 10398).
-- **Fixed pre-task exits from packaged resource loading.** Task execution now prefers the project-local `.architect/prompts/execution-protocol.md` before reading packaged prompt resources, preventing `MultiplexedPath` resource-loader glitches from aborting tasks before OpenCode, Codex, Claude Code, or Gemini starts (build 10397).
+- **Fixed pre-task exits from packaged resource loading.** Task execution now prefers the project-local `.architect/prompts/execution.md` before reading packaged prompt resources, preventing `MultiplexedPath` resource-loader glitches from aborting tasks before OpenCode, Codex, Claude Code, or Gemini starts (build 10397).
 - **More reliable local and CI test behavior.** OpenCode config discovery tests now isolate host-level config paths so a developer's real `~/.config/opencode` cannot create false failures during full-suite runs (build 10397).
 
 ## [1.2.7] (build 10390) — 2026-05-13

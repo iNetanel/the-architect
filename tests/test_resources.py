@@ -52,7 +52,7 @@ def test_execution_protocol_loads() -> None:
     """Verify execution protocol prompt loads correctly."""
     from the_architect.resources import get_prompt
 
-    prompt = get_prompt("execution-protocol.md")
+    prompt = get_prompt("execution.md")
     assert len(prompt) > 100
     assert "PROGRESS.md" in prompt
     assert "Done" in prompt
@@ -73,7 +73,7 @@ def test_execution_protocol_requires_focused_codebase_discovery() -> None:
     """Execution protocol should make executor discovery explicit and bounded."""
     from the_architect.resources import get_prompt
 
-    prompt = get_prompt("execution-protocol.md")
+    prompt = get_prompt("execution.md")
     assert "Focused Codebase Discovery Before Implementation" in prompt
     assert "smallest relevant part of the codebase" in prompt
     assert "Do not perform broad, unfocused repo exploration" in prompt
@@ -84,7 +84,7 @@ def test_execution_protocol_requires_strong_verification() -> None:
     """Execution protocol should forbid assumed success and require UI checks."""
     from the_architect.resources import get_prompt
 
-    prompt = get_prompt("execution-protocol.md")
+    prompt = get_prompt("execution.md")
     assert "Verification Discipline" in prompt
     assert "Do not assume anything works" in prompt
     assert "If a required verification tool or dependency is missing" in prompt

@@ -395,3 +395,221 @@ class TestMonitorCommand:
         ):
             result = cli_runner.invoke(main, ["monitor", "-p", str(tmp_path)])
         assert result.exit_code == 1
+
+
+# ---------------------------------------------------------------------------
+# Gap closure — uncovered lines
+# ---------------------------------------------------------------------------
+
+
+class TestMonitorStateGapClosure:
+    """Targeted tests for uncovered lines in monitor_state.py."""
+
+    def _make_writer(self, tmp_path: Path, tasks: list[Task] | None = None) -> MonitorStateWriter:
+        if tasks is None:
+            tasks = [_make_task(tmp_path, "T01", "Setup")]
+        return MonitorStateWriter(
+            project_dir=tmp_path, tasks=tasks, free_rotator=None, max_retries=3
+        )
+
+    def test_read_monitor_state_returns_none_for_non_dict(self, tmp_path: Path) -> None:
+        """read_monitor_state returns None when JSON is a list, not a dict."""
+        state_path = tmp_path / MONITOR_STATE_FILE
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text("[1, 2, 3]", encoding="utf-8")
+        assert read_monitor_state(tmp_path) is None
+
+    def test_clear_stop_flags_os_error_handled(self, tmp_path: Path) -> None:
+        """clear_stop_flags swallows OSError during unlink."""
+        flag = tmp_path / STOP_FLAG_FILE
+        flag.parent.mkdir(parents=True, exist_ok=True)
+        flag.write_text("", encoding="utf-8")
+
+        with patch.object(Path, "unlink", side_effect=OSError("no access")):
+            # Should not raise
+            clear_stop_flags(tmp_path)
+
+    def test_on_task_done_cost_estimation(self, tmp_path: Path) -> None:
+        """on_task_done calculates cost when model and tokens provided."""
+        task = _make_task(tmp_path, "T01", "Setup")
+        writer = MonitorStateWriter(project_dir=tmp_path, tasks=[task], max_retries=3)
+        writer.on_task_start(task)
+        writer.on_task_done(
+            "T01",
+            tokens=1000,
+            input_tokens=500,
+            output_tokens=500,
+            model="gpt-4",
+        )
+        state = read_monitor_state(tmp_path)
+        assert state is not None
+        assert state["tokens"]["session_cost_usd"] >= 0
+        assert state["tokens"]["last_task_cost_usd"] >= 0
+
+    def test_on_task_failed_cost_estimation(self, tmp_path: Path) -> None:
+        """on_task_failed calculates cost when model and tokens provided."""
+        task = _make_task(tmp_path, "T01", "Setup")
+        writer = MonitorStateWriter(project_dir=tmp_path, tasks=[task], max_retries=3)
+        writer.on_task_start(task)
+        writer.on_task_failed(
+            "T01",
+            tokens=800,
+            input_tokens=400,
+            output_tokens=400,
+            model="gpt-4",
+        )
+        state = read_monitor_state(tmp_path)
+        assert state is not None
+        assert state["tokens"]["session_cost_usd"] >= 0
+
+    def test_on_task_failed_cost_import_error(self, tmp_path: Path) -> None:
+        """on_task_failed handles import error from token_ledger gracefully."""
+        task = _make_task(tmp_path, "T01", "Setup")
+        writer = MonitorStateWriter(project_dir=tmp_path, tasks=[task], max_retries=3)
+        writer.on_task_start(task)
+        with patch(
+            "builtins.__import__",
+            side_effect=ImportError("token_ledger broken"),
+        ):
+            writer.on_task_failed(
+                "T01",
+                tokens=800,
+                input_tokens=400,
+                output_tokens=400,
+                model="gpt-4",
+            )
+        state = read_monitor_state(tmp_path)
+        assert state is not None
+        assert state["tokens"]["session_cost_usd"] == 0.0
+
+    def test_on_task_done_cost_import_error(self, tmp_path: Path) -> None:
+        """on_task_done handles import error from token_ledger gracefully."""
+        task = _make_task(tmp_path, "T01", "Setup")
+        writer = MonitorStateWriter(project_dir=tmp_path, tasks=[task], max_retries=3)
+        writer.on_task_start(task)
+        with patch(
+            "builtins.__import__",
+            side_effect=ImportError("token_ledger broken"),
+        ):
+            # Should not raise — cost estimation is best-effort
+            writer.on_task_done(
+                "T01",
+                tokens=1000,
+                input_tokens=500,
+                output_tokens=500,
+                model="gpt-4",
+            )
+        state = read_monitor_state(tmp_path)
+        assert state is not None
+        # Cost should be 0 since estimation failed
+        assert state["tokens"]["session_cost_usd"] == 0.0
+
+    def test_on_attempt_start_model_rotation(self, tmp_path: Path) -> None:
+        """on_attempt_start increments rotation count when model changes."""
+        task = _make_task(tmp_path, "T01", "Setup")
+        writer = MonitorStateWriter(project_dir=tmp_path, tasks=[task], max_retries=3)
+        writer.on_task_start(task)
+        writer.on_attempt_start(1, "model-a")
+        writer.on_attempt_start(2, "model-b")
+        state = read_monitor_state(tmp_path)
+        assert state is not None
+        assert state["model"]["rotation_count"] == 1
+        assert state["model"]["current"] == "model-b"
+
+    def test_on_attempt_done_tracks_tokens(self, tmp_path: Path) -> None:
+        """on_attempt_done updates token counts."""
+        task = _make_task(tmp_path, "T01", "Setup")
+        writer = MonitorStateWriter(project_dir=tmp_path, tasks=[task], max_retries=3)
+        writer.on_task_start(task)
+        writer.on_attempt_done(1, success=True, tokens=2500)
+        state = read_monitor_state(tmp_path)
+        assert state is not None
+        assert state["tokens"]["session_total"] == 2500
+        assert state["tokens"]["last_attempt"] == 2500
+
+    def test_on_replan_done_resets_status(self, tmp_path: Path) -> None:
+        """on_replan_done resets status to RUNNING."""
+        task = _make_task(tmp_path, "T01", "Setup")
+        writer = MonitorStateWriter(project_dir=tmp_path, tasks=[task], max_retries=3)
+        writer.on_task_start(task)
+        writer.on_replan("T01")
+        state = read_monitor_state(tmp_path)
+        assert state is not None
+        assert state["status"] == "REPLANNING"
+        writer.on_replan_done()
+        state = read_monitor_state(tmp_path)
+        assert state is not None
+        assert state["status"] == RUN_STATUS_RUNNING
+
+    def test_add_tasks_appends_new_tasks(self, tmp_path: Path) -> None:
+        """add_tasks appends tasks not already tracked."""
+        tasks = [_make_task(tmp_path, "T01", "Setup")]
+        writer = MonitorStateWriter(project_dir=tmp_path, tasks=tasks, max_retries=3)
+        new_task = _make_task(tmp_path, "R01", "Fix")
+        writer.add_tasks([new_task])
+        state = read_monitor_state(tmp_path)
+        assert state is not None
+        assert state["total_tasks"] == 2
+        task_ids = [t["id"] for t in state["tasks"]]
+        assert "R01" in task_ids
+
+    def test_add_tasks_skips_existing(self, tmp_path: Path) -> None:
+        """add_tasks skips tasks whose prefix is already tracked."""
+        tasks = [_make_task(tmp_path, "T01", "Setup")]
+        writer = MonitorStateWriter(project_dir=tmp_path, tasks=tasks, max_retries=3)
+        duplicate = _make_task(tmp_path, "T01", "Setup-duplicate")
+        writer.add_tasks([duplicate])
+        state = read_monitor_state(tmp_path)
+        assert state is not None
+        assert state["total_tasks"] == 1
+
+    def test_free_rotator_exception_handled(self, tmp_path: Path) -> None:
+        """Free rotator remaining_count exception is caught gracefully."""
+        # Create a rotator where getattr raises during _flush
+        mock_rotator = MagicMock(spec=[])
+        type(mock_rotator).remaining_count = property(lambda self: 1 / 0)
+        task = _make_task(tmp_path, "T01", "Setup")
+        writer = MonitorStateWriter(
+            project_dir=tmp_path, tasks=[task], free_rotator=mock_rotator, max_retries=3
+        )
+        writer.on_task_start(task)
+        state = read_monitor_state(tmp_path)
+        assert state is not None
+        assert state["model"]["free_mode"] is True
+        assert state["model"]["free_remaining"] == 0
+
+    def test_cooldown_tz_naive_datetime_handled(self, tmp_path: Path) -> None:
+        """tz-naive cooldown start time is handled by adding UTC timezone."""
+        task = _make_task(tmp_path, "T01", "Setup")
+        writer = MonitorStateWriter(project_dir=tmp_path, tasks=[task], max_retries=3)
+        writer.on_task_start(task)
+        writer.on_cooldown_start("T01", wait_count=1)
+        # Manually set a tz-naive datetime to test the fallback path
+        writer._cooldown_started_at = "2026-05-16T12:00:00"  # no tzinfo
+        # Must call _flush() again to write state with the tz-naive datetime
+        writer._flush()
+        state = read_monitor_state(tmp_path)
+        assert state is not None
+        assert state["cooldown"]["active"] is True
+        # remaining_seconds should be computed (not None)
+        assert isinstance(state["cooldown"]["remaining_seconds"], int)
+
+    def test_cooldown_calculation_exception_handled(self, tmp_path: Path) -> None:
+        """Cooldown calculation exception sets remaining_seconds to None."""
+        from datetime import datetime as real_dt
+
+        task = _make_task(tmp_path, "T01", "Setup")
+        writer = MonitorStateWriter(project_dir=tmp_path, tasks=[task], max_retries=3)
+        writer.on_task_start(task)
+        writer.on_cooldown_start("T01", wait_count=1)
+        # Patch datetime in the monitor_state module to make fromisoformat fail
+        mock_dt = MagicMock()
+        mock_dt.now = real_dt.now
+        mock_dt.replace = real_dt.replace
+        mock_dt.fromisoformat.side_effect = ValueError("bad datetime")
+        with patch("the_architect.core.monitor_state.datetime", mock_dt):
+            writer._flush()
+        state = read_monitor_state(tmp_path)
+        assert state is not None
+        assert state["cooldown"]["active"] is True
+        assert state["cooldown"]["remaining_seconds"] is None

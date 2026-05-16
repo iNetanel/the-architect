@@ -66,13 +66,13 @@ class TestWriteArchitectPrompts:
         assert "never" in content.lower()
 
     def test_writes_execution_protocol_md(self, tmp_path: Path) -> None:
-        """Should write execution-protocol.md — the runtime protocol for execution agents."""
+        """Should write execution.md — the runtime protocol for execution agents."""
         project_dir = tmp_path / "myproject"
         project_dir.mkdir()
 
         write_architect_prompts(project_dir)
 
-        protocol_md = project_dir / ".architect" / "prompts" / "execution-protocol.md"
+        protocol_md = project_dir / ".architect" / "prompts" / "execution.md"
         assert protocol_md.exists()
         content = protocol_md.read_text(encoding="utf-8")
         assert "PROGRESS.md" in content
@@ -314,7 +314,7 @@ class TestEnsureOpencodeSetup:
         ensure_opencode_setup(project_dir, config)
 
         assert (project_dir / ".architect" / "prompts" / "architect.md").exists()
-        assert (project_dir / ".architect" / "prompts" / "execution-protocol.md").exists()
+        assert (project_dir / ".architect" / "prompts" / "execution.md").exists()
 
 
 class TestCheckOpencodeInstalled:

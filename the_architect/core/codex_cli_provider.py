@@ -392,7 +392,7 @@ class CodexCliProvider:
             "architect.md",
             "intelligence.md",
             "reviewer.md",
-            "execution-protocol.md",
+            "execution.md",
         ):
             source = package_prompts / filename
             target = prompts_dir / filename

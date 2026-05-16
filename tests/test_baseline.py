@@ -492,3 +492,104 @@ class TestBaselinePathSeparators:
 
         for rel_path in loaded.files:
             assert "\\" not in rel_path
+
+
+# ---------------------------------------------------------------------------
+# Gap closure — uncovered lines
+# ---------------------------------------------------------------------------
+
+
+class TestHashFileOSError:
+    """Tests for _hash_file() OSError handling path."""
+
+    def test_hash_file_os_error_returns_none(self, tmp_path: Path) -> None:
+        """_hash_file should return None when reading the file raises OSError."""
+        f = tmp_path / "unreadable.py"
+        f.write_text("x=1", encoding="utf-8")
+        from unittest.mock import patch
+
+        with patch.object(Path, "read_bytes", side_effect=OSError("no access")):
+            result = _hash_file(f)
+        assert result is None
+
+
+class TestCaptureBaselineTasksWalk:
+    """Tests for capture_baseline() tasks/ walk edge cases."""
+
+    def test_tasks_walk_skips_binary_files(self, tmp_path: Path) -> None:
+        """Binary files in tasks/ should be silently skipped (result is None)."""
+        tasks = tmp_path / "tasks"
+        tasks.mkdir()
+        # Write binary content that fails UTF-8 decode
+        (tasks / "binary.dat").write_bytes(b"\xff\xfe\x00\x01")
+        bl = capture_baseline(tmp_path)
+        assert "tasks/binary.dat" not in bl.files
+
+    def test_tasks_walk_os_error(self, tmp_path: Path) -> None:
+        """OSError during tasks/ walk should be logged, not raised."""
+        tasks = tmp_path / "tasks"
+        tasks.mkdir()
+        (tmp_path / "app.py").write_text("x=1", encoding="utf-8")
+        from unittest.mock import patch
+
+        with patch("os.walk", side_effect=OSError("no access")):
+            bl = capture_baseline(tmp_path)
+        # Should still return a baseline (empty, since both walks failed)
+        assert isinstance(bl.files, dict)
+        # Both walks failed, so no files captured
+        assert bl.files == {}
+
+
+class TestCaptureBaselineRootWalk:
+    """Tests for capture_baseline() project root walk OSError."""
+
+    def test_root_walk_os_error(self, tmp_path: Path) -> None:
+        """OSError during project root walk should be logged, not raised."""
+        import os as os_module
+
+        original_walk = os_module.walk
+
+        (tmp_path / "app.py").write_text("x=1", encoding="utf-8")
+        tasks = tmp_path / "tasks"
+        tasks.mkdir()
+        (tasks / "T01.md").write_text("# T01", encoding="utf-8")
+
+        call_count = 0
+
+        def mock_walk(path, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            # First call is tasks/ — use original walk
+            if str(path) == str(tasks):
+                return list(original_walk(path))
+            # Second call is project root — raise OSError
+            raise OSError("no access to root")
+
+        from unittest.mock import patch
+
+        with patch("os.walk", side_effect=mock_walk):
+            bl = capture_baseline(tmp_path)
+        # Should still have tasks/ files captured
+        assert "tasks/T01.md" in bl.files
+
+
+class TestReadBaselineErrorGapClosure:
+    """Additional error paths for read_baseline()."""
+
+    def test_read_baseline_os_error(self, tmp_path: Path) -> None:
+        """read_baseline should raise OSError when file read fails."""
+        f = tmp_path / "baseline.json"
+        f.write_text("{}", encoding="utf-8")
+        from unittest.mock import patch
+
+        with patch.object(Path, "read_text", side_effect=OSError("no access")):
+            with pytest.raises(OSError, match="Cannot read baseline file"):
+                read_baseline(f)
+
+    def test_read_baseline_validation_failure(self, tmp_path: Path) -> None:
+        """read_baseline should raise ValueError when data fails model validation."""
+        f = tmp_path / "baseline.json"
+        # Valid JSON but missing required structure for WorkspaceBaseline
+        f.write_text('{"timestamp": "not-a-date", "task_prefix": 123}', encoding="utf-8")
+        with pytest.raises(ValueError, match="Baseline data failed validation"):
+            read_baseline(f)

@@ -1176,7 +1176,7 @@ class TestOpenCodeProviderSetup:
 
         assert (tmp_path / ".architect" / "prompts" / "architect.md").exists()
         assert (tmp_path / ".architect" / "prompts" / "reviewer.md").exists()
-        assert (tmp_path / ".architect" / "prompts" / "execution-protocol.md").exists()
+        assert (tmp_path / ".architect" / "prompts" / "execution.md").exists()
 
     def test_writes_architect_json(self, tmp_path: Path) -> None:
         """Should write .architect/architect.json."""
@@ -1215,7 +1215,7 @@ class TestClaudeCodeProviderSetup:
 
         assert (tmp_path / ".architect" / "prompts" / "architect.md").exists()
         assert (tmp_path / ".architect" / "prompts" / "reviewer.md").exists()
-        assert (tmp_path / ".architect" / "prompts" / "execution-protocol.md").exists()
+        assert (tmp_path / ".architect" / "prompts" / "execution.md").exists()
 
     def test_returns_prompts_dir(self, tmp_path: Path) -> None:
         """Should return .architect/prompts/ directory path."""
