@@ -915,14 +915,14 @@ async def stream_provider(
     # server instance (OpenCode ≥ 1.15 uses OPENCODE_PROCESS_ROLE=worker +
     # OPENCODE_RUN_ID to bind a worker to an existing server; child processes
     # spawned by The Architect must always start as independent instances).
+    # OPENCODE_CONFIG / OPENCODE_CONFIG_DIR are NOT stripped — execution runs
+    # need the user's config to find their model; planning runs override
+    # OPENCODE_CONFIG via get_env_overrides() which is applied below.
     _OPENCODE_WORKER_VARS = {
         "OPENCODE_PROCESS_ROLE",
         "OPENCODE_RUN_ID",
         "OPENCODE_PID",
         "OPENCODE",
-        # Strip parent session's config path so get_env_overrides() controls it
-        "OPENCODE_CONFIG",
-        "OPENCODE_CONFIG_DIR",
     }
     env = {k: v for k, v in os.environ.items() if k not in _OPENCODE_WORKER_VARS}
     env["OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS"] = "900000"

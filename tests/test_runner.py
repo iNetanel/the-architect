@@ -478,6 +478,72 @@ class TestStreamProviderSubprocess:
             # The finally block called kill() (via _kill_process_tree).
             assert mock_proc.kill.called
 
+    @pytest.mark.asyncio
+    async def test_opencode_config_inherited_on_execution_run(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Execution runs (config_override=None) must inherit OPENCODE_CONFIG
+        from the parent environment so the child process can find the user's
+        model. Regression guard for the 'model not found' bug where
+        OPENCODE_CONFIG was unconditionally stripped from the child env.
+        """
+        monkeypatch.setenv("OPENCODE_CONFIG", "/home/user/.config/opencode.json")
+        monkeypatch.setenv("OPENCODE_CONFIG_DIR", "/home/user/.config/opencode")
+        provider = _make_mock_provider()
+        with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = _make_mock_process(stdout_lines=[], exit_code=0)
+            await stream_provider("test", self.project_dir, provider)
+
+        _, kwargs = mock_exec.call_args
+        child_env = kwargs.get("env", {})
+        assert child_env.get("OPENCODE_CONFIG") == "/home/user/.config/opencode.json"
+        assert child_env.get("OPENCODE_CONFIG_DIR") == "/home/user/.config/opencode"
+
+    @pytest.mark.asyncio
+    async def test_opencode_config_overridden_on_planning_run(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Planning runs (config_override set) must override OPENCODE_CONFIG
+        via get_env_overrides(), replacing the inherited parent value.
+        """
+        monkeypatch.setenv("OPENCODE_CONFIG", "/home/user/.config/opencode.json")
+        planning_config = Path("/tmp/planning_opencode.json")
+        overrides = {"OPENCODE_CONFIG": str(planning_config)}
+        provider = _make_mock_provider(get_env_overrides=MagicMock(return_value=overrides))
+        with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = _make_mock_process(stdout_lines=[], exit_code=0)
+            await stream_provider(
+                "test", self.project_dir, provider, config_override=planning_config
+            )
+
+        _, kwargs = mock_exec.call_args
+        child_env = kwargs.get("env", {})
+        assert child_env.get("OPENCODE_CONFIG") == str(planning_config)
+
+    @pytest.mark.asyncio
+    async def test_worker_session_vars_stripped_from_child_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """OpenCode worker-session variables must NOT leak to child processes
+        so they start as independent instances instead of attaching to the
+        parent session's server.
+        """
+        monkeypatch.setenv("OPENCODE_PROCESS_ROLE", "worker")
+        monkeypatch.setenv("OPENCODE_RUN_ID", "abc-123")
+        monkeypatch.setenv("OPENCODE_PID", "99999")
+        monkeypatch.setenv("OPENCODE", "/path/to/opencode")
+        provider = _make_mock_provider()
+        with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = _make_mock_process(stdout_lines=[], exit_code=0)
+            await stream_provider("test", self.project_dir, provider)
+
+        _, kwargs = mock_exec.call_args
+        child_env = kwargs.get("env", {})
+        assert "OPENCODE_PROCESS_ROLE" not in child_env
+        assert "OPENCODE_RUN_ID" not in child_env
+        assert "OPENCODE_PID" not in child_env
+        assert "OPENCODE" not in child_env
+
     def test_kill_active_subprocesses_terminates_registered_processes(self):
         """``kill_active_subprocesses`` kills every process the runner
         knows about — this is what the TUI shutdown path calls when

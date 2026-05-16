@@ -11,6 +11,22 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ## [Unreleased]
 
+*(nothing yet)*
+
+---
+
+## [1.2.15] (build 10462) — 2026-05-16
+
+### Fixed
+
+- **Execution runs no longer lose the user's OpenCode config** — "model not found"
+  regression introduced in build 10460 is resolved. The child process environment
+  now correctly inherits `OPENCODE_CONFIG` and `OPENCODE_CONFIG_DIR` from the
+  parent session instead of stripping them unconditionally. Planning runs continue
+  to override `OPENCODE_CONFIG` via `get_env_overrides()` as intended; only the
+  true OpenCode worker-session variables (`OPENCODE_PROCESS_ROLE`, `OPENCODE_RUN_ID`,
+  `OPENCODE_PID`, `OPENCODE`) are stripped. (build 10462)
+
 ---
 
 ## [1.2.14] (build 10460) — 2026-05-16
