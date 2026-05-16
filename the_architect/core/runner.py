@@ -909,11 +909,23 @@ async def stream_provider(
             "Consider enabling instruction_via_stdin on the provider."
         )
 
-    # Build environment: inherit parent env + provider-specific overrides
-    env = {
-        **os.environ.copy(),
-        "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS": "900000",
+    # Build environment: inherit parent env + provider-specific overrides.
+    # Strip OpenCode worker-session vars so a child opencode process does not
+    # inherit the parent session's process role and try to attach to the wrong
+    # server instance (OpenCode ≥ 1.15 uses OPENCODE_PROCESS_ROLE=worker +
+    # OPENCODE_RUN_ID to bind a worker to an existing server; child processes
+    # spawned by The Architect must always start as independent instances).
+    _OPENCODE_WORKER_VARS = {
+        "OPENCODE_PROCESS_ROLE",
+        "OPENCODE_RUN_ID",
+        "OPENCODE_PID",
+        "OPENCODE",
+        # Strip parent session's config path so get_env_overrides() controls it
+        "OPENCODE_CONFIG",
+        "OPENCODE_CONFIG_DIR",
     }
+    env = {k: v for k, v in os.environ.items() if k not in _OPENCODE_WORKER_VARS}
+    env["OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS"] = "900000"
 
     if "PATH" not in env or not env.get("PATH"):
         logger.warning(

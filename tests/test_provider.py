@@ -175,12 +175,22 @@ class TestOpenCodeProviderCommand:
         idx = cmd.index("--model")
         assert cmd[idx + 1] == "claude-sonnet-4"
 
-    def test_build_command_with_agent(self) -> None:
+    def test_build_command_with_agent_broken_version(self) -> None:
+        """--agent is NOT emitted on OpenCode >= 1.15 where the flag is broken."""
+        provider = OpenCodeProvider()
         with patch("shutil.which", return_value="/usr/local/bin/opencode"):
-            cmd = OpenCodeProvider().build_command("task", agent_override="build")
+            with patch.object(provider, "_agent_flag_broken", return_value=True):
+                cmd = provider.build_command("task", agent_override="build")
+        assert "--agent" not in cmd
+
+    def test_build_command_with_agent_working_version(self) -> None:
+        """--agent IS emitted on OpenCode < 1.15 where the flag works correctly."""
+        provider = OpenCodeProvider()
+        with patch("shutil.which", return_value="/usr/local/bin/opencode"):
+            with patch.object(provider, "_agent_flag_broken", return_value=False):
+                cmd = provider.build_command("task", agent_override="build")
         assert "--agent" in cmd
-        idx = cmd.index("--agent")
-        assert cmd[idx + 1] == "build"
+        assert cmd[cmd.index("--agent") + 1] == "build"
 
     def test_build_command_no_agent_when_none(self) -> None:
         with patch("shutil.which", return_value="/usr/local/bin/opencode"):

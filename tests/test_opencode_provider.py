@@ -1799,14 +1799,44 @@ class TestOpenCodeProviderMissingCoverage:
         assert "do the thing" in cmd
 
     @patch("shutil.which", return_value="/usr/local/bin/opencode")
-    def test_build_command_with_model_and_agent(self, mock_which: MagicMock) -> None:
-        """build_command includes --model and --agent when overrides provided (lines 600-606)."""
+    def test_build_command_with_model_and_agent_broken_version(self, mock_which: MagicMock) -> None:
+        """build_command omits --agent on OpenCode >= 1.15 where the flag is broken."""
         provider = OpenCodeProvider()
-        cmd = provider.build_command("goal", model_override="gpt-4o", agent_override="backend")
+        with patch.object(provider, "_agent_flag_broken", return_value=True):
+            cmd = provider.build_command("goal", model_override="gpt-4o", agent_override="backend")
+        assert "--model" in cmd
+        assert "gpt-4o" in cmd
+        assert "--agent" not in cmd
+
+    @patch("shutil.which", return_value="/usr/local/bin/opencode")
+    def test_build_command_with_model_and_agent_working_version(
+        self, mock_which: MagicMock
+    ) -> None:
+        """build_command includes --agent on OpenCode < 1.15 where the flag works."""
+        provider = OpenCodeProvider()
+        with patch.object(provider, "_agent_flag_broken", return_value=False):
+            cmd = provider.build_command("goal", model_override="gpt-4o", agent_override="backend")
         assert "--model" in cmd
         assert "gpt-4o" in cmd
         assert "--agent" in cmd
-        assert "backend" in cmd
+        assert cmd[cmd.index("--agent") + 1] == "backend"
+
+    def test_agent_flag_broken_version_detection(self) -> None:
+        """_agent_flag_broken returns True for >= 1.15, False for < 1.15, True for unknown."""
+        provider = OpenCodeProvider()
+        for version, expected in [
+            ("1.15.0", True),
+            ("1.15.1", True),
+            ("1.16.0", True),
+            ("2.0.0", True),
+            ("1.14.9", False),
+            ("1.14.0", False),
+            ("1.0.0", False),
+            ("unknown", True),
+            ("", True),
+        ]:
+            with patch.object(provider, "get_version", return_value=version):
+                assert provider._agent_flag_broken() is expected, f"failed for version={version!r}"
 
     def test_get_env_overrides_with_config(self, tmp_path: Path) -> None:
         """get_env_overrides sets OPENCODE_CONFIG when config_override provided (lines 621-624)."""

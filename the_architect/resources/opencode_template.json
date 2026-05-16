@@ -20,6 +20,7 @@
       "*": "allow"
     }
   },
+  "default_agent": "architect",
   "agent": {
     "architect": {
       "mode": "primary",

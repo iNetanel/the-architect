@@ -13,6 +13,30 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ---
 
+## [1.2.14] (build 10460) — 2026-05-16
+
+### Fixed
+
+- **OpenCode ≥ 1.15 compatibility — planning and execution no longer crash.**
+  OpenCode 1.15.0 introduced two regressions that broke The Architect completely:
+
+  1. Child `opencode run` processes inherited `OPENCODE_PROCESS_ROLE=worker` and
+     `OPENCODE_RUN_ID` from the parent session, causing them to attempt to attach
+     to a non-existent server and immediately exit with "InstanceRef not provided".
+     Fixed by stripping all OpenCode session environment variables before spawning
+     any child process.
+
+  2. The `--agent` CLI flag raises "InstanceRef not provided" on startup in OpenCode
+     ≥ 1.15 regardless of whether the named agent exists in config.  Fixed with a
+     version-gated workaround: on ≥ 1.15, `--agent` is not passed and planning agent
+     selection is handled via `default_agent` in the injected `architect.json`; on
+     < 1.15 the flag is used as before so `execution_agent` remains fully honoured.
+
+- **`COMPATIBILITY.md` added.** Tracks active provider workarounds with exact
+  revert instructions and test-verification steps for when upstream fixes land.
+
+---
+
 ## [1.2.13] (build 10451) — 2026-05-16
 
 ### Fixed
