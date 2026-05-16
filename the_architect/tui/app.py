@@ -891,6 +891,22 @@ def run_single_screen(screen: Screen[T]) -> T | None:
             pass
         return None
 
+    # Belt-and-braces: never boot a new Textual app from a background
+    # thread. LinuxDriver registers SIGTSTP/SIGCONT in __init__ which
+    # requires the main thread. If we reach here from a worker thread
+    # (e.g. TUI quit while worker still running and suppressed flag
+    # cleared early), degrade silently rather than crashing.
+    import threading as _threading
+
+    if _threading.current_thread() is not _threading.main_thread():
+        try:
+            from the_architect.tui.terminal import restore_terminal_input_modes
+
+            restore_terminal_input_modes()
+        except Exception:
+            pass
+        return None
+
     collected: dict[str, Any] = {"value": None}
 
     class _Harness(App[None]):

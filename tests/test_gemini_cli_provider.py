@@ -524,3 +524,660 @@ class TestGeminiCliProviderPrompts:
         prompt = GeminiCliProvider().get_reviewer_prompt()
         assert isinstance(prompt, str)
         assert len(prompt) > 0
+
+
+# ---------------------------------------------------------------------------
+# Version detection error paths — T01.1
+# ---------------------------------------------------------------------------
+
+
+class TestGeminiCliProviderVersionErrors:
+    """Tests for GeminiCliProvider.get_version() error branches."""
+
+    def test_get_version_timeout(self) -> None:
+        """get_version returns 'unknown' when subprocess times out."""
+        import subprocess
+
+        provider = GeminiCliProvider()
+        with patch(
+            "the_architect.core.gemini_cli_provider.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="gemini", timeout=10),
+        ):
+            result = provider.get_version()
+        assert result == "unknown"
+
+    def test_get_version_called_process_error(self) -> None:
+        """get_version returns 'unknown' when subprocess raises CalledProcessError."""
+        import subprocess
+
+        provider = GeminiCliProvider()
+        with patch(
+            "the_architect.core.gemini_cli_provider.subprocess.run",
+            side_effect=subprocess.CalledProcessError(
+                returncode=1, cmd="gemini", output="", stderr="crash"
+            ),
+        ):
+            result = provider.get_version()
+        assert result == "unknown"
+
+    def test_get_version_file_not_found(self) -> None:
+        """get_version returns 'unknown' when gemini binary is missing."""
+        provider = GeminiCliProvider()
+        with patch(
+            "the_architect.core.gemini_cli_provider.subprocess.run",
+            side_effect=FileNotFoundError("gemini not found"),
+        ):
+            result = provider.get_version()
+        assert result == "unknown"
+
+    def test_get_version_nonzero_returncode(self) -> None:
+        """get_version returns 'unknown' when gemini --version exits nonzero."""
+        provider = GeminiCliProvider()
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stdout = ""
+        mock_result.stderr = "error"
+        with patch(
+            "the_architect.core.gemini_cli_provider.subprocess.run",
+            return_value=mock_result,
+        ):
+            result = provider.get_version()
+        assert result == "unknown"
+
+    def test_get_version_stderr_fallback(self) -> None:
+        """get_version uses stderr when stdout is empty and returncode is 0."""
+        provider = GeminiCliProvider()
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = ""
+        mock_result.stderr = "1.0.0-beta"
+        with patch(
+            "the_architect.core.gemini_cli_provider.subprocess.run",
+            return_value=mock_result,
+        ):
+            result = provider.get_version()
+        assert result == "1.0.0-beta"
+
+
+# ---------------------------------------------------------------------------
+# Model availability error paths — T01.2
+# ---------------------------------------------------------------------------
+
+
+class TestGeminiCliProviderHasModelsErrors:
+    """Tests for GeminiCliProvider.has_any_models() error branches."""
+
+    def test_has_any_models_timeout(self) -> None:
+        """has_any_models returns False when version check times out."""
+        import subprocess
+
+        with patch("shutil.which", return_value="/usr/local/bin/gemini"):
+            with patch(
+                "the_architect.core.gemini_cli_provider.subprocess.run",
+                side_effect=subprocess.TimeoutExpired(cmd="gemini", timeout=10),
+            ):
+                assert GeminiCliProvider().has_any_models() is False
+
+    def test_has_any_models_called_process_error(self) -> None:
+        """has_any_models returns False on CalledProcessError."""
+        import subprocess
+
+        with patch("shutil.which", return_value="/usr/local/bin/gemini"):
+            with patch(
+                "the_architect.core.gemini_cli_provider.subprocess.run",
+                side_effect=subprocess.CalledProcessError(returncode=1, cmd="gemini", output=""),
+            ):
+                assert GeminiCliProvider().has_any_models() is False
+
+    def test_has_any_models_file_not_found(self) -> None:
+        """has_any_models returns False when binary not found during run."""
+        with patch("shutil.which", return_value="/usr/local/bin/gemini"):
+            with patch(
+                "the_architect.core.gemini_cli_provider.subprocess.run",
+                side_effect=FileNotFoundError(),
+            ):
+                assert GeminiCliProvider().has_any_models() is False
+
+    def test_has_any_models_nonzero_returncode(self) -> None:
+        """has_any_models returns False when gemini --version exits nonzero."""
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        with patch("shutil.which", return_value="/usr/local/bin/gemini"):
+            with patch(
+                "the_architect.core.gemini_cli_provider.subprocess.run",
+                return_value=mock_result,
+            ):
+                assert GeminiCliProvider().has_any_models() is False
+
+    def test_has_any_models_success(self) -> None:
+        """has_any_models returns True when gemini --version exits cleanly."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        with patch("shutil.which", return_value="/usr/local/bin/gemini"):
+            with patch(
+                "the_architect.core.gemini_cli_provider.subprocess.run",
+                return_value=mock_result,
+            ):
+                assert GeminiCliProvider().has_any_models() is True
+
+
+# ---------------------------------------------------------------------------
+# Install hint — T01.2
+# ---------------------------------------------------------------------------
+
+
+class TestGeminiCliProviderInstallHint:
+    """Tests for GeminiCliProvider.install_hint() npm fallback."""
+
+    def test_install_hint_npm_available(self) -> None:
+        """install_hint returns npm command when npm is on PATH."""
+        with patch("shutil.which", return_value="/usr/local/bin/npm"):
+            hint = GeminiCliProvider().install_hint()
+        assert "npm install" in hint
+        assert "gemini-cli" in hint
+
+    def test_install_hint_npm_not_available(self) -> None:
+        """install_hint returns URL when npm is not on PATH."""
+        with patch("shutil.which", return_value=None):
+            hint = GeminiCliProvider().install_hint()
+        assert "https" in hint
+        assert "npm" not in hint
+
+
+# ---------------------------------------------------------------------------
+# Update check flow — T01.3
+# ---------------------------------------------------------------------------
+
+
+class TestGeminiCliProviderUpdateCheck:
+    """Tests for GeminiCliProvider.check_update_available()."""
+
+    def _make_provider(self, version: str) -> GeminiCliProvider:
+        """Create a provider with a pre-cached version string."""
+        p = GeminiCliProvider()
+        p._version_cache = version
+        return p
+
+    def test_update_check_not_installed(self) -> None:
+        """check_update_available returns empty when gemini is not installed."""
+        with patch("shutil.which", return_value=None):
+            result = GeminiCliProvider().check_update_available()
+        assert result == ""
+
+    def test_update_check_version_unknown(self) -> None:
+        """check_update_available returns empty when version is 'unknown'."""
+        provider = self._make_provider("unknown")
+        with patch("shutil.which", return_value="/usr/local/bin/gemini"):
+            result = provider.check_update_available()
+        assert result == ""
+
+    def test_update_check_no_semver_in_version(self) -> None:
+        """check_update_available returns empty when version has no semver."""
+        provider = self._make_provider("some-weird-string")
+        with patch("shutil.which", return_value="/usr/local/bin/gemini"):
+            result = provider.check_update_available()
+        assert result == ""
+
+    def test_update_check_network_error(self) -> None:
+        """check_update_available returns empty on network error."""
+        import urllib.request
+
+        provider = self._make_provider("1.0.0")
+        with patch("shutil.which", return_value="/usr/local/bin/gemini"):
+            with patch.object(urllib.request, "urlopen", side_effect=Exception("network fail")):
+                result = provider.check_update_available()
+        assert result == ""
+
+    def test_update_check_no_version_in_response(self) -> None:
+        """check_update_available returns empty when npm response has no version."""
+        import urllib.request
+
+        provider = self._make_provider("1.0.0")
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({}).encode("utf-8")
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = lambda s, *a: None
+        with patch("shutil.which", return_value="/usr/local/bin/gemini"):
+            with patch.object(urllib.request, "urlopen", return_value=mock_resp):
+                result = provider.check_update_available()
+        assert result == ""
+
+    def test_update_check_update_available(self) -> None:
+        """check_update_available returns message when newer version exists."""
+        import urllib.request
+
+        provider = self._make_provider("gemini/1.0.0")
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({"version": "2.0.0"}).encode("utf-8")
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = lambda s, *a: None
+        with patch("shutil.which", return_value="/usr/local/bin/gemini"):
+            with patch.object(urllib.request, "urlopen", return_value=mock_resp):
+                result = provider.check_update_available()
+        assert "1.0.0" in result
+        assert "2.0.0" in result
+        assert "npm i -g" in result
+
+    def test_update_check_same_version(self) -> None:
+        """check_update_available returns empty when versions match."""
+        import urllib.request
+
+        provider = self._make_provider("gemini/1.5.0")
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({"version": "1.5.0"}).encode("utf-8")
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = lambda s, *a: None
+        with patch("shutil.which", return_value="/usr/local/bin/gemini"):
+            with patch.object(urllib.request, "urlopen", return_value=mock_resp):
+                result = provider.check_update_available()
+        assert result == ""
+
+    def test_update_check_installed_newer(self) -> None:
+        """check_update_available returns empty when installed is newer."""
+        import urllib.request
+
+        provider = self._make_provider("gemini/3.0.0")
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({"version": "2.0.0"}).encode("utf-8")
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = lambda s, *a: None
+        with patch("shutil.which", return_value="/usr/local/bin/gemini"):
+            with patch.object(urllib.request, "urlopen", return_value=mock_resp):
+                result = provider.check_update_available()
+        assert result == ""
+
+    def test_update_check_version_parse_error(self) -> None:
+        """check_update_available returns empty when version tuple parsing fails."""
+        import urllib.request
+
+        provider = self._make_provider("gemini/1.0.0")
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({"version": "abc.def.ghi"}).encode("utf-8")
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = lambda s, *a: None
+        with patch("shutil.which", return_value="/usr/local/bin/gemini"):
+            with patch.object(urllib.request, "urlopen", return_value=mock_resp):
+                result = provider.check_update_available()
+        assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# Model resolution cache and edge cases — T01.4
+# ---------------------------------------------------------------------------
+
+
+class TestGeminiCliProviderModelResolutionEdgeCases:
+    """Tests for GeminiCliProvider.get_resolved_model() cache and edge cases."""
+
+    def test_get_resolved_model_stream_cache_hit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """get_resolved_model returns cached _stream value immediately."""
+        monkeypatch.delenv("GEMINI_MODEL", raising=False)
+        provider = GeminiCliProvider()
+        # Simulate a stream-cached model from parse_output_line
+        provider._resolved_model_cache["_stream"] = "gemini-2.5-pro"
+        result = provider.get_resolved_model(Path("/project"))
+        assert result == "gemini-2.5-pro"
+        # The project-dir cache key should NOT have been set — stream cache short-circuits
+        assert str(Path("/project")) not in provider._resolved_model_cache
+
+    def test_get_resolved_model_project_cache_hit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """get_resolved_model returns cached project-dir value."""
+        monkeypatch.delenv("GEMINI_MODEL", raising=False)
+        provider = GeminiCliProvider()
+        proj = Path("/myproject")
+        provider._resolved_model_cache[str(proj)] = "gemini-2.5-flash"
+        result = provider.get_resolved_model(proj)
+        assert result == "gemini-2.5-flash"
+
+    def test_get_resolved_model_empty_return(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """get_resolved_model returns '' when all sources are exhausted and list is empty."""
+        monkeypatch.delenv("GEMINI_MODEL", raising=False)
+        provider = GeminiCliProvider()
+        with (
+            patch(
+                "the_architect.core.gemini_cli_provider._extract_models_from_gemini_bundle",
+                return_value=[],
+            ),
+            patch(
+                "the_architect.core.gemini_cli_provider._read_gemini_settings_model",
+                return_value="",
+            ),
+        ):
+            # Temporarily replace the fallback list to force empty path
+            with patch(
+                "the_architect.core.gemini_cli_provider._FALLBACK_GEMINI_MODELS",
+                new=[],
+            ):
+                # list_models will return empty list
+                models = provider.list_models()
+                assert models == []
+                result = provider.get_resolved_model(Path("/empty"))
+        assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# instruction_via_stdin property
+# ---------------------------------------------------------------------------
+
+
+class TestGeminiCliProviderInstructionStdin:
+    """Tests for the instruction_via_stdin property."""
+
+    def test_instruction_via_stdin_is_false(self) -> None:
+        assert GeminiCliProvider().instruction_via_stdin is False
+
+
+# ---------------------------------------------------------------------------
+# ensure_setup string input — T01.4
+# ---------------------------------------------------------------------------
+
+
+class TestGeminiCliProviderEnsureSetupString:
+    """Tests for GeminiCliProvider.ensure_setup() with string project_dir."""
+
+    def test_ensure_setup_accepts_string_path(self, tmp_path: Path) -> None:
+        """ensure_setup accepts a string project_dir and converts to Path."""
+        from the_architect.config import ArchitectConfig
+
+        config = ArchitectConfig().resolve(tmp_path)
+        result = GeminiCliProvider().ensure_setup(str(tmp_path), config)
+        assert result == tmp_path / ".architect" / "prompts"
+
+
+# ---------------------------------------------------------------------------
+# parse_output_line — list content and tool detail — T01.4
+# ---------------------------------------------------------------------------
+
+
+class TestGeminiCliProviderOutputParsingAdvanced:
+    """Tests for advanced GeminiCliProvider output parsing branches."""
+
+    def test_message_event_content_as_list_of_parts(self) -> None:
+        """message event with content as list of dicts extracts all text parts."""
+        line = json.dumps(
+            {
+                "type": "message",
+                "role": "model",
+                "content": [
+                    {"text": "First part"},
+                    {"text": "Second part"},
+                ],
+            }
+        )
+        result = GeminiCliProvider().parse_output_line(line)
+        assert result is not None
+        assert "First part" in result.display_lines
+        assert "Second part" in result.display_lines
+
+    def test_message_event_content_list_empty_text(self) -> None:
+        """message event with content list containing empty text is skipped."""
+        line = json.dumps(
+            {
+                "type": "message",
+                "role": "model",
+                "content": [
+                    {"text": ""},
+                    {"text": "Real content"},
+                ],
+            }
+        )
+        result = GeminiCliProvider().parse_output_line(line)
+        assert result is not None
+        assert "Real content" in result.display_lines
+        assert "" not in result.display_lines
+
+    def test_tool_use_event_with_path_detail(self) -> None:
+        """tool_use event with 'path' input key shows detail."""
+        line = json.dumps(
+            {
+                "type": "tool_use",
+                "name": "read_file",
+                "input": {"path": "/home/user/file.txt"},
+            }
+        )
+        result = GeminiCliProvider().parse_output_line(line)
+        assert result is not None
+        assert "\u2192 read_file /home/user/file.txt" in result.display_lines
+
+    def test_tool_use_event_with_command_detail(self) -> None:
+        """tool_use event with 'command' input key shows detail."""
+        line = json.dumps(
+            {
+                "type": "tool_use",
+                "name": "bash",
+                "input": {"command": "ls -la", "path": "/tmp"},
+            }
+        )
+        result = GeminiCliProvider().parse_output_line(line)
+        assert result is not None
+        # 'path' is checked before 'command' in the key order
+        assert "\u2192 bash /tmp" in result.display_lines
+
+    def test_tool_use_event_fallback_detail(self) -> None:
+        """tool_use event with unknown key falls back to first non-empty value."""
+        line = json.dumps(
+            {
+                "type": "tool_use",
+                "name": "custom_tool",
+                "input": {"customKey": "customValue"},
+            }
+        )
+        result = GeminiCliProvider().parse_output_line(line)
+        assert result is not None
+        assert "\u2192 custom_tool customValue" in result.display_lines
+
+    def test_tool_use_event_no_detail(self) -> None:
+        """tool_use event with empty input shows tool name only."""
+        line = json.dumps(
+            {
+                "type": "tool_use",
+                "name": "bare_tool",
+                "input": {},
+            }
+        )
+        result = GeminiCliProvider().parse_output_line(line)
+        assert result is not None
+        assert "\u2192 bare_tool" in result.display_lines
+        assert len(result.display_lines) == 1
+
+
+# ---------------------------------------------------------------------------
+# _read_gemini_settings_model — T01.4
+# ---------------------------------------------------------------------------
+
+
+class TestReadGeminiSettingsModel:
+    """Tests for the _read_gemini_settings_model() helper."""
+
+    def test_read_settings_model_valid(self, tmp_path: Path) -> None:
+        """Returns model name when settings.json has valid model.name."""
+        settings_dir = tmp_path / ".gemini"
+        settings_dir.mkdir()
+        (settings_dir / "settings.json").write_text(
+            json.dumps({"model": {"name": "gemini-2.5-pro"}}),
+            encoding="utf-8",
+        )
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            from the_architect.core.gemini_cli_provider import (
+                _read_gemini_settings_model,
+            )
+
+            result = _read_gemini_settings_model()
+        assert result == "gemini-2.5-pro"
+
+    def test_read_settings_model_file_not_found(self, tmp_path: Path) -> None:
+        """Returns empty string when settings.json does not exist."""
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            from the_architect.core.gemini_cli_provider import (
+                _read_gemini_settings_model,
+            )
+
+            result = _read_gemini_settings_model()
+        assert result == ""
+
+    def test_read_settings_model_invalid_json(self, tmp_path: Path) -> None:
+        """Returns empty string when settings.json contains invalid JSON."""
+        settings_dir = tmp_path / ".gemini"
+        settings_dir.mkdir()
+        (settings_dir / "settings.json").write_text(
+            "this is not json",
+            encoding="utf-8",
+        )
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            from the_architect.core.gemini_cli_provider import (
+                _read_gemini_settings_model,
+            )
+
+            result = _read_gemini_settings_model()
+        assert result == ""
+
+    def test_read_settings_model_no_model_field(self, tmp_path: Path) -> None:
+        """Returns empty string when settings.json has no model field."""
+        settings_dir = tmp_path / ".gemini"
+        settings_dir.mkdir()
+        (settings_dir / "settings.json").write_text(
+            json.dumps({"theme": "dark"}),
+            encoding="utf-8",
+        )
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            from the_architect.core.gemini_cli_provider import (
+                _read_gemini_settings_model,
+            )
+
+            result = _read_gemini_settings_model()
+        assert result == ""
+
+    def test_read_settings_model_no_name_in_model(self, tmp_path: Path) -> None:
+        """Returns empty string when model exists but has no name."""
+        settings_dir = tmp_path / ".gemini"
+        settings_dir.mkdir()
+        (settings_dir / "settings.json").write_text(
+            json.dumps({"model": {"provider": "google"}}),
+            encoding="utf-8",
+        )
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            from the_architect.core.gemini_cli_provider import (
+                _read_gemini_settings_model,
+            )
+
+            result = _read_gemini_settings_model()
+        assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# _extract_models_from_gemini_bundle — T01.5
+# ---------------------------------------------------------------------------
+
+
+class TestExtractModelsFromGeminiBundle:
+    """Tests for the _extract_models_from_gemini_bundle() helper."""
+
+    def test_bundle_no_binary(self) -> None:
+        """Returns empty list when gemini binary is not on PATH."""
+        from the_architect.core.gemini_cli_provider import (
+            _extract_models_from_gemini_bundle,
+        )
+
+        with patch("shutil.which", return_value=None):
+            result = _extract_models_from_gemini_bundle()
+        assert result == []
+
+    def test_bundle_finds_models_in_js(self, tmp_path: Path) -> None:
+        """Extracts gemini-* model names from JS bundle files."""
+        # Create a fake binary directory with JS files
+        bundle_dir = tmp_path / "bundle"
+        bundle_dir.mkdir()
+        js_file = bundle_dir / "chunk.js"
+        js_file.write_text(
+            'var models = ["gemini-2.5-pro", "gemini-2.5-flash"];',
+            encoding="utf-8",
+        )
+        fake_bin = tmp_path / "gemini"
+        fake_bin.write_text("#!/bin/sh", encoding="utf-8")
+
+        with patch("shutil.which", return_value=str(fake_bin)):
+            from the_architect.core.gemini_cli_provider import (
+                _extract_models_from_gemini_bundle,
+            )
+
+            result = _extract_models_from_gemini_bundle()
+        assert "gemini-2.5-pro" in result
+        assert "gemini-2.5-flash" in result
+
+    def test_bundle_filters_internal_names(self, tmp_path: Path) -> None:
+        """Filters out internal identifiers like gemini-cli, gemini-api-key."""
+        bundle_dir = tmp_path / "bundle"
+        bundle_dir.mkdir()
+        js_file = bundle_dir / "chunk.js"
+        js_file.write_text(
+            '"gemini-2.5-pro", "gemini-cli", "gemini-api-key", "gemini-2.5-flash"',
+            encoding="utf-8",
+        )
+        fake_bin = tmp_path / "gemini"
+        fake_bin.write_text("#!/bin/sh", encoding="utf-8")
+
+        with patch("shutil.which", return_value=str(fake_bin)):
+            from the_architect.core.gemini_cli_provider import (
+                _extract_models_from_gemini_bundle,
+            )
+
+            result = _extract_models_from_gemini_bundle()
+        assert "gemini-2.5-pro" in result
+        assert "gemini-2.5-flash" in result
+        assert "gemini-cli" not in result
+        assert "gemini-api-key" not in result
+
+    def test_bundle_no_js_files(self, tmp_path: Path) -> None:
+        """Returns empty list when no JS files found in bundle dir."""
+        bundle_dir = tmp_path / "bundle"
+        bundle_dir.mkdir()
+        fake_bin = tmp_path / "gemini"
+        fake_bin.write_text("#!/bin/sh", encoding="utf-8")
+
+        with patch("shutil.which", return_value=str(fake_bin)):
+            from the_architect.core.gemini_cli_provider import (
+                _extract_models_from_gemini_bundle,
+            )
+
+            result = _extract_models_from_gemini_bundle()
+        assert result == []
+
+    def test_bundle_oserror_on_read(self, tmp_path: Path) -> None:
+        """Continues gracefully when a JS file raises OSError during read."""
+        bundle_dir = tmp_path / "bundle"
+        bundle_dir.mkdir()
+        good_js = bundle_dir / "good.js"
+        good_js.write_text('"gemini-2.5-pro"', encoding="utf-8")
+        fake_bin = tmp_path / "gemini"
+        fake_bin.write_text("#!/bin/sh", encoding="utf-8")
+
+        # Create a directory that looks like a JS file but is actually a
+        # directory — glob will match it, but read_text will fail
+        bad_js = bundle_dir / "bad.js"
+        bad_js.mkdir()
+
+        with patch("shutil.which", return_value=str(fake_bin)):
+            from the_architect.core.gemini_cli_provider import (
+                _extract_models_from_gemini_bundle,
+            )
+
+            result = _extract_models_from_gemini_bundle()
+        # Should still find models from the good file, bad.js OSError is caught
+        assert "gemini-2.5-pro" in result
+
+    def test_bundle_top_level_exception(self, tmp_path: Path) -> None:
+        """Returns empty list when top-level exception occurs."""
+        fake_bin = tmp_path / "gemini"
+        fake_bin.write_text("#!/bin/sh", encoding="utf-8")
+
+        def failing_resolve(self):
+            raise RuntimeError("symlink loop")
+
+        with patch("shutil.which", return_value=str(fake_bin)):
+            with patch.object(Path, "resolve", failing_resolve):
+                from the_architect.core.gemini_cli_provider import (
+                    _extract_models_from_gemini_bundle,
+                )
+
+                result = _extract_models_from_gemini_bundle()
+        assert result == []

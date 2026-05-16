@@ -242,42 +242,6 @@ No goal section here.
                 pass
             mock_write.assert_not_called()
 
-    def test_maybe_kill_own_tmux_session_not_in_tmux(self) -> None:
-        """Should do nothing when not in tmux."""
-        from the_architect.cli import _maybe_kill_own_tmux_session
-
-        with patch.dict("os.environ", {}, clear=True):
-            _maybe_kill_own_tmux_session(Path("/fake"))
-            # No exception raised
-
-    def test_maybe_kill_own_tmux_session_different_session(self, tmp_path: Path) -> None:
-        """Should do nothing when in different tmux session."""
-        from the_architect.cli import _maybe_kill_own_tmux_session
-
-        with patch.dict("os.environ", {"TMUX": "%1,234,5"}):
-            _maybe_kill_own_tmux_session(tmp_path)
-            # No exception raised
-
-    def test_maybe_kill_own_tmux_session_matching(self, tmp_path: Path) -> None:
-        """Should kill matching tmux session when names align."""
-        from the_architect.cli import _maybe_kill_own_tmux_session
-
-        with (
-            patch.dict("os.environ", {"TMUX": "/tmp/tmux-1000/default,1234,0"}),
-            patch("subprocess.run") as mock_run,
-            patch("the_architect.core.tmux.get_session_name") as mock_get_name,
-            patch("the_architect.core.tmux.session_exists", return_value=True) as mock_exists,
-            patch("the_architect.core.tmux.kill_session") as mock_kill,
-        ):
-            mock_run.return_value.returncode = 0
-            mock_run.return_value.stdout = "architect-proj\n"
-            mock_get_name.return_value = "architect-proj"
-
-            _maybe_kill_own_tmux_session(tmp_path)
-
-            mock_exists.assert_called_once()
-            mock_kill.assert_called_once_with("architect-proj")
-
 
 class TestClickCommands:
     """Tests for Click commands in the CLI."""
@@ -535,18 +499,10 @@ class TestClickCommands:
         assert "No circuit state found" in result.output
 
     def test_monitor_command(self, tmp_path: Path) -> None:
-        """Should run ``architect monitor`` without crashing.
-
-        Patch tmux session helpers so the command never calls os.execvp
-        (which would replace the pytest process and hang the suite).
-        """
+        """Should run ``architect monitor`` without crashing."""
         runner = CliRunner()
-        with (
-            patch("the_architect.core.tmux.session_exists", return_value=False),
-            patch("the_architect.core.tmux.list_architect_sessions", return_value=[]),
-        ):
+        with patch("the_architect.tui.screens.run_monitor_screen"):
             result = runner.invoke(main, ["monitor", "-p", str(tmp_path)])
-        # The command must not have raised an uncaught exception.
         assert result.exception is None or isinstance(result.exception, SystemExit)
 
 

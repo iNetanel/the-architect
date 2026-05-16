@@ -168,6 +168,13 @@ def tui_execution_session(enabled: bool) -> Iterator[TuiSession]:
 
     # Fallback path: no runner in flight (tests, headless harness,
     # legacy callers). Launch a dedicated app in its own thread.
+    # Guard: if we are NOT on the main thread, booting a new Textual app
+    # would crash in LinuxDriver (signal.signal requires main thread).
+    # Degrade to a plain-text session instead.
+    if threading.current_thread() is not threading.main_thread():
+        yield TuiSession(renderer=PlainStreamRenderer(), app=None, thread=None)
+        return
+
     from the_architect.tui.app import ArchitectApp
 
     app = ArchitectApp()
@@ -353,6 +360,16 @@ def tui_wait_session(
         return
 
     # Standalone path: launch a dedicated WaitApp in a background thread.
+    # Guard: if we are NOT on the main thread, booting a new Textual app
+    # would crash when LinuxDriver tries to register SIGTSTP/SIGCONT
+    # (signal.signal requires the main thread).  Degrade to a no-op
+    # session — the run continues, just without the spinner UI.
+    import threading as _threading
+
+    if _threading.current_thread() is not _threading.main_thread():
+        yield TuiWaitSession(app=None, thread=None)
+        return
+
     from the_architect.tui.screens.wait import WaitApp
 
     app = WaitApp(title=title)

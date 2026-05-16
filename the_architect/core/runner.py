@@ -9,7 +9,6 @@ import re
 import shutil
 import signal
 import sys
-import textwrap
 import threading
 import time
 from collections.abc import Callable
@@ -29,7 +28,6 @@ from the_architect.core.progress import (
 from the_architect.core.tasks import Task, TaskPlan, discover_tasks
 
 _STREAM_LEFT_PAD = "  "
-_STREAM_RIGHT_GAP = 2
 _PROVIDER_IDLE_TIMEOUT_SECONDS = 900.0
 _PROVIDER_SLEEP_WAKE_GAP_SECONDS = 120.0
 _PROVIDER_READ_PROBE_SECONDS = 5.0
@@ -112,45 +110,13 @@ def _footer_text(label: str, status: str) -> str:
 
 
 def _stream_width() -> int | None:
-    """Return the effective width for streamed left-pane output.
-
-    When running inside tmux, reserve a small gap on the right so the
-    streamed provider text does not visually touch the dashboard pane.
-    """
-    if not os.environ.get("TMUX"):
-        return None
-    try:
-        columns = shutil.get_terminal_size().columns
-    except OSError:
-        return None
-    return max(columns - _STREAM_RIGHT_GAP, 20)
+    """Return the effective width for streamed output, or None to use full width."""
+    return None
 
 
 def _write_stream_line(line: str) -> None:
-    """Write streamed provider output with left and right breathing room in tmux."""
-    width = _stream_width()
-    if width is None or not line:
-        sys.stdout.write(f"{_STREAM_LEFT_PAD}{line}\n")
-        sys.stdout.flush()
-        return
-
-    content_width = max(width - len(_STREAM_LEFT_PAD), 20)
-
-    wrapped = textwrap.wrap(
-        line,
-        width=content_width,
-        replace_whitespace=False,
-        drop_whitespace=False,
-        break_long_words=True,
-        break_on_hyphens=False,
-    )
-    if not wrapped:
-        sys.stdout.write(f"{_STREAM_LEFT_PAD}\n")
-        sys.stdout.flush()
-        return
-
-    for wrapped_line in wrapped:
-        sys.stdout.write(f"{_STREAM_LEFT_PAD}{wrapped_line}\n")
+    """Write streamed provider output with left breathing room."""
+    sys.stdout.write(f"{_STREAM_LEFT_PAD}{line}\n")
     sys.stdout.flush()
 
 
@@ -725,6 +691,37 @@ class StreamResult(BaseModel):
 
 _ACTIVE_PROCS: set[asyncio.subprocess.Process] = set()
 _ACTIVE_PROCS_LOCK = threading.Lock()
+
+# Registry of task prefixes whose last failure was caused exclusively by a
+# sleep/wake gap (not a real agent error).  The Infinite Loop driver reads
+# this after a failed run to decide whether to reset those tasks to Pending
+# and continue the loop rather than dying.  Cleared at the start of each
+# ``run_task`` call so stale entries from previous iterations don't linger.
+_SLEEP_INTERRUPTED_TASKS: set[str] = set()
+_SLEEP_INTERRUPTED_TASKS_LOCK = threading.Lock()
+
+
+def get_sleep_interrupted_tasks() -> frozenset[str]:
+    """Return the set of task prefixes interrupted only by sleep/wake gaps.
+
+    Thread-safe snapshot. Used by the Infinite Loop driver to detect
+    runs that failed solely due to the host machine sleeping, so it can
+    reset those tasks to Pending and continue instead of exiting.
+    """
+    with _SLEEP_INTERRUPTED_TASKS_LOCK:
+        return frozenset(_SLEEP_INTERRUPTED_TASKS)
+
+
+def _mark_sleep_interrupted(task_prefix: str) -> None:
+    """Record that ``task_prefix`` was killed only by a sleep/wake gap."""
+    with _SLEEP_INTERRUPTED_TASKS_LOCK:
+        _SLEEP_INTERRUPTED_TASKS.add(task_prefix)
+
+
+def _clear_sleep_interrupted(task_prefix: str) -> None:
+    """Clear the sleep-interrupted flag for ``task_prefix`` (e.g. on success)."""
+    with _SLEEP_INTERRUPTED_TASKS_LOCK:
+        _SLEEP_INTERRUPTED_TASKS.discard(task_prefix)
 
 
 def _register_process(proc: asyncio.subprocess.Process) -> None:
@@ -2699,9 +2696,14 @@ async def run_task(
                     model="",
                 )
 
-    # Use a while loop so cooldown waits don't consume a retry slot.
-    # ``attempt`` is only incremented on real (non-cooldown) attempts.
+    # Use a while loop so cooldown waits and sleep-wake gaps don't consume
+    # a retry slot.  ``attempt`` is only incremented on real (non-sleep,
+    # non-cooldown) attempts.  ``sleep_wake_retries`` tracks bonus retries
+    # granted when the machine woke from sleep mid-attempt; these are
+    # capped separately so a pathological suspend loop can't spin forever.
+    _MAX_SLEEP_WAKE_BONUS_RETRIES = 10
     attempt = 0
+    sleep_wake_retries = 0
     while attempt < config.max_retries:
         attempt += 1
 
@@ -2951,6 +2953,10 @@ async def run_task(
                 except Exception:
                     pass
 
+            # This task succeeded — clear any sleep-interrupted flag so the
+            # Infinite Loop driver doesn't mistakenly reset it to Pending.
+            _clear_sleep_interrupted(task.prefix)
+
             # Update the result with accumulated tokens and total attempts.
             # outcome_summary must be forwarded so downstream reassessment
             # can check "Downstream impact: possible" on the returned result.
@@ -2967,6 +2973,62 @@ async def run_task(
 
         # If cooldown was triggered, skip normal retry pause and loop immediately
         if cooldown_triggered:
+            continue
+
+        # ── Sleep/wake gap: don't consume a retry slot ────────────────────
+        # When the machine woke from sleep mid-attempt the subprocess was
+        # killed by the sleep-wake gap detector (not by a real failure).
+        # Charging a retry slot against the agent for a hardware event is
+        # unfair and will exhaust ``max_retries`` on a single long sleep.
+        # Instead: decrement ``attempt`` (same pattern as cooldown_wait) so
+        # the next iteration reuses the same slot.  A separate ``sleep_wake_retries``
+        # counter caps this at ``_MAX_SLEEP_WAKE_BONUS_RETRIES`` so a
+        # pathological suspend loop never spins forever.
+        if (
+            not success
+            and result.interruption_reason == "sleep_wake_gap"
+            and sleep_wake_retries < _MAX_SLEEP_WAKE_BONUS_RETRIES
+        ):
+            sleep_wake_retries += 1
+            # Record that this task was sleep-interrupted (belt-and-suspenders
+            # for the Infinite Loop driver's fallback reset path).
+            _mark_sleep_interrupted(task.prefix)
+            logger.warning(
+                f"Task {task.prefix} attempt {attempt} was sleep-interrupted; "
+                f"granting bonus retry (sleep_wake_retries={sleep_wake_retries}/"
+                f"{_MAX_SLEEP_WAKE_BONUS_RETRIES})"
+            )
+            if on_circuit_event:
+                try:
+                    on_circuit_event(
+                        "sleep_detected",
+                        {
+                            "task_id": task.prefix,
+                            "sleep_retries": str(sleep_wake_retries),
+                        },
+                    )
+                except Exception:
+                    pass
+            _set_renderer_footer(
+                renderer,
+                _footer_text(
+                    f"{task.prefix} {task.title or task.name}",
+                    f"woke from sleep | retrying (sleep-retry {sleep_wake_retries})",
+                ),
+            )
+            # Brief pause so the retry doesn't hammer the API before the
+            # network stack has fully recovered after wake.
+            try:
+                await asyncio.sleep(config.retry_pause)
+            except asyncio.CancelledError:
+                logger.warning(f"Sleep-wake retry pause cancelled for task {task.prefix}")
+                break
+            attempt -= 1  # don't consume the retry slot
+            if on_circuit_event:
+                try:
+                    on_circuit_event("wake_resumed", {"task_id": task.prefix})
+                except Exception:
+                    pass
             continue
 
         # ── Free mode: rotate model on rate limit or model-not-found ──────
@@ -3034,6 +3096,11 @@ async def run_task(
     logger.error(f"Task {task.prefix} failed after {config.max_retries} attempts")
     # Return failed result with accumulated tokens and the outcome summary from
     # the last attempt so _record_task_outcome / tasks/SUMMARY.md have useful context.
+    _last_reason = last_result.interruption_reason if last_result else ""
+    if _last_reason == "sleep_wake_gap":
+        # Belt-and-suspenders: ensure the Infinite Loop driver can detect
+        # this even if sleep_wake_retries was somehow exhausted.
+        _mark_sleep_interrupted(task.prefix)
     return TaskResult(
         prefix=task.prefix,
         title=task.title or task.name,
@@ -3044,7 +3111,7 @@ async def run_task(
         model=last_result.model if last_result else "",
         outcome_summary=last_result.outcome_summary if last_result else "",
         interrupted=last_result.interrupted if last_result else False,
-        interruption_reason=last_result.interruption_reason if last_result else "",
+        interruption_reason=_last_reason,
     )
 
 

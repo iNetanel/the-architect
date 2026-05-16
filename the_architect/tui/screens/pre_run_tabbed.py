@@ -356,6 +356,10 @@ class PreRunScreen(Screen[PreRunValues]):
         padding: 0 0 1 2;
     }
 
+    PreRunScreen .status-error {
+        color: $warning;
+    }
+
     PreRunScreen ListView {
         border: round $panel;
         height: auto;
@@ -794,9 +798,10 @@ class PreRunScreen(Screen[PreRunValues]):
                 status.display = True
             elif self._model_fetch_error:
                 status.update("Could not load models — using provider default.")
-                status.styles.color = "$warning"
+                status.add_class("status-error")
                 status.display = True
             else:
+                status.remove_class("status-error")
                 status.display = False
         except Exception as exc:
             logger.debug(f"PreRunScreen: status line update failed: {exc!r}")

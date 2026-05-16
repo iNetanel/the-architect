@@ -11,12 +11,55 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ## [Unreleased]
 
-<!--
-Every completed task appends a bullet here and bumps __build__ in /version.py.
-When cutting a release, rename [Unreleased] to the version and add a fresh
-empty [Unreleased] above it. Use Keep a Changelog section headings:
-Added / Changed / Deprecated / Removed / Fixed / Security.
--->
+---
+
+## [1.2.12] (build 10440) — 2026-05-15
+
+### Removed
+
+- **tmux is gone.** The Architect no longer requires, installs, or launches tmux.
+  No more split-pane dashboard, no more `--no-monitor` flag, no more auto-install
+  prompts. Every feature tmux provided is now built in.
+
+### Added
+
+- **Session survival — no tmux needed.** Infinite Loop and `--persistent` runs
+  survive terminal close and SSH drops natively. If the connection drops, the TUI
+  exits cleanly and the worker keeps running headless, writing to
+  `.architect/logs/`. Reconnect any time with `architect monitor`.
+
+- **Detach from the pause menu (Esc → Detach).** Frees your terminal instantly
+  while the run continues in the background. Works on every run — no flags needed.
+
+- **`architect monitor` always opens the live TUI monitor.** No flags, no tmux
+  session — just reads `.architect/monitor_state.json` directly from any terminal.
+
+### Fixed
+
+- **Esc and all key bindings now respond on the first keypress.** Tab-switch keys
+  (`l`/`p`/`d`/`g`/`c`), Esc, and all execution screen bindings are now
+  `priority=True` — they fire before any focused child widget (RichLog, tab bar)
+  can swallow them. Clicking a tab header immediately refocuses the content area.
+  ESC delay reduced from 100ms to 30ms so the pause menu feels instant.
+
+- **Quitting mid-run (q / Ctrl+C / Esc → Exit) no longer crashes** with
+  `ValueError: signal only works in main thread`. The worker is always non-daemon
+  now; when you quit the TUI the active provider subprocess is killed immediately
+  so the worker unblocks and finishes cleanly.
+
+- **Quitting on the startup splash no longer crashes** — same root cause. Provider
+  health-check and wait screens no longer try to boot a new Textual app from a
+  background thread.
+
+- **Scope/pre-run screen spinning on every Infinite Loop iteration** fixed.
+
+- **Back on provider screen now exits cleanly** instead of silently picking the
+  first provider.
+
+- **Infinite Loop Detach activates SIGHUP survival** without needing `--persistent`
+  on the CLI — selecting Infinite Loop in the pre-run screen is enough.
+
+---
 
 ## [1.2.11] (build 10410) — 2026-05-14
 

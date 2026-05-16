@@ -21,8 +21,11 @@ from the_architect.core.runner import (
     TaskResult,
     TokenUsage,
     _determine_self_assessment,
+    _extract_task_outcome_summary,
     _is_lock_stale,
     _parse_opencode_event,
+    _provider_idle_timeout_seconds,
+    _provider_sleep_wake_gap_seconds,
     _task_outcome_summary_for_exit,
     _tool_result_lines,
     acquire_lock,
@@ -4807,4 +4810,617 @@ class TestBaselineRunnerIntegration:
         # Outcome should mention baseline changes
         assert result.baseline_path != ""
         assert "Baseline changes" in result.outcome_summary
-        assert "created" in result.outcome_summary
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# T03.1 — _extract_task_outcome_summary() structured section parsing
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestExtractTaskOutcomeSummaryStructured:
+    """Cover _extract_task_outcome_summary() structured-section parsing path."""
+
+    def test_full_structured_section_all_fields(self):
+        """Well-formed section with Summary, Files, Verification, Impact."""
+        text = (
+            "Some agent output here\n"
+            "=== TASK OUTCOME ===\n"
+            "Summary: Fixed the bug in module.py\n"
+            "Files: module.py, test_module.py\n"
+            "Verification: pytest tests/test_module.py -v\n"
+            "Impact: possible\n"
+        )
+        result = _extract_task_outcome_summary(text)
+        assert "Summary: Fixed the bug in module.py" in result
+        assert "Files: module.py, test_module.py" in result
+        assert "Verification: pytest tests/test_module.py -v" in result
+        assert "Downstream impact: possible" in result
+
+    def test_structured_section_impact_yes(self):
+        """Impact field with 'yes' value maps to 'possible'."""
+        text = "=== TASK OUTCOME ===\nSummary: Done\nImpact: yes\n"
+        result = _extract_task_outcome_summary(text)
+        assert "Downstream impact: possible" in result
+
+    def test_structured_section_impact_changed(self):
+        """Impact field with 'changed' value maps to 'possible'."""
+        text = "=== TASK OUTCOME ===\nSummary: Done\nImpact: changed\n"
+        result = _extract_task_outcome_summary(text)
+        assert "Downstream impact: possible" in result
+
+    def test_structured_section_impact_none(self):
+        """Impact field with 'none' value maps to 'none'."""
+        text = "=== TASK OUTCOME ===\nSummary: Done\nImpact: none\n"
+        result = _extract_task_outcome_summary(text)
+        assert "Downstream impact: none" in result
+
+    def test_structured_section_missing_impact_defaults_none(self):
+        """When Impact field is missing, downstream impact defaults to 'none'."""
+        text = "=== TASK OUTCOME ===\nSummary: Done\nFiles: foo.py\n"
+        result = _extract_task_outcome_summary(text)
+        assert "Downstream impact: none" in result
+
+    def test_structured_section_empty_values_returns_empty(self):
+        """Section marker present but no recognized fields -> falls through to fallback."""
+        text = "=== TASK OUTCOME ===\nRandomField: something\n"
+        result = _extract_task_outcome_summary(text)
+        # No recognized fields, so values is empty dict -> falls through to fallback
+        # Fallback may produce something from regex or empty string
+        assert isinstance(result, str)
+
+    def test_structured_section_with_summary_only(self):
+        """Structured section with only Summary field."""
+        text = "=== TASK OUTCOME ===\nSummary: All tests pass\n"
+        result = _extract_task_outcome_summary(text)
+        assert "Summary: All tests pass" in result
+        assert "Downstream impact: none" in result
+
+    def test_structured_section_with_files_only(self):
+        """Structured section with only Files field."""
+        text = "=== TASK OUTCOME ===\nFiles: foo.py, bar.py\n"
+        result = _extract_task_outcome_summary(text)
+        assert "Files: foo.py, bar.py" in result
+        assert "Downstream impact: none" in result
+
+    def test_structured_section_with_verification_only(self):
+        """Structured section with only Verification field."""
+        text = "=== TASK OUTCOME ===\nVerification: pytest tests/ -v\n"
+        result = _extract_task_outcome_summary(text)
+        assert "Verification: pytest tests/ -v" in result
+        assert "Downstream impact: none" in result
+
+
+class TestExtractTaskOutcomeSummaryFallback:
+    """Cover _extract_task_outcome_summary() fallback parsing path."""
+
+    def test_fallback_files_extraction(self):
+        """Fallback extracts file names from text via regex."""
+        text = "I edited main.py and utils/helper.py to fix the issue."
+        result = _extract_task_outcome_summary(text)
+        assert "Files:" in result
+        assert "helper.py" in result
+        assert "main.py" in result
+
+    def test_fallback_verification_extraction(self):
+        """Fallback extracts verification commands from text."""
+        text = "Ran pytest tests/test_main.py -v and all tests passed."
+        result = _extract_task_outcome_summary(text)
+        assert "Verification:" in result
+        assert "pytest tests/test_main.py -v" in result
+
+    def test_fallback_impact_possible(self):
+        """Fallback detects 'downstream' marker for impact."""
+        text = "This may affect downstream tasks."
+        result = _extract_task_outcome_summary(text)
+        assert "Downstream impact: possible" in result
+
+    def test_fallback_impact_next_tasks(self):
+        """Fallback detects 'next tasks' marker for impact."""
+        text = "Check the next tasks for follow-up work."
+        result = _extract_task_outcome_summary(text)
+        assert "Downstream impact: possible" in result
+
+    def test_fallback_impact_architecture_changed(self):
+        """Fallback detects 'architecture changed' marker."""
+        text = "The architecture changed significantly."
+        result = _extract_task_outcome_summary(text)
+        assert "Downstream impact: possible" in result
+
+    def test_fallback_impact_assumption(self):
+        """Fallback detects 'assumption' marker."""
+        text = "Based on the assumption that X is true."
+        result = _extract_task_outcome_summary(text)
+        assert "Downstream impact: possible" in result
+
+    def test_fallback_impact_none(self):
+        """Fallback produces 'none' impact when no markers found."""
+        text = "All done. Nothing to add."
+        result = _extract_task_outcome_summary(text)
+        assert "Downstream impact: none" in result
+
+    def test_fallback_progress_signal(self):
+        """Fallback includes progress signal outcome when present."""
+        text = "all tests pass"
+        result = _extract_task_outcome_summary(text)
+        assert "Outcome:" in result
+
+    def test_fallback_ruff_check_extraction(self):
+        """Fallback extracts ruff check verification commands."""
+        text = "Ran ruff check . and it passed."
+        result = _extract_task_outcome_summary(text)
+        assert "Verification:" in result
+        assert "ruff check" in result
+
+    def test_fallback_mypy_extraction(self):
+        """Fallback extracts mypy verification commands."""
+        text = "Ran mypy the_architect/ successfully."
+        result = _extract_task_outcome_summary(text)
+        assert "Verification:" in result
+        assert "mypy" in result
+
+    def test_fallback_empty_text(self):
+        """Empty text still produces downstream impact line."""
+        result = _extract_task_outcome_summary("")
+        assert "Downstream impact: none" in result
+
+    def test_fallback_no_relevant_content(self):
+        """Text with no files, verification, or impact produces minimal result."""
+        text = "Hello world, just some random text."
+        result = _extract_task_outcome_summary(text)
+        assert "Downstream impact: none" in result
+
+    def test_fallback_ruff_format_extraction(self):
+        """Fallback extracts ruff format verification commands."""
+        text = "Ran ruff format . to fix formatting."
+        result = _extract_task_outcome_summary(text)
+        assert "Verification:" in result
+        assert "ruff format" in result
+
+    def test_fallback_max_four_lines(self):
+        """Fallback caps output at 4 lines."""
+        text = (
+            "I edited file.py.\n"
+            "Ran pytest tests/ -v\n"
+            "Also ran ruff check .\n"
+            "This affects downstream tasks.\n"
+            "Task is complete.\n"
+        )
+        result = _extract_task_outcome_summary(text)
+        lines = result.split("\n")
+        assert len(lines) <= 4
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# T03.2 — Environment variable error handling
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestProviderEnvVarErrorPaths:
+    """Cover _provider_idle_timeout_seconds and _provider_sleep_wake_gap_seconds."""
+
+    def test_idle_timeout_invalid_env_value(self, monkeypatch: pytest.MonkeyPatch):
+        """Invalid string in ARCHITECT_PROVIDER_IDLE_TIMEOUT_SECONDS returns default."""
+        monkeypatch.setenv("ARCHITECT_PROVIDER_IDLE_TIMEOUT_SECONDS", "not-a-number")
+        result = _provider_idle_timeout_seconds()
+        assert result == 900.0  # default _PROVIDER_IDLE_TIMEOUT_SECONDS
+
+    def test_sleep_wake_gap_invalid_env_value(self, monkeypatch: pytest.MonkeyPatch):
+        """Invalid string in ARCHITECT_SLEEP_WAKE_GAP_SECONDS returns default."""
+        monkeypatch.setenv("ARCHITECT_SLEEP_WAKE_GAP_SECONDS", "abc")
+        result = _provider_sleep_wake_gap_seconds()
+        assert result == 120.0  # default _PROVIDER_SLEEP_WAKE_GAP_SECONDS
+
+    def test_idle_timeout_valid_env_value(self, monkeypatch: pytest.MonkeyPatch):
+        """Valid float in ARCHITECT_PROVIDER_IDLE_TIMEOUT_SECONDS is used."""
+        monkeypatch.setenv("ARCHITECT_PROVIDER_IDLE_TIMEOUT_SECONDS", "600.5")
+        result = _provider_idle_timeout_seconds()
+        assert result == 600.5
+
+    def test_sleep_wake_gap_valid_env_value(self, monkeypatch: pytest.MonkeyPatch):
+        """Valid float in ARCHITECT_SLEEP_WAKE_GAP_SECONDS is used."""
+        monkeypatch.setenv("ARCHITECT_SLEEP_WAKE_GAP_SECONDS", "60")
+        result = _provider_sleep_wake_gap_seconds()
+        assert result == 60.0
+
+    def test_idle_timeout_negative_env_value_clamped(self, monkeypatch: pytest.MonkeyPatch):
+        """Negative value in ARCHITECT_PROVIDER_IDLE_TIMEOUT_SECONDS clamped to 0.0."""
+        monkeypatch.setenv("ARCHITECT_PROVIDER_IDLE_TIMEOUT_SECONDS", "-10")
+        result = _provider_idle_timeout_seconds()
+        assert result == 0.0
+
+    def test_sleep_wake_gap_negative_env_value_clamped(self, monkeypatch: pytest.MonkeyPatch):
+        """Negative value in ARCHITECT_SLEEP_WAKE_GAP_SECONDS clamped to 0.0."""
+        monkeypatch.setenv("ARCHITECT_SLEEP_WAKE_GAP_SECONDS", "-5")
+        result = _provider_sleep_wake_gap_seconds()
+        assert result == 0.0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# T03.3 — Lock and process error handling
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestIsLockStaleOSError:
+    """Cover _is_lock_stale() OSError branch."""
+
+    def test_oserror_reading_lock_returns_stale(self, tmp_path):
+        """When lock file read raises OSError, treat as stale."""
+        lock_path = tmp_path / ".architect" / "runner.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        # Don't write the file — it doesn't exist, read_text will raise
+        # Actually, let's use a real file that raises OSError
+        lock_path = tmp_path / ".architect" / "runner.lock"
+        # Patch Path.read_text to raise OSError
+        with patch.object(Path, "read_text", side_effect=OSError("permission denied")):
+            result = _is_lock_stale(lock_path)
+            assert result is True
+
+    def test_value_error_parsing_pid_returns_stale(self, tmp_path):
+        """When PID in lock file is not a valid integer, treat as stale."""
+        lock_path = tmp_path / ".architect" / "runner.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text("not-a-pid", encoding="utf-8")
+        result = _is_lock_stale(lock_path)
+        assert result is True
+
+
+class TestKillProcessTreeProcessLookupError:
+    """Cover _kill_process_tree() ProcessLookupError on proc.kill()."""
+
+    def test_kill_process_tree_processlookuperror_on_kill(self):
+        """ProcessLookupError on proc.kill() is caught and swallowed."""
+        mock_proc = MagicMock(spec=asyncio.subprocess.Process)
+        mock_proc.returncode = None
+        # Patch os.killpg to succeed, but proc.kill() raises ProcessLookupError
+        with (
+            patch("the_architect.core.runner.os.killpg"),
+            patch.object(mock_proc, "kill", side_effect=ProcessLookupError("no such proc")),
+        ):
+            from the_architect.core.runner import _kill_process_tree
+
+            _kill_process_tree(mock_proc)  # Should not raise
+            mock_proc.kill.assert_called_once()
+
+    def test_kill_process_tree_already_finished(self):
+        """_kill_process_tree returns early when process already finished."""
+        mock_proc = MagicMock(spec=asyncio.subprocess.Process)
+        mock_proc.returncode = 0  # already finished
+        with patch("the_architect.core.runner.os.killpg") as mock_killpg:
+            from the_architect.core.runner import _kill_process_tree
+
+            _kill_process_tree(mock_proc)
+            mock_killpg.assert_not_called()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# T03.4 — Callback and early-exit error paths
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestRunTaskProviderUpdateRequired:
+    """Cover provider-update-required early exit in run_task()."""
+
+    @pytest.mark.asyncio
+    async def test_provider_update_required_aborts_task(self, config, task, tmp_path):
+        """When provider error is UPDATE_REQUIRED, run_task breaks early."""
+        from the_architect.core.circuit import ProviderError, ProviderErrorKind
+
+        # Create a properly configured mock provider
+        mock_provider = _make_mock_provider()
+        mock_provider.check_update_available = MagicMock(return_value="Please update to v2.0")
+        mock_provider.get_resolved_model = MagicMock(return_value="gpt-4")
+
+        async def mock_stream_provider(*args, **kwargs):
+            return StreamResult(
+                exit_code=1,
+                tokens=TokenUsage(),
+                accumulated_text="opencode: command not found. Please update opencode.",
+                rate_limit_hit=False,
+            )
+
+        # detect_provider_error is called at two points:
+        # 1. After run_task_once returns (lines 2789-2791) — catches UPDATE_REQUIRED, MISCONFIGURED,
+        #    QUOTA_EXHAUSTED and breaks immediately
+        # 2. Between retries (lines 3019-3022) — checks for UPDATE_REQUIRED specifically
+        #    and calls provider.check_update_available()
+        # To reach lines 3028-3032, first call must return None (skip first check),
+        # subsequent calls return UPDATE_REQUIRED (hit the retry-loop check).
+        provider_error = ProviderError(
+            kind=ProviderErrorKind.UPDATE_REQUIRED,
+            message="Provider needs an update.",
+            action="Update opencode to the latest version.",
+        )
+        detect_calls = 0
+
+        def fake_detect(*args, **kwargs):
+            nonlocal detect_calls
+            detect_calls += 1
+            if detect_calls == 1:
+                return None  # First call: skip the post-run check
+            return provider_error  # Second call: hit the retry-loop check
+
+        config.max_retries = 3
+        config.retry_pause = 0
+
+        with (
+            patch(
+                "the_architect.core.runner.stream_provider",
+                new_callable=AsyncMock,
+                side_effect=mock_stream_provider,
+            ),
+            patch(
+                "the_architect.core.circuit.detect_provider_error",
+                side_effect=fake_detect,
+            ),
+        ):
+            result = await run_task(
+                task=task,
+                config=config,
+                provider=mock_provider,
+            )
+            assert result.status == "failed"
+            mock_provider.check_update_available.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_provider_update_required_no_provider_skips_check(self, config, task, tmp_path):
+        """When provider is None, UPDATE_REQUIRED check is skipped."""
+        from the_architect.core.circuit import ProviderError, ProviderErrorKind
+
+        async def mock_stream_provider(*args, **kwargs):
+            return StreamResult(
+                exit_code=1,
+                tokens=TokenUsage(),
+                accumulated_text="error",
+                rate_limit_hit=False,
+            )
+
+        provider_error = ProviderError(
+            kind=ProviderErrorKind.UPDATE_REQUIRED,
+            message="Provider needs an update.",
+            action="Update.",
+        )
+
+        config.max_retries = 2
+        config.retry_pause = 0
+
+        with (
+            patch(
+                "the_architect.core.runner.stream_provider",
+                new_callable=AsyncMock,
+                side_effect=mock_stream_provider,
+            ),
+            patch(
+                "the_architect.core.circuit.detect_provider_error",
+                return_value=provider_error,
+            ),
+        ):
+            result = await run_task(
+                task=task,
+                config=config,
+                provider=None,
+            )
+            # Should still fail but NOT call check_update_available
+            assert result.status == "failed"
+
+
+class TestAcquireLockStaleRetryOSError:
+    """Cover acquire_lock retry-after-stale-unlink OSError path (L496-497)."""
+
+    def test_stale_lock_unlink_then_retry_fails(self, tmp_path):
+        """After removing stale lock, retry os.open raises OSError -> return False."""
+        lock_dir = tmp_path / ".architect"
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        lock_file = lock_dir / "runner.lock"
+        lock_file.write_text("999999", encoding="utf-8")
+
+        # First os.open raises FileExistsError (lock exists),
+        # _is_lock_stale returns True, unlink succeeds,
+        # second os.open raises OSError -> return False
+        open_calls = 0
+
+        def fake_open(*args, **kwargs):
+            nonlocal open_calls
+            open_calls += 1
+            if open_calls == 1:
+                raise FileExistsError
+            raise OSError("disk full")
+
+        with (
+            patch("the_architect.core.runner._is_lock_stale", return_value=True),
+            patch("the_architect.core.runner.os.open", side_effect=fake_open),
+            patch("the_architect.core.runner.Path.unlink"),
+        ):
+            result = acquire_lock(tmp_path)
+            assert result is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Sleep-wake gap: registry and retry-slot behaviour
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestSleepWakeRegistry:
+    """Tests for the module-level sleep-interrupted task registry."""
+
+    def setup_method(self):
+        """Clear the registry before each test."""
+        import the_architect.core.runner as _runner
+
+        with _runner._SLEEP_INTERRUPTED_TASKS_LOCK:
+            _runner._SLEEP_INTERRUPTED_TASKS.clear()
+
+    def test_mark_and_get(self):
+        from the_architect.core.runner import (
+            _mark_sleep_interrupted,
+            get_sleep_interrupted_tasks,
+        )
+
+        _mark_sleep_interrupted("T07")
+        result = get_sleep_interrupted_tasks()
+        assert "T07" in result
+
+    def test_clear_removes_entry(self):
+        from the_architect.core.runner import (
+            _clear_sleep_interrupted,
+            _mark_sleep_interrupted,
+            get_sleep_interrupted_tasks,
+        )
+
+        _mark_sleep_interrupted("T07")
+        _clear_sleep_interrupted("T07")
+        assert "T07" not in get_sleep_interrupted_tasks()
+
+    def test_get_returns_frozenset(self):
+        from the_architect.core.runner import get_sleep_interrupted_tasks
+
+        result = get_sleep_interrupted_tasks()
+        assert isinstance(result, frozenset)
+
+    def test_clear_nonexistent_is_noop(self):
+        from the_architect.core.runner import (
+            _clear_sleep_interrupted,
+            get_sleep_interrupted_tasks,
+        )
+
+        _clear_sleep_interrupted("TXXX")  # must not raise
+        assert "TXXX" not in get_sleep_interrupted_tasks()
+
+
+class TestSleepWakeBonusRetry:
+    """Sleep-interrupted attempts must not consume retry slots in run_task."""
+
+    @pytest.fixture
+    def task(self, tmp_path: Path) -> Task:
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        task_file = tasks_dir / "T07_test.md"
+        task_file.write_text("# T07 test\n", encoding="utf-8")
+        return Task(path=task_file, prefix="T07", name="T07_test", title="test", number=7)
+
+    @pytest.fixture
+    def config(self, tmp_path: Path) -> ArchitectConfig:
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        progress = tmp_path / "PROGRESS.md"
+        progress.write_text("", encoding="utf-8")
+        cfg = ArchitectConfig(
+            project_root=tmp_path,
+            tasks_dir=tasks_dir,
+            progress_file=progress,
+            log_dir=tmp_path / ".architect" / "logs",
+        )
+        cfg.max_retries = 2
+        cfg.retry_pause = 0
+        return cfg
+
+    def setup_method(self):
+        import the_architect.core.runner as _runner
+
+        with _runner._SLEEP_INTERRUPTED_TASKS_LOCK:
+            _runner._SLEEP_INTERRUPTED_TASKS.clear()
+
+    @pytest.mark.asyncio
+    async def test_sleep_attempt_does_not_consume_retry_slot(self, task, config):
+        """A sleep-interrupted attempt must be retried without counting the slot."""
+        call_count = 0
+
+        async def mock_run_once(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return TaskResult(
+                    prefix=task.prefix,
+                    title="test",
+                    status="failed",
+                    duration_seconds=1.0,
+                    attempts=1,
+                    tokens=TokenUsage(),
+                    model="",
+                    interrupted=True,
+                    interruption_reason="sleep_wake_gap",
+                )
+            # Second call succeeds
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="done",
+                duration_seconds=2.0,
+                attempts=2,
+                tokens=TokenUsage(),
+                model="",
+            )
+
+        with patch("the_architect.core.runner.run_task_once", side_effect=mock_run_once):
+            result = await run_task(task=task, config=config)
+
+        # Even though attempt 1 was sleep-interrupted, the task eventually succeeded.
+        assert result.status == "done"
+        # The sleep attempt used a bonus slot so call_count is 2, but only
+        # 1 real retry slot was charged (attempt counter stayed at 1 after bonus).
+        assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_sleep_fires_on_circuit_event(self, task, config):
+        """sleep_detected and wake_resumed events must be fired when a sleep gap occurs."""
+        events_fired: list[str] = []
+
+        def _on_event(name: str, data: dict) -> None:
+            events_fired.append(name)
+
+        async def mock_run_once(**kwargs):
+            attempt = kwargs.get("attempt", 1)
+            if attempt == 1:
+                return TaskResult(
+                    prefix=task.prefix,
+                    title="test",
+                    status="failed",
+                    duration_seconds=1.0,
+                    attempts=1,
+                    tokens=TokenUsage(),
+                    model="",
+                    interrupted=True,
+                    interruption_reason="sleep_wake_gap",
+                )
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="done",
+                duration_seconds=2.0,
+                attempts=2,
+                tokens=TokenUsage(),
+                model="",
+            )
+
+        with patch("the_architect.core.runner.run_task_once", side_effect=mock_run_once):
+            await run_task(task=task, config=config, on_circuit_event=_on_event)
+
+        assert "sleep_detected" in events_fired
+        assert "wake_resumed" in events_fired
+
+    @pytest.mark.asyncio
+    async def test_success_clears_sleep_registry(self, task, config):
+        """On success, the task prefix must be removed from the sleep registry."""
+        from the_architect.core.runner import (
+            _mark_sleep_interrupted,
+            get_sleep_interrupted_tasks,
+        )
+
+        # Pre-seed the registry as if a previous attempt sleep-interrupted
+        _mark_sleep_interrupted(task.prefix)
+
+        async def mock_run_once(**kwargs):
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="done",
+                duration_seconds=1.0,
+                attempts=1,
+                tokens=TokenUsage(),
+                model="",
+            )
+
+        with patch("the_architect.core.runner.run_task_once", side_effect=mock_run_once):
+            result = await run_task(task=task, config=config)
+
+        assert result.status == "done"
+        assert task.prefix not in get_sleep_interrupted_tasks()

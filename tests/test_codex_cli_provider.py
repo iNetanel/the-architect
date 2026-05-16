@@ -535,3 +535,451 @@ class TestCodexCliProviderPrompts:
         prompt = CodexCliProvider().get_reviewer_prompt()
         assert isinstance(prompt, str)
         assert len(prompt) > 0
+
+
+# ---------------------------------------------------------------------------
+# Version error paths
+# ---------------------------------------------------------------------------
+
+
+class TestCodexCliProviderVersionErrors:
+    """Tests for CodexCliProvider version detection error paths."""
+
+    def test_get_version_cache_hit(self) -> None:
+        """get_version() returns cached value on second call."""
+        provider = CodexCliProvider()
+        first = provider.get_version()
+        second = provider.get_version()
+        assert first == second
+
+    def test_get_version_nonzero_returncode(self) -> None:
+        """get_version() returns 'unknown' when codex --version fails."""
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stdout = ""
+        mock_result.stderr = "error"
+        with patch("subprocess.run", return_value=mock_result):
+            result = CodexCliProvider().get_version()
+        assert result == "unknown"
+
+    def test_get_version_timeout(self) -> None:
+        """get_version() returns 'unknown' on TimeoutExpired."""
+        import subprocess as _subprocess
+
+        with patch("subprocess.run", side_effect=_subprocess.TimeoutExpired(["codex"], 10)):
+            result = CodexCliProvider().get_version()
+        assert result == "unknown"
+
+    def test_get_version_subprocess_error(self) -> None:
+        """get_version() returns 'unknown' on SubprocessError."""
+        import subprocess as _subprocess
+
+        with patch("subprocess.run", side_effect=_subprocess.SubprocessError):
+            result = CodexCliProvider().get_version()
+        assert result == "unknown"
+
+    def test_get_version_file_not_found(self) -> None:
+        """get_version() returns 'unknown' on FileNotFoundError."""
+        with patch("subprocess.run", side_effect=FileNotFoundError):
+            result = CodexCliProvider().get_version()
+        assert result == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# has_any_models branches
+# ---------------------------------------------------------------------------
+
+
+class TestCodexCliProviderHasModels:
+    """Tests for CodexCliProvider.has_any_models() branches."""
+
+    def test_has_any_models_not_installed(self) -> None:
+        """has_any_models() returns False when binary not on PATH."""
+        with patch("shutil.which", return_value=None):
+            result = CodexCliProvider().has_any_models()
+        assert result is False
+
+    def test_has_any_models_installed_and_working(self) -> None:
+        """has_any_models() returns True when codex --version succeeds."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "0.1.0"
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/codex"),
+            patch("subprocess.run", return_value=mock_result),
+        ):
+            result = CodexCliProvider().has_any_models()
+        assert result is True
+
+    def test_has_any_models_installed_but_fails(self) -> None:
+        """has_any_models() returns False when codex --version fails."""
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/codex"),
+            patch("subprocess.run", return_value=mock_result),
+        ):
+            result = CodexCliProvider().has_any_models()
+        assert result is False
+
+    def test_has_any_models_timeout(self) -> None:
+        """has_any_models() returns False on TimeoutExpired."""
+        import subprocess as _subprocess
+
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/codex"),
+            patch("subprocess.run", side_effect=_subprocess.TimeoutExpired(["codex"], 10)),
+        ):
+            result = CodexCliProvider().has_any_models()
+        assert result is False
+
+    def test_has_any_models_subprocess_error(self) -> None:
+        """has_any_models() returns False on SubprocessError."""
+        import subprocess as _subprocess
+
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/codex"),
+            patch("subprocess.run", side_effect=_subprocess.SubprocessError),
+        ):
+            result = CodexCliProvider().has_any_models()
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# install_hint npm-not-installed fallback
+# ---------------------------------------------------------------------------
+
+
+class TestCodexCliProviderInstallHint:
+    """Tests for CodexCliProvider.install_hint() npm-not-installed fallback."""
+
+    def test_install_hint_npm_available(self) -> None:
+        """install_hint() returns npm command when npm is on PATH."""
+        with patch("shutil.which", return_value="/usr/local/bin/npm"):
+            hint = CodexCliProvider().install_hint()
+        assert hint == "npm install -g @openai/codex"
+
+    def test_install_hint_npm_not_available(self) -> None:
+        """install_hint() returns URL when npm is not on PATH."""
+        with patch("shutil.which", return_value=None):
+            hint = CodexCliProvider().install_hint()
+        assert "https://github.com/openai/codex" in hint
+
+
+# ---------------------------------------------------------------------------
+# check_update_available full flow
+# ---------------------------------------------------------------------------
+
+
+class TestCodexCliProviderUpdateCheck:
+    """Tests for CodexCliProvider.check_update_available() full flow."""
+
+    def test_update_check_not_installed(self) -> None:
+        """check_update_available() returns '' when codex not installed."""
+        with patch("shutil.which", return_value=None):
+            result = CodexCliProvider().check_update_available()
+        assert result == ""
+
+    def test_update_check_unknown_version(self) -> None:
+        """check_update_available() returns '' when version is unknown."""
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/codex"),
+            patch.object(CodexCliProvider, "get_version", return_value="unknown"),
+        ):
+            result = CodexCliProvider().check_update_available()
+        assert result == ""
+
+    def test_update_check_version_no_semver(self) -> None:
+        """check_update_available() returns '' when version has no semver."""
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/codex"),
+            patch.object(CodexCliProvider, "get_version", return_value="dev-build-abc"),
+        ):
+            result = CodexCliProvider().check_update_available()
+        assert result == ""
+
+    def test_update_check_up_to_date(self) -> None:
+        """check_update_available() returns '' when installed == latest."""
+        import urllib.request
+
+        mock_data = json.dumps({"version": "0.1.0"})
+        mock_response = MagicMock()
+        mock_response.read.return_value = mock_data.encode("utf-8")
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/codex"),
+            patch.object(CodexCliProvider, "get_version", return_value="0.1.0"),
+            patch.object(urllib.request, "urlopen", return_value=mock_response),
+        ):
+            result = CodexCliProvider().check_update_available()
+        assert result == ""
+
+    def test_update_check_newer_available(self) -> None:
+        """check_update_available() returns message when newer version exists."""
+        import urllib.request
+
+        mock_data = json.dumps({"version": "0.2.0"})
+        mock_response = MagicMock()
+        mock_response.read.return_value = mock_data.encode("utf-8")
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/codex"),
+            patch.object(CodexCliProvider, "get_version", return_value="0.1.0"),
+            patch.object(urllib.request, "urlopen", return_value=mock_response),
+        ):
+            result = CodexCliProvider().check_update_available()
+        assert "0.1.0" in result
+        assert "0.2.0" in result
+        assert "npm i -g @openai/codex@latest" in result
+
+    def test_update_check_network_error(self) -> None:
+        """check_update_available() returns '' on network error."""
+        import urllib.request
+
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/codex"),
+            patch.object(CodexCliProvider, "get_version", return_value="0.1.0"),
+            patch.object(urllib.request, "urlopen", side_effect=Exception("network error")),
+        ):
+            result = CodexCliProvider().check_update_available()
+        assert result == ""
+
+    def test_update_check_empty_version_in_response(self) -> None:
+        """check_update_available() returns '' when API has no version field."""
+        import urllib.request
+
+        mock_data = json.dumps({"dist-tags": {"latest": "0.2.0"}})
+        mock_response = MagicMock()
+        mock_response.read.return_value = mock_data.encode("utf-8")
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/codex"),
+            patch.object(CodexCliProvider, "get_version", return_value="0.1.0"),
+            patch.object(urllib.request, "urlopen", return_value=mock_response),
+        ):
+            result = CodexCliProvider().check_update_available()
+        assert result == ""
+
+    def test_update_check_version_parse_error(self) -> None:
+        """check_update_available() returns '' when version strings can't parse."""
+        import urllib.request
+
+        mock_data = json.dumps({"version": "a.b.c"})
+        mock_response = MagicMock()
+        mock_response.read.return_value = mock_data.encode("utf-8")
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/codex"),
+            patch.object(CodexCliProvider, "get_version", return_value="x.y.z"),
+            patch.object(urllib.request, "urlopen", return_value=mock_response),
+        ):
+            result = CodexCliProvider().check_update_available()
+        assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# Misc uncovered branches
+# ---------------------------------------------------------------------------
+
+
+class TestCodexCliProviderMisc:
+    """Tests for uncovered branches in misc CodexCliProvider methods."""
+
+    def test_list_agents_returns_empty(self) -> None:
+        """list_agents() always returns empty list for Codex."""
+        result = CodexCliProvider().list_agents(Path("/tmp"))
+        assert result == []
+
+    def test_instruction_via_stdin_false(self) -> None:
+        """instruction_via_stdin property returns False for Codex."""
+        assert CodexCliProvider().instruction_via_stdin is False
+
+    def test_ensure_setup_accepts_string_path(self, tmp_path: Path) -> None:
+        """ensure_setup() handles string project_dir input."""
+        from the_architect.config import ArchitectConfig
+
+        config = ArchitectConfig().resolve(tmp_path)
+        result = CodexCliProvider().ensure_setup(str(tmp_path), config)
+        assert result == tmp_path / ".architect" / "prompts"
+
+    def test_list_models_subprocess_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """list_models() handles TimeoutExpired from codex debug models."""
+        import subprocess as _subprocess
+
+        monkeypatch.delenv("CODEX_MODEL", raising=False)
+        with (
+            patch("subprocess.run", side_effect=_subprocess.TimeoutExpired(["codex"], 10)),
+            patch(
+                "the_architect.core.codex_cli_provider._read_codex_config_model",
+                return_value="",
+            ),
+        ):
+            models = CodexCliProvider().list_models()
+        assert models == list(_FALLBACK_CODEX_MODELS)
+
+    def test_list_models_json_decode_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """list_models() handles JSONDecodeError from codex debug models."""
+        monkeypatch.delenv("CODEX_MODEL", raising=False)
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "not valid json"
+        with (
+            patch("subprocess.run", return_value=mock_result),
+            patch(
+                "the_architect.core.codex_cli_provider._read_codex_config_model",
+                return_value="",
+            ),
+        ):
+            models = CodexCliProvider().list_models()
+        assert models == list(_FALLBACK_CODEX_MODELS)
+
+    def test_list_models_key_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """list_models() handles KeyError from malformed catalog."""
+        monkeypatch.delenv("CODEX_MODEL", raising=False)
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps({"catalog": []})
+        with (
+            patch("subprocess.run", return_value=mock_result),
+            patch(
+                "the_architect.core.codex_cli_provider._read_codex_config_model",
+                return_value="",
+            ),
+        ):
+            models = CodexCliProvider().list_models()
+        assert models == list(_FALLBACK_CODEX_MODELS)
+
+
+# ---------------------------------------------------------------------------
+# Deeper model resolution branches
+# ---------------------------------------------------------------------------
+
+
+class TestCodexCliProviderModelResolutionDepth:
+    """Tests for deeper model resolution branches in get_resolved_model()."""
+
+    def test_get_resolved_model_cache_hit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """get_resolved_model() returns cached value on second call."""
+        monkeypatch.setenv("CODEX_MODEL", "gpt-5.4")
+        provider = CodexCliProvider()
+        first = provider.get_resolved_model(Path("/tmp/test_project"))
+        second = provider.get_resolved_model(Path("/tmp/test_project"))
+        assert first == second == "gpt-5.4"
+
+    def test_get_resolved_model_from_config_file(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """get_resolved_model() reads model from config file when env var is empty."""
+        monkeypatch.delenv("CODEX_MODEL", raising=False)
+        with patch(
+            "the_architect.core.codex_cli_provider._read_codex_config_model",
+            return_value="o3-mini",
+        ):
+            result = CodexCliProvider().get_resolved_model(Path("/tmp"))
+        assert result == "o3-mini"
+
+    def test_get_resolved_model_empty_when_all_fail(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """get_resolved_model() returns '' when all resolution fails."""
+        monkeypatch.delenv("CODEX_MODEL", raising=False)
+        with (
+            patch(
+                "the_architect.core.codex_cli_provider._read_codex_config_model",
+                return_value="",
+            ),
+            patch.object(CodexCliProvider, "list_models", return_value=[]),
+        ):
+            result = CodexCliProvider().get_resolved_model(Path("/tmp"))
+        assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# parse_output_line edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestCodexCliProviderParseOutputEdge:
+    """Tests for edge-case branches in parse_output_line()."""
+
+    def test_command_execution_truncation(self) -> None:
+        """command_execution with command > 80 chars gets truncated."""
+        long_cmd = "a" * 100
+        line = json.dumps(
+            {
+                "type": "item.completed",
+                "item": {"type": "command_execution", "command": long_cmd},
+            }
+        )
+        result = CodexCliProvider().parse_output_line(line)
+        assert result is not None
+        # Should be truncated to 80 chars + ellipsis
+        assert len(result.display_lines[0]) < 100
+
+
+# ---------------------------------------------------------------------------
+# _read_codex_config_model helper function
+# ---------------------------------------------------------------------------
+
+
+class TestReadCodexConfigModel:
+    """Tests for _read_codex_config_model() helper function."""
+
+    def test_returns_model_from_valid_config(self, tmp_path: Path) -> None:
+        """_read_codex_config_model() reads model from valid config.toml."""
+        config_dir = tmp_path / ".codex"
+        config_dir.mkdir()
+        config_file = config_dir / "config.toml"
+        config_file.write_text('model = "gpt-5.4"\n', encoding="utf-8")
+        with patch.object(Path, "home", return_value=tmp_path):
+            from the_architect.core.codex_cli_provider import _read_codex_config_model
+
+            result = _read_codex_config_model()
+        assert result == "gpt-5.4"
+
+    def test_returns_empty_when_file_missing(self, tmp_path: Path) -> None:
+        """_read_codex_config_model() returns '' when config file doesn't exist."""
+        with patch.object(Path, "home", return_value=tmp_path):
+            from the_architect.core.codex_cli_provider import _read_codex_config_model
+
+            result = _read_codex_config_model()
+        assert result == ""
+
+    def test_returns_empty_when_no_model_field(self, tmp_path: Path) -> None:
+        """_read_codex_config_model() returns '' when config has no model field."""
+        config_dir = tmp_path / ".codex"
+        config_dir.mkdir()
+        config_file = config_dir / "config.toml"
+        config_file.write_text('[other]\nkey = "value"\n', encoding="utf-8")
+        with patch.object(Path, "home", return_value=tmp_path):
+            from the_architect.core.codex_cli_provider import _read_codex_config_model
+
+            result = _read_codex_config_model()
+        assert result == ""
+
+    def test_returns_empty_on_toml_decode_error(self, tmp_path: Path) -> None:
+        """_read_codex_config_model() returns '' on TOMLDecodeError."""
+        config_dir = tmp_path / ".codex"
+        config_dir.mkdir()
+        config_file = config_dir / "config.toml"
+        config_file.write_text("this is not valid toml {{{", encoding="utf-8")
+        with patch.object(Path, "home", return_value=tmp_path):
+            from the_architect.core.codex_cli_provider import _read_codex_config_model
+
+            result = _read_codex_config_model()
+        assert result == ""
+
+    def test_returns_empty_on_os_error(self, tmp_path: Path) -> None:
+        """_read_codex_config_model() returns '' on file read error."""
+        config_dir = tmp_path / ".codex"
+        config_dir.mkdir()
+        config_file = config_dir / "config.toml"
+        config_file.write_text('model = "gpt-5.4"\n', encoding="utf-8")
+        with (
+            patch.object(Path, "home", return_value=tmp_path),
+            patch("builtins.open", side_effect=PermissionError),
+        ):
+            from the_architect.core.codex_cli_provider import _read_codex_config_model
+
+            result = _read_codex_config_model()
+        assert result == ""

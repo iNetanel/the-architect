@@ -282,65 +282,116 @@ class TestExecutionStartupStatus:
     """
 
 
-class TestMaybeKillOwnTmuxSession:
-    """Tests for _maybe_kill_own_tmux_session tmux cleanup."""
+# ═══════════════════════════════════════════════════════════════════════════
+# _infinite_loop_reset_sleep_interrupted_tasks
+# ═══════════════════════════════════════════════════════════════════════════
 
-    def test_maybe_kill_no_tmux_env_var(self) -> None:
-        """Should do nothing when TMUX env var is not set."""
-        from the_architect.cli import _maybe_kill_own_tmux_session
 
-        with patch.dict("os.environ", {}, clear=True):
-            _maybe_kill_own_tmux_session(Path("/tmp"))
-            # No exception raised
+class TestInfiniteLoopResetSleepInterruptedTasks:
+    """Tests for the sleep-interrupted task reset helper."""
 
-    def test_maybe_kill_tmux_subprocess_failure(self) -> None:
-        """Should handle subprocess failure gracefully."""
-        from the_architect.cli import _maybe_kill_own_tmux_session
+    def _make_progress(self, tmp_path: Path, content: str) -> Path:
+        p = tmp_path / "PROGRESS.md"
+        p.write_text(content, encoding="utf-8")
+        return p
 
-        with (
-            patch.dict("os.environ", {"TMUX": "test"}),
-            patch("subprocess.run") as mock_run,
-        ):
-            mock_run.return_value.returncode = 1
-            _maybe_kill_own_tmux_session(Path("/tmp"))
-            # No exception raised
+    def _make_config(self, tmp_path: Path) -> object:
+        from the_architect.config import ArchitectConfig
 
-    def test_maybe_kill_different_session_name(self) -> None:
-        """Should not kill session with different name."""
-        from the_architect.cli import _maybe_kill_own_tmux_session
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        progress = tmp_path / "PROGRESS.md"
+        progress.write_text("", encoding="utf-8")
+        return ArchitectConfig(
+            project_root=tmp_path,
+            tasks_dir=tasks_dir,
+            progress_file=progress,
+            log_dir=tmp_path / ".architect" / "logs",
+        )
 
-        with (
-            patch.dict("os.environ", {"TMUX": "test"}),
-            patch("subprocess.run") as mock_run,
-            patch("the_architect.core.tmux.get_session_name") as mock_get_name,
-            patch("the_architect.core.tmux.session_exists") as mock_exists,
-        ):
-            mock_run.return_value.returncode = 0
-            mock_run.return_value.stdout = "different-session"
-            mock_get_name.return_value = "architect-test"
+    def setup_method(self):
+        import the_architect.core.runner as _runner
 
-            _maybe_kill_own_tmux_session(Path("/tmp"))
+        with _runner._SLEEP_INTERRUPTED_TASKS_LOCK:
+            _runner._SLEEP_INTERRUPTED_TASKS.clear()
 
-            # Should not check if session exists
-            mock_exists.assert_not_called()
+    def test_no_sleep_tasks_returns_zero(self, tmp_path: Path):
+        from the_architect.cli import _infinite_loop_reset_sleep_interrupted_tasks
 
-    def test_maybe_kill_matches_session(self) -> None:
-        """Should kill session when names match."""
-        from the_architect.cli import _maybe_kill_own_tmux_session
+        config = self._make_config(tmp_path)
+        result = _infinite_loop_reset_sleep_interrupted_tasks(tmp_path, config)
+        assert result == 0
 
-        with (
-            patch.dict("os.environ", {"TMUX": "test"}),
-            patch("subprocess.run") as mock_run,
-            patch("the_architect.core.tmux.get_session_name") as mock_get_name,
-            patch("the_architect.core.tmux.session_exists") as mock_exists,
-            patch("the_architect.core.tmux.kill_session") as mock_kill,
-        ):
-            mock_run.return_value.returncode = 0
-            mock_run.return_value.stdout = "architect-test"
-            mock_get_name.return_value = "architect-test"
-            mock_exists.return_value = True
+    def test_resets_failed_sleep_task_to_pending(self, tmp_path: Path):
+        from the_architect.cli import _infinite_loop_reset_sleep_interrupted_tasks
+        from the_architect.core.runner import _mark_sleep_interrupted
 
-            _maybe_kill_own_tmux_session(Path("/tmp"))
+        _mark_sleep_interrupted("T07")
+        config = self._make_config(tmp_path)
+        progress_content = (
+            "# Progress\n\n"
+            "| Task | Title | Status | Date |\n"
+            "|------|-------|--------|------|\n"
+            "| T07 | lower priority | Failed | 2026-05-15 |\n"
+        )
+        config.progress_file.write_text(progress_content, encoding="utf-8")
 
-            # Should kill the matching session
-            mock_kill.assert_called_once_with("architect-test")
+        result = _infinite_loop_reset_sleep_interrupted_tasks(tmp_path, config)
+        assert result == 1
+
+        updated = config.progress_file.read_text(encoding="utf-8")
+        assert "Pending" in updated
+        assert "Failed" not in updated
+
+    def test_does_not_reset_non_sleep_failed_task(self, tmp_path: Path):
+        from the_architect.cli import _infinite_loop_reset_sleep_interrupted_tasks
+
+        # T07 NOT in sleep registry — should not be reset
+        config = self._make_config(tmp_path)
+        progress_content = (
+            "# Progress\n\n"
+            "| Task | Title | Status | Date |\n"
+            "|------|-------|--------|------|\n"
+            "| T07 | lower priority | Failed | 2026-05-15 |\n"
+        )
+        config.progress_file.write_text(progress_content, encoding="utf-8")
+
+        result = _infinite_loop_reset_sleep_interrupted_tasks(tmp_path, config)
+        assert result == 0
+
+        updated = config.progress_file.read_text(encoding="utf-8")
+        assert "Failed" in updated  # unchanged
+
+    def test_missing_progress_returns_zero(self, tmp_path: Path):
+        from the_architect.cli import _infinite_loop_reset_sleep_interrupted_tasks
+        from the_architect.core.runner import _mark_sleep_interrupted
+
+        _mark_sleep_interrupted("T07")
+        config = self._make_config(tmp_path)
+        config.progress_file.unlink()  # delete it
+
+        result = _infinite_loop_reset_sleep_interrupted_tasks(tmp_path, config)
+        assert result == 0
+
+    def test_resets_multiple_sleep_tasks(self, tmp_path: Path):
+        from the_architect.cli import _infinite_loop_reset_sleep_interrupted_tasks
+        from the_architect.core.runner import _mark_sleep_interrupted
+
+        _mark_sleep_interrupted("T06")
+        _mark_sleep_interrupted("T07")
+        config = self._make_config(tmp_path)
+        progress_content = (
+            "# Progress\n\n"
+            "| Task | Title | Status | Date |\n"
+            "|------|-------|--------|------|\n"
+            "| T06 | task six | Failed | 2026-05-15 |\n"
+            "| T07 | task seven | Failed | 2026-05-15 |\n"
+        )
+        config.progress_file.write_text(progress_content, encoding="utf-8")
+
+        result = _infinite_loop_reset_sleep_interrupted_tasks(tmp_path, config)
+        assert result == 2
+
+        updated = config.progress_file.read_text(encoding="utf-8")
+        assert "Failed" not in updated
+        assert updated.count("Pending") == 2

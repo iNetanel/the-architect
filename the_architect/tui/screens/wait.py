@@ -77,7 +77,9 @@ class WaitScreen(Screen[None]):
         # planning or retrospective run can easily be 5-10 minutes of
         # work, so a stray ESC must not silently tear it down. Ctrl+C
         # remains wired at the app level as the immediate hard stop.
-        Binding("escape", "pause_menu", "Pause menu"),
+        # priority=True so ESC fires before any focused child (e.g. a
+        # spinner or log widget) blurs itself and swallows the key.
+        Binding("escape", "pause_menu", "Pause menu", priority=True),
         Binding("ctrl+c", "quit", "Quit"),
     ]
 

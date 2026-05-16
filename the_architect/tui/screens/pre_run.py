@@ -162,120 +162,6 @@ def run_provider_selection(
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Scope
-# ══════════════════════════════════════════════════════════════════════
-
-
-class ScopeScreen(Screen[str]):
-    """Textual screen for picking the planning scope."""
-
-    DEFAULT_CSS = """
-    ScopeScreen {
-        align: center middle;
-    }
-
-    #scope_body {
-        width: 82;
-        height: auto;
-        padding: 1 2;
-        border: round $panel;
-        background: $panel 20%;
-    }
-
-    #scope_title { color: $accent; text-style: bold; }
-    #scope_hint { color: $text-muted; padding: 0 0 1 0; }
-
-    ListView { border: round $panel; height: auto; }
-    ListItem { padding: 0 1; }
-
-    #scope_instructions { color: $text-muted; padding: 1 0 0 0; }
-    """
-
-    BINDINGS = [
-        Binding("enter", "confirm", "Select"),
-        Binding("backspace", "go_back", "Back"),
-        Binding("escape", "cancel", "Cancel"),
-        Binding("ctrl+c", "cancel", "Cancel"),
-    ]
-
-    _CHOICES = (
-        (
-            "standard",
-            "Standard — one feature area per task, balanced context (recommended)",
-        ),
-        (
-            "simple",
-            "Simple — one thing per task, smaller context per run (weak/local models)",
-        ),
-        (
-            "complex",
-            "Complex — one subsystem per task, larger context (frontier models only)",
-        ),
-    )
-
-    def __init__(self, initial_scope: str = "standard") -> None:
-        super().__init__()
-        self._initial_scope = initial_scope
-
-    def compose(self) -> ComposeResult:
-        yield Header()
-        with Vertical(id="scope_body"):
-            yield Static("Task scope", id="scope_title")
-            yield Static(
-                "Pick the task granularity. Standard is recommended "
-                "unless you know you need otherwise.",
-                id="scope_hint",
-            )
-            items: list[ListItem] = []
-            for _, label in self._CHOICES:
-                items.append(ListItem(Label(label)))
-            # Resolve initial scope selection
-            scope_map = {"standard": 0, "simple": 1, "complex": 2}
-            initial_idx = scope_map.get(self._initial_scope, 0)
-            yield ListView(*items, id="scope_list", initial_index=initial_idx)
-            yield Static(
-                "[dim]↑↓ navigate · Enter confirm · Esc cancel[/dim]",
-                id="scope_instructions",
-                markup=True,
-            )
-        yield Footer()
-
-    def action_confirm(self) -> None:
-        try:
-            idx = self.query_one("#scope_list", ListView).index
-            if idx is None:
-                idx = 0
-        except Exception:
-            idx = 0
-        self.dismiss(self._CHOICES[idx][0])
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-    def on_list_view_selected(self, event: ListView.Selected) -> None:
-        self.action_confirm()
-
-    def action_go_back(self) -> None:
-        """Navigate back to the previous pre-run screen."""
-        self.dismiss(BACK_SENTINEL)  # type: ignore[arg-type]
-
-
-def run_scope_screen(initial_scope: str = "standard") -> str | object:
-    """Boot the Architect app, show the scope screen, return the scope.
-
-    Returns ``BACK_SENTINEL`` on back.
-    """
-    from the_architect.tui.app import run_single_screen
-
-    result = run_single_screen(ScopeScreen(initial_scope=initial_scope))
-    if result is BACK_SENTINEL:
-        return BACK_SENTINEL
-    if result is None:
-        raise SystemExit(0)
-    return str(result)
-
-
-# ══════════════════════════════════════════════════════════════════════
 # Generic string-list picker (model / agent)
 # ══════════════════════════════════════════════════════════════════════
 
@@ -675,13 +561,11 @@ __all__ = [
     "PendingTasksScreen",
     "ProviderOption",
     "ProviderSelectionScreen",
-    "ScopeScreen",
     "StringListPickerScreen",
     "UpdateActionScreen",
     "run_agent_picker",
     "run_model_picker",
     "run_pending_tasks_screen",
     "run_provider_selection",
-    "run_scope_screen",
     "run_update_action_screen",
 ]

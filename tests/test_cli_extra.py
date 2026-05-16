@@ -527,43 +527,23 @@ class TestFormatStatusJson:
 
 
 class TestMonitorCmd:
-    """``monitor`` is mostly tmux glue — cover the branches that do not attach."""
+    """``monitor`` command — cover the TUI screen path."""
 
-    def test_monitor_without_tmux_installed(self, tmp_path: Path) -> None:
-        with patch("the_architect.core.tmux.is_tmux_available", return_value=False):
+    def test_monitor_opens_tui_screen(self, tmp_path: Path) -> None:
+        """Monitor should open the TUI monitor screen."""
+        with patch("the_architect.tui.screens.run_monitor_screen") as mock_screen:
+            result = CliRunner().invoke(main, ["monitor", "-p", str(tmp_path)])
+        mock_screen.assert_called_once()
+        assert result.exit_code == 0, result.output
+
+    def test_monitor_tui_failure_exits_nonzero(self, tmp_path: Path) -> None:
+        """If TUI screen raises, monitor exits with code 1."""
+        with patch(
+            "the_architect.tui.screens.run_monitor_screen",
+            side_effect=RuntimeError("screen broken"),
+        ):
             result = CliRunner().invoke(main, ["monitor", "-p", str(tmp_path)])
         assert result.exit_code == 1
-        assert "tmux is not installed" in result.output
-
-    def test_monitor_without_any_session(self, tmp_path: Path) -> None:
-        with (
-            patch("the_architect.core.tmux.is_tmux_available", return_value=True),
-            patch("the_architect.core.tmux.session_exists", return_value=False),
-            patch(
-                "the_architect.core.tmux.list_architect_sessions",
-                return_value=[],
-            ),
-        ):
-            result = CliRunner().invoke(main, ["monitor", "-p", str(tmp_path)])
-        assert result.exit_code == 0, result.output
-        assert "No active session" in result.output
-        assert "architect" in result.output
-
-    def test_monitor_with_other_architect_sessions(self, tmp_path: Path) -> None:
-        with (
-            patch("the_architect.core.tmux.is_tmux_available", return_value=True),
-            patch("the_architect.core.tmux.session_exists", return_value=False),
-            patch(
-                "the_architect.core.tmux.list_architect_sessions",
-                return_value=["architect-foo", "architect-bar"],
-            ),
-        ):
-            result = CliRunner().invoke(main, ["monitor", "-p", str(tmp_path)])
-        # When more than one other session exists we print a helpful list
-        # and exit 0.
-        assert result.exit_code == 0, result.output
-        assert "architect-foo" in result.output
-        assert "architect-bar" in result.output
 
 
 # ---------------------------------------------------------------------------

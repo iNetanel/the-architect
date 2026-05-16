@@ -21,6 +21,22 @@ replaces that pattern:
 Non-TTY / ``--no-tui`` / ``--headless`` paths never create a runner
 and keep running the synchronous flow directly on the main thread —
 the existing questionary / prompt_toolkit helpers are unchanged.
+
+Session survival (Infinite Loop / persistent mode)
+---------------------------------------------------
+When Infinite Loop or persistent mode is active the worker thread is
+spawned as **non-daemon** so it keeps running even after the Textual
+TUI exits.  A SIGHUP handler is installed for the same duration: if
+the controlling terminal closes (SSH drop, window close) the signal
+closes the TUI cleanly but the worker continues in headless mode,
+writing all output to ``.architect/logs/``.  The user can reconnect
+with ``architect monitor`` at any time.
+
+Detach without tmux
+-------------------
+``request_tui_detach()`` is called from the pause menu "Detach"
+button.  It exits the Textual app (freeing the terminal) while the
+non-daemon worker continues running.  No tmux required.
 """
 
 from __future__ import annotations
@@ -65,6 +81,57 @@ def tui_suppressed_after_exit() -> bool:
         return _TUI_SUPPRESSED_AFTER_EXIT
 
 
+def request_tui_detach() -> bool:
+    """Close the Textual TUI while keeping the worker running.
+
+    Called from the pause menu "Detach" button.  The worker thread must
+    be non-daemon (i.e. the run was started in Infinite Loop or
+    persistent mode) for detach to be meaningful — otherwise the
+    process exits when the TUI exits.
+
+    Returns:
+        True if the TUI was successfully requested to exit.
+        False if there is no active runner or it is already shutting
+        down.
+    """
+    with _ACTIVE_LOCK:
+        runner = _ACTIVE_RUNNER
+    if runner is None or not runner.app_available:
+        return False
+    try:
+        runner.app.call_from_thread(runner.app.exit)
+        return True
+    except Exception as exc:
+        logger.debug(f"request_tui_detach: call_from_thread failed: {exc!r}")
+        return False
+
+
+def worker_is_persistent() -> bool:
+    """Return True when the active runner is in persistent mode.
+
+    Persistent mode means the SIGHUP handler is installed and detach is
+    meaningful — the run will survive terminal close / SSH drop and
+    continue headless.
+
+    This is True when:
+    - The CLI ``--persistent`` flag was passed (set at runner construction), or
+    - The user selected Infinite Loop in the TUI pre-run screen and
+      :meth:`ArchitectAppRunner.activate_persistence` was called, or
+    - :meth:`ArchitectAppRunner.activate_persistence` was called for any
+      other reason.
+
+    Note: the worker thread is **always** non-daemon (it outlives the TUI
+    regardless), but ``worker_is_persistent()`` specifically reflects
+    whether the SIGHUP handler is active — i.e. whether "Detach" in the
+    pause menu will actually keep the run going after terminal close.
+    """
+    with _ACTIVE_LOCK:
+        runner = _ACTIVE_RUNNER
+    if runner is None:
+        return False
+    return runner._persistent
+
+
 class ArchitectAppRunner:
     """Hosts one :class:`ArchitectApp` while a worker thread drives the flow.
 
@@ -77,21 +144,82 @@ class ArchitectAppRunner:
     the flow raises is re-raised from :meth:`run` on the main thread
     after the app has exited, so the CLI's error handling path is
     unchanged.
+
+    When ``persistent=True`` the worker is spawned as a non-daemon
+    thread so it keeps running after the TUI exits (SIGHUP / detach).
     """
 
     def __init__(
         self,
         flow: Callable[..., Any],
         kwargs: dict[str, Any] | None = None,
+        persistent: bool = False,
     ) -> None:
+        """Initialise the runner.
+
+        Args:
+            flow: The synchronous flow function to run on the worker.
+            kwargs: Keyword arguments forwarded to ``flow``.
+            persistent: When True the worker is immediately non-daemon and
+                a SIGHUP handler is installed.  Use when ``--persistent``
+                was passed on the CLI (before the TUI starts).
+
+                For Infinite Loop selected inside the TUI pre-run screen,
+                call :meth:`activate_persistence` from the worker thread
+                after the user has confirmed the loop — this installs the
+                SIGHUP handler at that point.  The worker thread is always
+                non-daemon regardless, so the run always survives TUI
+                detach once it has started.
+        """
         self._flow = flow
         self._flow_kwargs = kwargs or {}
+        self._persistent = persistent
         self.app = ArchitectApp()
         self._worker: threading.Thread | None = None
         self._flow_exception: BaseException | None = None
         self._flow_return: Any = None
         self._flow_done = threading.Event()
         self._app_available = True
+
+    def activate_persistence(self) -> None:
+        """Upgrade this runner to persistent mode at runtime.
+
+        Called from the worker thread after the user selects Infinite Loop
+        in the TUI pre-run screen (where ``--persistent`` was not passed on
+        the CLI).
+
+        Sets ``_persistent = True`` so that:
+        - :func:`worker_is_persistent` returns True (pause menu shows Detach)
+        - The run is not joined on TUI exit (detach path)
+        - The detach hint is printed after the TUI closes
+
+        The SIGHUP handler cannot be installed from a worker thread
+        (``signal.signal`` requires the main thread), so it is instead
+        installed on the main thread via :meth:`_install_sighup_if_pending`
+        which is called from the app's event loop via ``call_from_thread``.
+
+        Safe to call multiple times — subsequent calls are no-ops.
+        """
+        if self._persistent:
+            return
+        self._persistent = True
+        logger.debug("activate_persistence: marking runner as persistent")
+        # Request the main-thread event loop to install the SIGHUP handler.
+        if not self.app.shutdown_started:
+            try:
+                self.app.call_from_thread(self._install_sighup_from_main_thread)
+            except Exception as exc:
+                logger.debug(f"activate_persistence: call_from_thread failed: {exc!r}")
+
+    def _install_sighup_from_main_thread(self) -> None:
+        """Install the SIGHUP handler on the main thread (called via event loop)."""
+        try:
+            import signal as _signal
+
+            _signal.signal(_signal.SIGHUP, self._sighup_handler)
+            logger.debug("activate_persistence: SIGHUP handler installed on main thread")
+        except (ValueError, OSError, AttributeError):
+            pass
 
     @property
     def app_available(self) -> bool:
@@ -137,9 +265,15 @@ class ArchitectAppRunner:
                 self._flow_exception = exc
             finally:
                 self._flow_done.set()
+                # Clear _TUI_SUPPRESSED_AFTER_EXIT now that the worker is
+                # done — future run_single_screen calls (e.g. from a new
+                # run in the same process) must not be suppressed.
+                with _ACTIVE_LOCK:
+                    global _TUI_SUPPRESSED_AFTER_EXIT
+                    _TUI_SUPPRESSED_AFTER_EXIT = False
                 # Schedule app exit on the event loop thread. Safe from
                 # worker thread via call_from_thread. Wrapped in try
-                # because the app may already be exiting.
+                # because the app may already be exiting (detach / SIGHUP).
                 if not self.app.shutdown_started:
                     try:
                         self.app.call_from_thread(self.app.exit)
@@ -156,7 +290,14 @@ class ArchitectAppRunner:
             self._worker = threading.Thread(
                 target=_worker,
                 name="architect-cli-flow",
-                daemon=True,
+                # Always non-daemon: the worker must be allowed to outlive
+                # the TUI so detach works from ANY run (not just those that
+                # were started with --persistent or --infinite-loop).
+                # The SIGHUP handler is installed immediately when
+                # persistent=True (CLI flag) or lazily via
+                # activate_persistence() when the user selects Infinite
+                # Loop inside the TUI pre-run screen.
+                daemon=False,
             )
             self._worker.start()
 
@@ -171,23 +312,33 @@ class ArchitectAppRunner:
         # finally block below never reaches ``kill_active_subprocesses``.
         atexit.register(_atexit_kill_subprocesses)
 
-        # Also install a SIGINT handler so Ctrl+C arriving *before*
-        # Textual has fully taken over the event loop (for example
-        # during the brief window between ``atexit.register`` and
-        # ``app.run()`` actually calling ``asyncio.run``) still kills
-        # any subprocess we've already spawned. After Textual's loop
-        # starts, it replaces this handler with its own — which is
-        # fine, because its handler routes to ``action_quit`` → our
-        # finally block below.
+        # Install a SIGINT handler so Ctrl+C arriving *before* Textual
+        # has fully taken over the event loop still kills any subprocess
+        # we've already spawned.  After Textual's loop starts, it
+        # replaces this handler with its own — which routes to
+        # ``action_quit`` → our finally block below.
         _prev_sigint: Any = None
         try:
             _prev_sigint = signal.signal(signal.SIGINT, _sigint_kill_handler)
         except (ValueError, OSError):
-            # signal.signal() only works on the main thread.
-            # ArchitectAppRunner.run() is always called from main in
-            # production (from Click's entry point), but tests may
-            # invoke it from a worker thread — silently skip.
             _prev_sigint = None
+
+        # SIGHUP handler for persistent / Infinite Loop runs.
+        # When the controlling terminal closes (SSH drop, window close)
+        # the OS sends SIGHUP to the foreground process.  Default
+        # disposition is to terminate the process — which would kill
+        # the Infinite Loop mid-run.  Instead: close the TUI cleanly
+        # (the terminal is gone anyway) and let the non-daemon worker
+        # continue running headless, writing output to the log file.
+        # The user reconnects with ``architect monitor``.
+        _prev_sighup: Any = None
+        if self._persistent:
+            try:
+                _prev_sighup = signal.signal(signal.SIGHUP, self._sighup_handler)
+                logger.debug("Installed SIGHUP handler for persistent run")
+            except (ValueError, OSError, AttributeError):
+                # SIGHUP not available on Windows — safe to ignore.
+                _prev_sighup = None
 
         app_error: BaseException | None = None
         try:
@@ -199,6 +350,19 @@ class ArchitectAppRunner:
             app_error = exc
         finally:
             _restore_terminal_input_modes()
+
+            # Restore signal handlers before any further work.
+            if _prev_sigint is not None:
+                try:
+                    signal.signal(signal.SIGINT, _prev_sigint)
+                except (ValueError, OSError):
+                    pass
+            if _prev_sighup is not None:
+                try:
+                    signal.signal(signal.SIGHUP, _prev_sighup)
+                except (ValueError, OSError, AttributeError):
+                    pass
+
             unexpected_app_exit = not self._flow_done.is_set() and not self.app.shutdown_started
             if unexpected_app_exit:
                 logger.warning(
@@ -212,14 +376,10 @@ class ArchitectAppRunner:
                     if _ACTIVE_RUNNER is self:
                         _ACTIVE_RUNNER = None
                     _TUI_SUPPRESSED_AFTER_EXIT = True
-                # The TUI can disappear if Textual's screen stack is emptied by
-                # an overlay transition. That must not cancel the CLI flow: in
-                # Infinite Loop it happens between iterations, right before the
-                # newly planned tasks should execute. Once the worker exists,
-                # degrade to headless and wait for the real flow to finish. Only
-                # fail fast when the app exited before the worker could even
-                # start; otherwise a long planning/execution pass would be killed
-                # just because it exceeded an arbitrary UI watchdog timeout.
+                # The TUI can disappear if Textual's screen stack is emptied
+                # by an overlay transition (between Infinite Loop iterations),
+                # or because the user detached.  Neither should cancel the
+                # flow — degrade to headless and wait for the worker.
                 if self._worker is not None:
                     self._flow_done.wait()
                 else:
@@ -238,53 +398,99 @@ class ArchitectAppRunner:
                             "Architect TUI exited unexpectedly before the CLI flow completed"
                         )
 
-            # Restore whatever SIGINT handler was in place before we
-            # took over (usually Python's default, or a pytest one).
-            if _prev_sigint is not None:
-                try:
-                    signal.signal(signal.SIGINT, _prev_sigint)
-                except (ValueError, OSError):
-                    pass
             if not unexpected_app_exit:
-                # When the app exits (user hit Ctrl+C in the TUI, or the
-                # worker completed normally), make sure no provider
-                # subprocess is left running in the background. This is
-                # the critical half of the Ctrl+C fix — the event loop
-                # has already torn down, but a daemon worker thread may
-                # still be blocked on ``process.wait()`` for the child
-                # opencode / claude invocation. Kill anything tracked by
-                # the runner registry before we return.
-                try:
-                    from the_architect.core.runner import kill_active_subprocesses
+                worker_still_running = (
+                    self._worker is not None
+                    and self._worker.is_alive()
+                    and not self._flow_done.is_set()
+                )
+                if worker_still_running and not self._persistent:
+                    # User quit the TUI (Ctrl+C / q) while a task was running.
+                    # Kill the active provider subprocess so the worker
+                    # unblocks and can finish cleanly. Without this the
+                    # non-daemon worker keeps the process alive forever.
+                    try:
+                        from the_architect.core.runner import kill_active_subprocesses
 
-                    kill_active_subprocesses()
-                except Exception:
-                    pass
+                        kill_active_subprocesses()
+                    except Exception:
+                        pass
+                elif not worker_still_running:
+                    # Worker already done — kill any leftover subprocess.
+                    try:
+                        from the_architect.core.runner import kill_active_subprocesses
+
+                        kill_active_subprocesses()
+                    except Exception:
+                        pass
 
             # Wait for the worker to finish so flow_exception /
             # flow_return are fully populated.
-            if not unexpected_app_exit:
+            # For persistent runs where the user detached and the worker
+            # is still running, we do NOT join — just return so the
+            # terminal is freed immediately.
+            if not unexpected_app_exit and not self._persistent:
                 self._flow_done.wait(timeout=5.0)
-            if self._worker is not None and self._worker.is_alive():
-                # Worker still stuck; don't block forever.
+            if self._worker is not None and self._worker.is_alive() and not self._persistent:
                 self._worker.join(timeout=1.0)
+
+            # Only clear _TUI_SUPPRESSED_AFTER_EXIT once the worker has
+            # actually finished.  If the user quit the TUI (Ctrl+C / q)
+            # while the worker is still running (non-daemon), clearing it
+            # early causes run_single_screen to fall through to
+            # _Harness().run() from the worker thread → LinuxDriver tries
+            # signal.signal(SIGTSTP) from a non-main thread → crash.
+            worker_finished = self._flow_done.is_set()
             with _ACTIVE_LOCK:
                 if _ACTIVE_RUNNER is self:
                     _ACTIVE_RUNNER = None
-                _TUI_SUPPRESSED_AFTER_EXIT = False
-            # Unregister the atexit hook now that we've cleaned up
-            # synchronously — leaving it registered would fire again
-            # at process exit and log "no active subprocesses" noise.
+                if worker_finished:
+                    _TUI_SUPPRESSED_AFTER_EXIT = False
+                # else: leave _TUI_SUPPRESSED_AFTER_EXIT = True so the
+                # still-running worker's run_single_screen calls return
+                # None instead of booting a new Textual app.
+
             try:
                 atexit.unregister(_atexit_kill_subprocesses)
             except Exception:
                 pass
+
+            # Persistent run detached — print a brief reconnect hint so
+            # the user knows the run is still going.
+            if self._persistent and not self._flow_done.is_set():
+                _print_detach_hint()
 
         if self._flow_exception is not None:
             raise self._flow_exception
         if app_error is not None:
             raise app_error
         return self._flow_return
+
+    def _sighup_handler(self, signum: int, frame: Any) -> None:
+        """Handle SIGHUP by closing the TUI and continuing headless.
+
+        The terminal is gone (SSH drop / window close). Close the
+        Textual app so it does not try to write to a dead terminal,
+        then let the non-daemon worker thread continue running
+        headless.  All output goes to ``.architect/logs/``.
+        """
+        logger.info("SIGHUP received — closing TUI, worker continues headless")
+        if not self.app.shutdown_started:
+            try:
+                self.app.call_from_thread(self.app.exit)
+            except Exception:
+                pass
+
+
+def _print_detach_hint() -> None:
+    """Print a brief message after TUI detach so the user knows what to do."""
+    import sys
+
+    sys.stdout.write(
+        "\n  The Architect is still running in the background.\n"
+        "  Reconnect with:  architect monitor\n\n"
+    )
+    sys.stdout.flush()
 
 
 def _restore_terminal_input_modes() -> None:

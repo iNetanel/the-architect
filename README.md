@@ -257,7 +257,7 @@ Everything below is what you get on top of your AI coding CLI — none of it exi
 | | Raw CLI | With The Architect |
 |---|---|---|
 | UI | Raw terminal scroll | Full-screen Textual TUI with Live / Progress / Diagnostics / Settings tabs |
-| Live monitoring | None | tmux split-pane dashboard (non-TUI fallback) |
+| Live monitoring | None | `architect monitor` — TUI monitor screen reads live state from `.architect/monitor_state.json` |
 | Run summary | None | `tasks/SUMMARY.md` — tasks, attempts, models, tokens, duration, retrospective rounds |
 | Task history | None | Every run archived to `tasks/archive/YYYY-MM-DD_HHMMSS/` |
 | Logs | Wherever the CLI writes | Per-task logs in `.architect/logs/`, per-attempt, per-reassessment |
@@ -325,9 +325,6 @@ architect --standalone openrouter/anthropic/claude-sonnet-4.5
 
 # Use a specific project directory
 architect --project /path/to/project
-
-# Skip tmux dashboard
-architect --no-monitor
 ```
 
 ### Subcommands
@@ -371,7 +368,7 @@ architect logs
 architect logs --task T01
 architect logs --task T01 --tail 100
 
-# Attach to the live tmux monitoring session
+# Open the live monitor screen (reads .architect/monitor_state.json)
 architect monitor
 
 # Show version and build number
@@ -498,7 +495,7 @@ Screens and what they show:
   - **Settings** — provider, model, agent, and feature flags used for the run
 - **Wait screen overlay** — animated spinner, title, detail block, log tail. Pushed onto the running app for planning, retrospective rounds, and between-task reassessment.
 - **Mode selection / Resume** — provider/model choices, free tier, persistent mode, integrity defense, force reassessment, and token budget.
-- **Inspection** — `architect list --tui`, `architect status --tui`, `architect logs --tui`, `architect circuit --tui`, `architect monitor --tui`, `architect config --tui`.
+- **Inspection** — `architect list --tui`, `architect status --tui`, `architect logs --tui`, `architect circuit --tui`, `architect monitor`, `architect config --tui`.
 
 Key bindings inside the execution screen: `l` / `p` / `d` / `g` switch tabs, `q` or `Ctrl+C` quit.
 
@@ -512,17 +509,23 @@ architect --headless             # unattended runs (CI, cron)
 architect > run.log 2>&1         # piped / redirected stdout
 ```
 
-### Surviving SSH disconnect
+### Surviving SSH disconnect / terminal close
 
-When the TUI is the default, The Architect uses a single-pane tmux wrapper when tmux is available, so the run can survive detach/reattach without the classic split dashboard competing with the TUI. You can also wrap it in your own tmux/screen if you prefer to manage the session yourself:
+Infinite Loop (`--infinite-loop`) and persistent mode (`--persistent`) runs spawn the worker as a **non-daemon thread** and install a `SIGHUP` handler. If your terminal closes or SSH drops, the TUI exits cleanly but the worker keeps running headless, writing all output to `.architect/logs/`. Reconnect from any terminal:
 
 ```bash
-tmux new -s arch 'architect'
+architect monitor
+```
+
+The monitor screen reads `.architect/monitor_state.json` live — no tmux required.
+
+You can also wrap the run in your own tmux/screen if you prefer to manage the session yourself:
+
+```bash
+tmux new -s arch 'architect --infinite-loop'
 # later, from any terminal:
 tmux attach -t arch
 ```
-
-The `architect` process still writes live state to `.architect/monitor_state.json`, so `architect monitor --tui` (or the classic `architect monitor` tmux reattach, when run under `--no-tui`) works for reconnecting read-only.
 
 ---
 
@@ -616,65 +619,24 @@ architect --standalone openrouter/anthropic/claude-sonnet-4.5
 
 ---
 
-## Live Dashboard (tmux, non-TUI mode)
+## Live Monitoring
 
-When the TUI is disabled (`--no-tui`, `NO_COLOR=1`, piped stdout, etc.) and tmux is installed, The Architect falls back to the classic split-pane session:
+`architect monitor` opens the TUI monitor screen from any terminal. It reads `.architect/monitor_state.json` which the runner updates after every significant event (task start/done/failed, attempt start, circuit state change, cooldown, model rotation, replan):
 
 ```text
-+-------------------------------------+---------------------------------+
-|                                     |  THE ARCHITECT                  |
-|   AI agent live output              |---------------------------------|
-|   streams here in real-time         |  TASKS                          |
-|                                     |  v T01 Setup         (done)     |
-|   == T02  Build API  (2/3 remain)   |  * T02 Build API     (running)  |
-|      starting T02...                |  o T03 Frontend      (pending)  |
-|                                     |---------------------------------|
-|   [agent output scrolls here]       |  STATUS                         |
-|                                     |  Task    : T02 / 3              |
-|                                     |  Attempt : 1 / 3                |
-|                                     |  Circuit : CLOSED               |
-|                                     |---------------------------------|
-|                                     |  BUILD                          |
-|                                     |  v1.0.0 (build 10042)           |
-+-------------------------------------+---------------------------------+
+┌─────────────────────────────────────────────────────┐
+│  THE ARCHITECT  ·  my-project  ·  RUNNING           │
+├─────────────────────────────────────────────────────┤
+│  TASKS                                              │
+│  ✓ T01 Setup           (done)                       │
+│  ● T02 Build API       (running)  attempt 1/3       │
+│  ○ T03 Frontend        (pending)                    │
+├─────────────────────────────────────────────────────┤
+│  Circuit: CLOSED  ·  Tokens: 48,230  ·  claude-s…  │
+└─────────────────────────────────────────────────────┘
 ```
 
-### Installing tmux
-
-```bash
-# macOS
-brew install tmux
-
-# Ubuntu / Debian
-sudo apt install tmux
-
-# Arch Linux
-sudo pacman -S tmux
-
-# Fedora
-sudo dnf install tmux
-```
-
-### tmux Controls
-
-```bash
-# Detach from session (leaves it running in background)
-Ctrl+B then D
-
-# Reattach after detaching
-tmux attach-session -t architect-<your-project-name>
-
-# List all Architect sessions
-tmux ls | grep architect
-```
-
-No tmux? No problem — The Architect runs fine without it. Same live output, no side dashboard.
-
-Disable the dashboard entirely:
-
-```bash
-architect --no-monitor
-```
+Works from any terminal — useful after detaching from a persistent or Infinite Loop run.
 
 ---
 
@@ -694,7 +656,7 @@ your-project/
 │   ├── prompts/              # Architect-owned planner/reviewer/intelligence prompts
 │   ├── architect.json        # Architect-owned provider config for planning roles
 │   ├── circuit.json          # Circuit breaker state (persists across restarts)
-│   ├── monitor_state.json    # Live dashboard state
+│   ├── monitor_state.json    # Live monitor state (read by `architect monitor`)
 │   └── runner.lock           # Prevents concurrent runs
 ├── ARCHITECT.md              # Durable project intelligence (curated project brain)
 └── architect.toml            # Your configuration (optional)

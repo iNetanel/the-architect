@@ -1,9 +1,12 @@
-"""Tests for Phase 12 pre-run screens (provider / scope and related pickers).
+"""Tests for Phase 12 pre-run screens (provider / pickers and related screens).
 
 Phase 16 note: the ``*App`` classes were converted to ``*Screen``
 classes that live inside one persistent :class:`ArchitectApp`. Tests
 use a small harness app that pushes each screen and captures its
 dismiss value via ``on_screen_dismiss``.
+
+Note: ``ScopeScreen`` was removed — scope selection is now handled
+exclusively by the tabbed ``PreRunScreen`` (``pre_run_tabbed.py``).
 """
 
 from __future__ import annotations
@@ -19,7 +22,6 @@ from the_architect.tui.screens.pre_run import (
     BACK_SENTINEL,
     ProviderOption,
     ProviderSelectionScreen,
-    ScopeScreen,
     StringListPickerScreen,
 )
 
@@ -73,69 +75,11 @@ class TestProviderSelectionScreen:
         assert harness.dismissed is None
 
 
-class TestScopeScreen:
-    @pytest.mark.asyncio
-    async def test_default_confirm_returns_standard(self) -> None:
-        screen = ScopeScreen()
-        harness = _Harness(screen)
-        async with harness.run_test() as pilot:
-            await pilot.pause(0.05)
-            screen.action_confirm()
-            await pilot.pause(0.05)
-        assert harness.dismissed == "standard"
-
-    @pytest.mark.asyncio
-    async def test_second_item_returns_simple(self) -> None:
-        screen = ScopeScreen()
-        harness = _Harness(screen)
-        async with harness.run_test() as pilot:
-            await pilot.pause(0.05)
-            lv = screen.query_one("#scope_list", ListView)
-            lv.index = 1
-            await pilot.pause(0.05)
-            screen.action_confirm()
-            await pilot.pause(0.05)
-        assert harness.dismissed == "simple"
-
-    @pytest.mark.asyncio
-    async def test_third_item_returns_complex(self) -> None:
-        screen = ScopeScreen()
-        harness = _Harness(screen)
-        async with harness.run_test() as pilot:
-            await pilot.pause(0.05)
-            lv = screen.query_one("#scope_list", ListView)
-            lv.index = 2
-            await pilot.pause(0.05)
-            screen.action_confirm()
-            await pilot.pause(0.05)
-        assert harness.dismissed == "complex"
-
-    @pytest.mark.asyncio
-    async def test_cancel_returns_none(self) -> None:
-        screen = ScopeScreen()
-        harness = _Harness(screen)
-        async with harness.run_test() as pilot:
-            await pilot.pause(0.05)
-            screen.action_cancel()
-            await pilot.pause(0.05)
-        assert harness.dismissed is None
-
-
 # ── Phase A: Back navigation ─────────────────────────────────────────────
 
 
 class TestBackNavigation:
     """Phase A: each pre-run screen dismisses with BACK_SENTINEL on Back."""
-
-    @pytest.mark.asyncio
-    async def test_scope_screen_back_returns_sentinel(self) -> None:
-        screen = ScopeScreen()
-        harness = _Harness(screen)
-        async with harness.run_test() as pilot:
-            await pilot.pause(0.05)
-            screen.action_go_back()
-            await pilot.pause(0.05)
-        assert harness.dismissed is BACK_SENTINEL
 
     @pytest.mark.asyncio
     async def test_provider_screen_back_returns_sentinel(self) -> None:
@@ -165,24 +109,6 @@ class TestBackNavigation:
 
 class TestPreFill:
     """Phase A: screen constructors accept initial values for pre-fill."""
-
-    @pytest.mark.asyncio
-    async def test_scope_screen_initial_scope_complex(self) -> None:
-        screen = ScopeScreen(initial_scope="complex")
-        harness = _Harness(screen)
-        async with harness.run_test() as pilot:
-            await pilot.pause(0.05)
-            lv = screen.query_one("#scope_list", ListView)
-            assert lv.index == 2
-
-    @pytest.mark.asyncio
-    async def test_scope_screen_initial_scope_simple(self) -> None:
-        screen = ScopeScreen(initial_scope="simple")
-        harness = _Harness(screen)
-        async with harness.run_test() as pilot:
-            await pilot.pause(0.05)
-            lv = screen.query_one("#scope_list", ListView)
-            assert lv.index == 1
 
     @pytest.mark.asyncio
     async def test_provider_screen_initial_provider(self) -> None:

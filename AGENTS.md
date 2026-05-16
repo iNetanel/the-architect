@@ -85,20 +85,19 @@ the_architect/
   config.py           # ArchitectConfig (Pydantic), load_config(), write_config()
   exceptions.py       # Custom exception hierarchy
   core/
-    runner.py         # Task execution engine — streams provider output
-    planner.py        # Planning integration — calls provider with architect agent
-    circuit.py        # Circuit breaker state machine
-    provider.py       # Provider detection and abstraction
-    opencode_provider.py   # OpenCode-specific runner
-    claude_code_provider.py # Claude Code-specific runner
-    progress.py       # PROGRESS.md read/write
-    tasks.py          # Task discovery, Task/TaskPlan models
-    retrospective.py  # Retrospective review runner
-    architect_md.py   # ARCHITECT.md read/write
-    structure.py      # Project structure detection
-    tmux.py           # tmux dashboard integration (non-TUI fallback)
-    dashboard.py      # Monitor state and display (tmux dashboard)
-    ...
+     runner.py         # Task execution engine — streams provider output
+     planner.py        # Planning integration — calls provider with architect agent
+     circuit.py        # Circuit breaker state machine
+     provider.py       # Provider detection and abstraction
+     opencode_provider.py   # OpenCode-specific runner
+     claude_code_provider.py # Claude Code-specific runner
+     progress.py       # PROGRESS.md read/write
+     tasks.py          # Task discovery, Task/TaskPlan models
+     retrospective.py  # Retrospective review runner
+     architect_md.py   # ARCHITECT.md read/write
+     structure.py      # Project structure detection
+     monitor_state.py  # Monitor state writer (.architect/monitor_state.json)
+     ...
   tui/                # Textual TUI layer — default UI on TTY (Phases 1-10)
     app.py            # ArchitectApp — persistent app with execution + wait overlays
     renderer.py       # TextualStreamRenderer — plugs into StreamRenderer seam

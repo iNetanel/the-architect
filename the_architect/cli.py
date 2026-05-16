@@ -21,6 +21,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+# Set ESCDELAY before any textual import so Textual's constants module picks
+# it up. The default (100ms) makes ESC feel laggy — 30ms is below human
+# perception but long enough to distinguish bare ESC from ANSI sequences.
+# Only set if the user hasn't explicitly overridden it.
+if "ESCDELAY" not in os.environ:
+    os.environ["ESCDELAY"] = "30"
+
 if TYPE_CHECKING:
     from prompt_toolkit.output import Output
     from prompt_toolkit.styles import Style as PromptStyle
@@ -30,6 +37,7 @@ from datetime import UTC
 import click
 from loguru import logger
 from prompt_toolkit.layout.dimension import D
+from rich.console import Console
 from rich.markup import escape
 
 from the_architect import __full_version__, __version__
@@ -79,7 +87,6 @@ from the_architect.core.tasks import (
     discover_tasks,
     duplicate_task_prefixes,
 )
-from the_architect.core.tmux import PaddedConsole
 from the_architect.core.token_ledger import (
     TokenLedger,
     append_run,
@@ -88,7 +95,7 @@ from the_architect.core.token_ledger import (
 )
 from the_architect.tui.screens.pre_run import BACK_SENTINEL
 
-console = PaddedConsole()
+console = Console()
 
 GOAL_DISPLAY_LIMIT = 400
 _PERSISTENT_MAX_RETRIES = 30
@@ -332,6 +339,61 @@ def _infinite_loop_has_clean_exit_state(project: Path, config: ArchitectConfig) 
     if check_pending_tasks(tasks_dir, config.progress_file):
         return False
     return _validate_cycle(tasks_dir, config.progress_file).passed
+
+
+def _infinite_loop_reset_sleep_interrupted_tasks(project: Path, config: ArchitectConfig) -> int:
+    """Reset tasks that failed only due to sleep/wake gaps back to Pending.
+
+    When the host machine sleeps mid-run and the Architect's sleep-wake gap
+    detector kills the provider subprocess, the attempt is not a real failure.
+    After wake, the Infinite Loop driver calls this to rewrite those tasks'
+    PROGRESS.md rows from ``Failed`` → ``Pending`` so the next iteration
+    picks them up normally.
+
+    Returns the number of tasks reset.  Returns 0 when there are no
+    sleep-interrupted tasks or PROGRESS.md can't be read.
+    """
+    from the_architect.core.runner import get_sleep_interrupted_tasks
+
+    sleep_tasks = get_sleep_interrupted_tasks()
+    if not sleep_tasks:
+        return 0
+
+    progress_file = config.progress_file
+    if not progress_file.exists():
+        return 0
+
+    try:
+        content = progress_file.read_text(encoding="utf-8")
+    except OSError:
+        return 0
+
+    import re
+
+    reset_count = 0
+    new_lines: list[str] = []
+    for line in content.splitlines(keepends=True):
+        # Match PROGRESS.md task rows: | T07 | ... | Failed | ... |
+        # The status column is the 3rd pipe-delimited field.
+        m = re.match(r"^(\|\s*)(T\w+|R\w+)(\s*\|[^|]*\|)\s*Failed\s*(\|.*)$", line)
+        if m and m.group(2).strip() in sleep_tasks:
+            # Replace "Failed" with "Pending" for sleep-only failures
+            line = f"{m.group(1)}{m.group(2)}{m.group(3)} Pending {m.group(4)}\n"
+            reset_count += 1
+            logger.info(
+                f"Infinite Loop: reset sleep-interrupted task "
+                f"{m.group(2).strip()} from Failed → Pending"
+            )
+        new_lines.append(line)
+
+    if reset_count > 0:
+        try:
+            progress_file.write_text("".join(new_lines), encoding="utf-8")
+        except OSError as exc:
+            logger.warning(f"Infinite Loop: failed to write PROGRESS.md reset: {exc!r}")
+            return 0
+
+    return reset_count
 
 
 def _infinite_loop_success_after_clean_failure(
@@ -819,10 +881,8 @@ def _prompt_provider_selection(available: list[ArchitectProvider]) -> ArchitectP
             ]
             idx = run_provider_selection(opts)
             if idx is BACK_SENTINEL:
-                # Back pressed on provider screen — for now, select first
-                # provider and continue.  Phase B will integrate into
-                # the tabbed screen.
-                return available[0]
+                # Back pressed on provider screen (first screen) — exit.
+                raise SystemExit(0)
             return available[int(idx)]  # type: ignore[call-overload]
         except SystemExit:
             raise
@@ -1880,7 +1940,11 @@ def _prompt_goal() -> str:
 
 
 def _prompt_scope(initial_scope: str = "standard") -> str | None:
-    """Prompt the user to select task scope.
+    """Prompt the user to select task scope (non-TUI / questionary fallback).
+
+    This path is only reached when the TUI tabbed pre-run screen was not used
+    (headless, --no-tui, or non-interactive terminal).  The TUI path always
+    goes through ``run_pre_run_tabbed`` which has scope built in.
 
     Args:
         initial_scope: Pre-fill scope from previous run
@@ -1889,21 +1953,6 @@ def _prompt_scope(initial_scope: str = "standard") -> str | None:
     Returns:
         The selected scope string, or None if the user pressed Back.
     """
-    # TUI fast-path — Phase 12. Render scope selection as a Textual
-    # screen when the TUI is active.
-    if _tui_mode_enabled():
-        try:
-            from the_architect.tui.screens.pre_run import run_scope_screen
-
-            result = run_scope_screen(initial_scope=initial_scope)
-            if result is BACK_SENTINEL:
-                return None  # Signal: user pressed Back
-            return str(result)
-        except SystemExit:
-            raise
-        except Exception as exc:
-            logger.debug(f"TUI scope screen failed, falling back to questionary: {exc!r}")
-
     import questionary
 
     choice = questionary.select(
@@ -2587,10 +2636,14 @@ def _collect_planning_prompts(
                 )
                 raise SystemExit(0)
 
-    # ── TUI tabbed screen fast-path (Phase B) ────────────────────────
+    # ── TUI tabbed screen (planning pre-run) ─────────────────────────
     # When the TUI is active, show the unified tabbed PreRunScreen
     # instead of the linear chain of individual screens.
-    if _tui_mode_enabled() and provider is not None:
+    # Skip during Infinite Loop iterations — goal/scope/model are already
+    # resolved from iteration 1; re-showing the screen on every planning
+    # pass causes an interactive spin (each dismiss triggers SystemExit(0)
+    # which the loop absorbs and immediately re-shows the same screen).
+    if _tui_mode_enabled() and provider is not None and not _infinite_loop_active(config):
         try:
             from the_architect.tui.screens.pre_run_tabbed import run_pre_run_tabbed
 
@@ -3252,6 +3305,44 @@ async def _run_tasks_raw(
             elif event_name == "replan_end":
                 _tui_session.update_details(phase="replan_done")
                 _tui_session.update_footer("replan complete")
+            elif event_name == "sleep_detected":
+                # The host machine slept mid-attempt.  Update the TUI to
+                # show a "sleeping" banner and restore the terminal so
+                # mouse-cursor codes don't bleed into the console on wake.
+                _sleep_retry = data.get("sleep_retries", "?")
+                _tui_session.update_details(phase="sleeping")
+                _tui_session.update_footer(
+                    f"computer sleeping — will resume on wake  (sleep-retry {_sleep_retry})"
+                )
+                if _tui_session.app is not None:
+                    try:
+                        _tui_session.app.push_output_line(
+                            f"[dim]Computer slept mid-task — "
+                            f"waiting for wake (sleep-retry {_sleep_retry}/10)[/dim]"
+                        )
+                        _tui_session.app.set_status("sleeping — will resume automatically on wake")
+                    except Exception:
+                        pass
+                # Proactively restore terminal modes so mouse-tracking
+                # escape codes don't bleed into the console if the
+                # terminal loses its TUI state during suspend.
+                try:
+                    from the_architect.tui.terminal import restore_terminal_input_modes
+
+                    restore_terminal_input_modes()
+                except Exception:
+                    pass
+            elif event_name == "wake_resumed":
+                _tui_session.update_details(phase="executing")
+                _tui_session.update_footer("woke from sleep — resuming task")
+                if _tui_session.app is not None:
+                    try:
+                        _tui_session.app.push_output_line(
+                            "[#7cc800]Computer woke — retrying task[/#7cc800]"
+                        )
+                        _tui_session.app.set_status("")
+                    except Exception:
+                        pass
             _orig_on_circuit_event(event_name, data)
 
         def _tui_on_model_switched(old_model: str, new_model: str | None) -> None:
@@ -3563,67 +3654,6 @@ def _run_reassessment_in_thread(coro: Any) -> Any:
         return future.result()
 
 
-# ---------------------------------------------------------------------------
-# Tmux session teardown helper
-# ---------------------------------------------------------------------------
-
-
-def _maybe_kill_own_tmux_session(project_dir: Path) -> None:
-    """Kill the tmux session that The Architect created, if we are inside it.
-
-    Called from the ``finally`` block after the runner exits so the user
-    lands back in their original terminal cleanly.  Without this, the user
-    would be left inside a dead tmux session — requiring a second Ctrl+C
-    to exit.
-
-    Only kills sessions matching The Architect's naming convention
-    (``architect-<project-name>``) so unrelated sessions are never touched.
-
-    This is a no-op when:
-    - We are not inside a tmux session (``TMUX`` env var not set)
-    - The current session name does not match our convention
-    - The kill command fails for any reason
-
-    Args:
-        project_dir: The project root directory (used to derive session name).
-    """
-    import os as _os
-
-    # Only act when we are inside tmux
-    if not _os.environ.get("TMUX"):
-        return
-
-    try:
-        import subprocess as _sp
-
-        from the_architect.core.tmux import get_session_name, kill_session, session_exists
-
-        expected_session = get_session_name(project_dir)
-
-        # Find the name of the current tmux session
-        result = _sp.run(
-            ["tmux", "display-message", "-p", "#S"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode != 0:
-            return
-
-        current_session = result.stdout.strip()
-
-        # Only kill if it's our session
-        if current_session != expected_session:
-            return
-
-        if session_exists(current_session):
-            kill_session(current_session)
-
-    except Exception:
-        # Never crash the process — teardown is best-effort
-        pass
-
-
 def _provider_install_hint() -> str:
     """Return the install command for the detected provider.
 
@@ -3697,12 +3727,6 @@ _opencode_install_hint = _provider_install_hint
     help="Use free-tier OpenRouter models, rotating on rate limits (OpenCode + OpenRouter only)",
 )
 @click.option(
-    "--no-monitor",
-    "no_monitor",
-    is_flag=True,
-    help="Skip tmux monitoring (useful for CI or piped output)",
-)
-@click.option(
     "--headless",
     is_flag=True,
     help="Headless mode: no interactive prompts, all input via flags or env vars",
@@ -3750,8 +3774,8 @@ _opencode_install_hint = _provider_install_hint
     is_flag=True,
     default=False,
     help=(
-        "Disable the Textual TUI and fall back to plain CLI output + "
-        "tmux dashboard. The TUI is on by default whenever stdout is a "
+        "Disable the Textual TUI and fall back to plain CLI output. "
+        "The TUI is on by default whenever stdout is a "
         "TTY with colour support; use this flag, NO_COLOR=1, TERM=dumb, "
         "--headless, or a non-TTY pipe to opt out."
     ),
@@ -3765,7 +3789,6 @@ def main(
     only_task: str,
     persistent: bool,
     free_mode: bool,
-    no_monitor: bool,
     headless: bool,
     goal_text: str,
     scope_text: str,
@@ -4079,38 +4102,6 @@ def main(
         except Exception:
             pass
 
-    # ── Auto-launch in tmux ──────────────────────────────────────────────
-    # Launch tmux immediately — all interaction (welcome screen, prompts,
-    # execution) happens inside the left pane.  The original process just
-    # creates the session and exits (replaced by tmux attach).
-    from the_architect.core.tmux import maybe_launch_tmux
-
-    # When the TUI is active we still wrap the run in a tmux session —
-    # users need Ctrl+B D detach + `tmux attach` reattach for the
-    # "step away and come back later" flow the pause menu advertises.
-    # But we skip the split-pane dashboard: the TUI already renders
-    # task / model / tokens / circuit state in its Details and Events
-    # tabs, and the side panel would only compete with the TUI for
-    # screen space.  ``single_pane=True`` tells maybe_launch_tmux to
-    # wrap without the dashboard.
-    #
-    # ``--no-monitor`` continues to mean "no tmux at all" — it wins
-    # over single_pane so power users who want a bare terminal still
-    # get one.
-    launched = maybe_launch_tmux(
-        resolved_project,
-        sys.argv,
-        no_monitor=no_monitor,
-        single_pane=use_tui,
-    )
-    if launched:
-        # tmux attach replaced the process — this line is never reached
-        return  # pragma: no cover
-
-    # ── Everything from here runs inside the tmux left pane (or plain
-    # terminal when tmux is unavailable).  Wrap in try/finally so that
-    # _maybe_kill_own_tmux_session fires on ANY exit path.
-
     # Note: an earlier revision rendered a plain-ANSI Matrix-rain loader
     # here (before Textual mounts) to cover the ~0.2s provider-detection
     # gap. In practice it produced a visible left-aligned green flash
@@ -4326,10 +4317,6 @@ def main(
             )
             if _needs_mode_prompt_local:
                 modes = _prompt_mode_selection(provider=_active_provider)
-                if modes is None:
-                    # Back pressed — re-show mode selection.
-                    # Phase B will integrate this into the tabbed screen.
-                    modes = _prompt_mode_selection(provider=_active_provider)
                 if modes is not None:
                     if modes.get("persistent"):
                         persistent = True
@@ -4388,7 +4375,6 @@ def main(
                         only_task=only_task,
                         persistent=persistent,
                         free_mode=free_mode,
-                        no_monitor=no_monitor,
                         headless=headless,
                         goal_text=goal_text or "",
                         scope_text=scope_text or "",
@@ -4421,6 +4407,27 @@ def main(
                                 f"code={exc.code}, but post-run task state is clean; "
                                 "continuing loop"
                             )
+                        elif infinite_loop_enabled and exc.code == 1:
+                            # Check whether all failed tasks were killed only by
+                            # sleep/wake gaps (not real agent failures).  If so,
+                            # reset those tasks to Pending and continue the loop
+                            # rather than dying — sleeping is a hardware event,
+                            # not a reason to abort the entire autonomous run.
+                            _sleep_reset = _infinite_loop_reset_sleep_interrupted_tasks(
+                                resolved_project, config
+                            )
+                            if _sleep_reset > 0:
+                                logger.warning(
+                                    f"Infinite Loop driver: {_sleep_reset} task(s) failed "
+                                    "only due to sleep/wake gap(s); reset to Pending, "
+                                    "continuing loop"
+                                )
+                            else:
+                                logger.info(
+                                    "Infinite Loop driver: SystemExit not eligible for loop "
+                                    "continuation, re-raising"
+                                )
+                                raise
                         else:
                             logger.info(
                                 "Infinite Loop driver: SystemExit not eligible for loop "
@@ -4508,7 +4515,12 @@ def main(
         if use_tui and not headless:
             from the_architect.tui.runner import ArchitectAppRunner
 
-            ArchitectAppRunner(flow=_tui_flow).run()
+            # Non-daemon worker for Infinite Loop / persistent runs so the
+            # run survives TUI detach and SIGHUP (terminal close / SSH drop).
+            _runner_persistent = persistent or bool(
+                getattr(config, "_infinite_loop_enabled", False)
+            )
+            ArchitectAppRunner(flow=_tui_flow, persistent=_runner_persistent).run()
         else:
             with alternate_screen():
                 _tui_flow()
@@ -4553,20 +4565,10 @@ def main(
         except Exception:
             pass
 
-        # ── Tmux session teardown ─────────────────────────────────────────
-        # When the runner was launched inside a tmux session by The Architect
-        # (i.e. we are in the left pane and --no-monitor was injected), kill
-        # the entire session when the run ends so the user lands back in their
-        # original terminal cleanly.  Without this, the user would be left
-        # inside the tmux session staring at a dead left pane and a live
-        # dashboard pane — requiring a second Ctrl+C to fully exit.
-        #
-        # Fires on ALL exit paths: normal completion, Ctrl+C during prompts,
-        # Ctrl+C during execution, or any SystemExit.
-        # Does NOT fire on detach (Ctrl+B D) — detach doesn't exit the process.
-        # Only kills sessions matching our naming convention
-        # ("architect-<project-name>") so unrelated sessions are never touched.
-        _maybe_kill_own_tmux_session(resolved_project)
+        # ── Tmux session teardown removed ────────────────────────────────
+        # Sessions are no longer managed by The Architect — detach is
+        # handled natively via SIGHUP and the pause menu Detach button.
+        pass
 
 
 def _run_main(
@@ -4577,7 +4579,6 @@ def _run_main(
     only_task: str = "",
     persistent: bool = False,
     free_mode: bool = False,
-    no_monitor: bool = False,
     headless: bool = False,
     goal_text: str = "",
     scope_text: str = "",
@@ -4624,7 +4625,6 @@ def _run_main(
         only_task: Run a single task only.
         persistent: Persistent mode (30 retries, 3 retrospective rounds).
         free_mode: Use free-tier OpenRouter models.
-        no_monitor: Skip tmux monitoring.
         headless: Headless mode (no interactive prompts).
         goal_text: Pre-supplied planning goal.
         scope_text: Pre-supplied task scope.
@@ -4865,6 +4865,18 @@ def _run_main(
                 config.execution_agent = execution_model
                 config.force_reassessment = pre_run.force_reassessment
                 config._infinite_loop_enabled = pre_run.infinite_loop  # type: ignore[attr-defined]
+                # If the user selected Infinite Loop, upgrade the runner to
+                # persistent mode so the SIGHUP handler is installed and
+                # the pause menu Detach button becomes functional.
+                if pre_run.infinite_loop and _tui_mode_enabled():
+                    try:
+                        from the_architect.tui.runner import active_runner
+
+                        _ar = active_runner()
+                        if _ar is not None:
+                            _ar.activate_persistence()
+                    except Exception:
+                        pass
                 # The tabbed pending-task screen already collected the model,
                 # agent, and mode choices. Replan should go straight into the
                 # planner from here, not fall through to legacy prompt screens.
@@ -6860,80 +6872,28 @@ def tui_cmd() -> None:
     type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
     default=None,
 )
-@click.option(
-    "--tui",
-    "use_tui",
-    is_flag=True,
-    help="Open the Textual monitor (polls .architect/monitor.json)",
-)
-def monitor_cmd(project: Path | None, use_tui: bool) -> None:
-    """Attach to the live monitoring session for this project.
+def monitor_cmd(project: Path | None) -> None:
+    """Open the live monitoring screen for a running Architect session.
 
-    Looks for a tmux session named ``architect-<project>`` and attaches
-    to it.  Works from any terminal — useful for reconnecting after SSH
-    reconnection or accidental detach.
+    Reads ``.architect/monitor.json`` and displays live task / circuit /
+    token state in the TUI monitor screen.  Works from any terminal —
+    useful for reconnecting after detach (Esc → Detach from a persistent
+    or Infinite Loop run) or checking progress from a second terminal.
 
-    If no active session is found, prints a clear message with the
-    command to start a new run.
+    If no state file is found, a clear message is shown.
     """
     _setup_loguru()
     proj = (project or Path.cwd()).resolve()
 
-    if use_tui or _tui_mode_enabled():
-        try:
-            from the_architect.tui.screens import run_monitor_screen
+    try:
+        from the_architect.tui.screens import run_monitor_screen
 
-            run_monitor_screen(project=proj)
-            return
-        except Exception as exc:
-            logger.debug(f"TUI monitor screen failed, falling back to tmux: {exc!r}")
-
-    from the_architect.core.tmux import (
-        attach_session,
-        get_session_name,
-        is_tmux_available,
-        list_architect_sessions,
-        session_exists,
-    )
-
-    session_name = get_session_name(proj)
-
-    if not is_tmux_available():
-        console.print("[red]tmux is not installed — monitoring requires tmux.[/red]")
-        console.print("[dim]Install tmux to use live monitoring.[/dim]")
+        run_monitor_screen(project=proj)
+    except Exception as exc:
+        logger.debug(f"TUI monitor screen failed: {exc!r}")
+        console.print("[red]Could not open monitor screen.[/red]")
+        console.print(f"[dim]{exc}[/dim]")
         raise SystemExit(1)
-
-    if session_exists(session_name):
-        console.print(f"[dim]Attaching to session: {session_name}[/dim]")
-        attach_session(session_name)
-        return  # pragma: no cover (attach replaces process)
-
-    # Session not found — check if any architect sessions exist
-    all_sessions = list_architect_sessions()
-    if len(all_sessions) == 1:
-        # Exactly one architect session running — attach to it regardless
-        # of project.  This handles the common case where the user
-        # reconnected via SSH and runs `architect monitor` from a
-        # different directory.
-        console.print(f"[dim]Attaching to session: {all_sessions[0]}[/dim]")
-        attach_session(all_sessions[0])
-        return  # pragma: no cover (attach replaces process)
-    elif all_sessions:
-        console.print(
-            f"[yellow]No active session found for this project ({session_name}).[/yellow]"
-        )
-        console.print()
-        console.print("[dim]Other active sessions:[/dim]")
-        for s in all_sessions:
-            console.print(f"  [dim]{s}[/dim]")
-        console.print()
-        console.print("[dim]To attach to a specific session, run:[/dim]")
-        console.print("[dim]  tmux attach-session -t <session-name>[/dim]")
-    else:
-        console.print(
-            f"[yellow]No active session found for this project ({session_name}).[/yellow]"
-        )
-        console.print("[dim]Start a run with: [bold]architect[/bold][/dim]")
 
 
 # ---------------------------------------------------------------------------

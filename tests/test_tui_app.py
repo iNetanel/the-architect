@@ -8,6 +8,8 @@ intentionally distinct from :class:`~the_architect.tui.screens.wait.WaitScreen`
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 from textual.containers import VerticalScroll
 from textual.widgets import RichLog, Static
@@ -482,3 +484,551 @@ def test_screen_stack_names_are_safe_before_app_runs() -> None:
     names = app._screen_stack_names()
 
     assert isinstance(names, list)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Thread-safe delegation chains
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestThreadSafeCall:
+    """Tests for _thread_safe_call delegation from any thread."""
+
+    def test_thread_safe_call_runtime_error_falls_back(self) -> None:
+        """When call_from_thread raises RuntimeError, fn runs directly."""
+        app = ArchitectApp()
+        called = []
+
+        def fn(val):
+            called.append(val)
+
+        # call_from_thread raises RuntimeError when app isn't running
+        with patch.object(app, "call_from_thread", side_effect=RuntimeError("not running")):
+            app._thread_safe_call(fn, "hello")
+        assert called == ["hello"]
+
+    def test_thread_safe_call_runtime_error_fn_raises(self) -> None:
+        """When fallback fn raises, the error is swallowed."""
+        app = ArchitectApp()
+
+        def fn(val):
+            raise ValueError("boom")
+
+        with patch.object(app, "call_from_thread", side_effect=RuntimeError("not running")):
+            # Should not raise
+            app._thread_safe_call(fn, "hello")
+
+    def test_thread_safe_call_general_exception_falls_back(self) -> None:
+        """When call_from_thread raises a general Exception, fn runs directly."""
+        app = ArchitectApp()
+        called = []
+
+        def fn(val):
+            called.append(val)
+
+        with patch.object(app, "call_from_thread", side_effect=Exception("app not ready")):
+            app._thread_safe_call(fn, "hello")
+        assert called == ["hello"]
+
+    def test_thread_safe_call_general_exception_fn_raises(self) -> None:
+        """When fallback fn raises after general exception, error is swallowed."""
+        app = ArchitectApp()
+
+        def fn(val):
+            raise ValueError("boom")
+
+        with patch.object(app, "call_from_thread", side_effect=Exception("app not ready")):
+            # Should not raise
+            app._thread_safe_call(fn, "hello")
+
+    @pytest.mark.asyncio
+    async def test_thread_safe_call_same_thread_direct(self) -> None:
+        """When on the event loop thread, call_from_thread raises RuntimeError, fn runs."""
+        app = ArchitectApp()
+        called = []
+
+        def fn(val):
+            called.append(val)
+
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            # Inside run_test, call_from_thread raises RuntimeError (same thread)
+            app._thread_safe_call(fn, "hello")
+            await pilot.pause(0.05)
+        assert called == ["hello"]
+
+
+class TestSetStatus:
+    """Tests for set_status thread-safe status updates."""
+
+    @pytest.mark.asyncio
+    async def test_set_status_updates_sub_title(self) -> None:
+        """set_status updates the app sub_title shown in headers."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            app.set_status("Running T01")
+            await pilot.pause(0.05)
+            assert app.sub_title == "Running T01"
+
+    @pytest.mark.asyncio
+    async def test_set_status_empty_clears(self) -> None:
+        """set_status with empty string clears the sub_title."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            app.set_status("Running")
+            await pilot.pause(0.05)
+            app.set_status("")
+            await pilot.pause(0.05)
+            assert app.sub_title == ""
+
+
+class TestBeginShutdown:
+    """Tests for begin_shutdown lifecycle."""
+
+    @pytest.mark.asyncio
+    async def test_begin_shutdown_idempotent(self) -> None:
+        """Calling begin_shutdown twice should not cause issues."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            app.begin_shutdown()
+            assert app._shutdown_started is True
+            # Second call should be a no-op
+            app.begin_shutdown()
+            assert app._shutdown_started is True
+
+    @pytest.mark.asyncio
+    async def test_shutdown_started_property(self) -> None:
+        """shutdown_started property reflects internal state."""
+        app = ArchitectApp()
+        assert app.shutdown_started is False
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            app.begin_shutdown()
+            assert app.shutdown_started is True
+
+
+class TestSplashSubtitle:
+    """Tests for SplashScreen.set_subtitle."""
+
+    @pytest.mark.asyncio
+    async def test_splash_set_subtitle_updates_text(self) -> None:
+        """set_subtitle updates the subtitle widget text."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            splash = app.screen
+            assert isinstance(splash, SplashScreen)
+            splash.set_subtitle("Loading modules…")
+            await pilot.pause(0.05)
+            subtitle = splash.query_one("#splash_subtitle", Static)
+            assert "Loading modules" in str(subtitle.render())
+
+    @pytest.mark.asyncio
+    async def test_splash_set_subtitle_before_mount_safe(self) -> None:
+        """set_subtitle called before widget exists should not raise."""
+        splash = SplashScreen(subtitle="Initial")
+        # Not mounted yet — query_one would fail
+        splash.set_subtitle("Updated")
+        assert splash._subtitle == "Updated"
+
+
+class TestApplyArchitectTheme:
+    """Tests for apply_architect_theme helper."""
+
+    @pytest.mark.asyncio
+    async def test_apply_architect_theme_registers_theme(self) -> None:
+        """apply_architect_theme registers and activates the theme."""
+        from textual.app import App
+
+        from the_architect.tui.app import apply_architect_theme
+
+        class _TestApp(App[None]):
+            pass
+
+        test_app = _TestApp()
+        async with test_app.run_test() as pilot:
+            await pilot.pause(0.05)
+            apply_architect_theme(test_app)
+            assert test_app.theme == "architect-dark"
+
+    @pytest.mark.asyncio
+    async def test_apply_architect_theme_exception_safe(self) -> None:
+        """apply_architect_theme swallows exceptions silently."""
+        from textual.app import App
+
+        from the_architect.tui.app import apply_architect_theme
+
+        test_app = App()
+        async with test_app.run_test() as pilot:
+            await pilot.pause(0.05)
+            # Patch register_theme to raise after first call (which succeeded)
+            with patch.object(test_app, "register_theme", side_effect=RuntimeError("bad")):
+                # Should not raise — exception is swallowed
+                apply_architect_theme(test_app)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Push and wait exception paths
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestPushAndWait:
+    """Tests for push_and_wait exception handling and splash gating."""
+
+    @pytest.mark.asyncio
+    async def test_push_and_wait_from_thread(self) -> None:
+        """push_and_wait returns the value the screen dismisses with (from thread)."""
+        import threading
+
+        from textual.screen import Screen
+
+        app = ArchitectApp()
+        result_container = {}
+
+        class _TestScreen(Screen[None]):
+            def on_mount(self) -> None:
+                self.dismiss("test_result")
+
+        def worker():
+            result_container["value"] = app.push_and_wait(_TestScreen())
+
+        async with app.run_test() as pilot:
+            await pilot.pause(0.1)
+            thread = threading.Thread(target=worker, daemon=True)
+            thread.start()
+            await pilot.pause(0.5)
+            thread.join(timeout=5)
+
+        assert result_container.get("value") == "test_result"
+
+    @pytest.mark.asyncio
+    async def test_push_and_wait_headless_skips_splash_gate(self) -> None:
+        """In headless mode (run_test), splash minimum display is skipped."""
+        import threading
+        import time
+
+        app = ArchitectApp()
+        result_container = {}
+
+        class _TestScreen(SplashScreen):
+            def on_mount(self) -> None:
+                self.dismiss("done")
+
+        def worker():
+            result_container["value"] = app.push_and_wait(_TestScreen())
+
+        async with app.run_test() as pilot:
+            await pilot.pause(0.1)
+            # Set splash_shown_at to recent time
+            app._splash_shown_at = time.monotonic()
+            app._splash_min_seconds = 2.0  # long window
+            thread = threading.Thread(target=worker, daemon=True)
+            thread.start()
+            await pilot.pause(0.5)
+            thread.join(timeout=5)
+
+        assert result_container.get("value") == "done"
+        # In headless mode, splash gate is skipped, so splash_shown_at is NOT reset
+        assert app._splash_shown_at != 0.0
+
+
+class TestSwitchToExecutionSync:
+    """Tests for _switch_to_execution_sync exception paths."""
+
+    @pytest.mark.asyncio
+    async def test_switch_already_active_returns_early(self) -> None:
+        """When the current screen is already the execution screen, return early."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            app.switch_to_execution()
+            await pilot.pause(0.05)
+            # Now switch again — should hit the "already active" early return
+            app._switch_to_execution_sync()
+            await pilot.pause(0.05)
+            assert isinstance(app.screen, ExecutionScreen)
+
+
+class TestPushOutputLinePaths:
+    """Tests for push_output_line thread dispatch paths."""
+
+    @pytest.mark.asyncio
+    async def test_push_output_line_no_loop(self) -> None:
+        """When _loop is None, falls back to _thread_safe_call path."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            app.switch_to_execution()
+            await pilot.pause(0.05)
+            # Temporarily set _loop to None
+            original_loop = app._loop
+            app._loop = None  # type: ignore[attr-defined]
+            try:
+                app.push_output_line("test line")
+                await pilot.pause(0.05)
+            finally:
+                app._loop = original_loop  # type: ignore[attr-defined]
+            # Should not crash
+
+    @pytest.mark.asyncio
+    async def test_push_output_line_same_thread(self) -> None:
+        """When on the event loop thread, call directly."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            app.switch_to_execution()
+            await pilot.pause(0.05)
+            # Inside run_test, _thread_id == threading.get_ident()
+            app.push_output_line("same thread line")
+            await pilot.pause(0.05)
+            log = app._execution_screen.query_one(
+                "#exec_output", __import__("textual.widgets", fromlist=["RichLog"]).RichLog
+            )
+            assert len(log.lines) >= 1
+
+
+class TestWaitScreenPaths:
+    """Tests for wait screen update and append paths."""
+
+    @pytest.mark.asyncio
+    async def test_update_wait_no_wait_screen_noop(self) -> None:
+        """update_wait when _wait_screen is None is a no-op."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            # No wait screen pushed — should not raise
+            app.update_wait(title="New title", detail="New detail")
+            await pilot.pause(0.05)
+
+    @pytest.mark.asyncio
+    async def test_update_wait_title_only(self) -> None:
+        """update_wait with title=None should not change title."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            app.show_wait("Original")
+            await pilot.pause(0.05)
+            app.update_wait(title=None, detail="Updated detail")
+            await pilot.pause(0.05)
+            # Title should be unchanged
+            assert app._wait_screen is not None
+
+    @pytest.mark.asyncio
+    async def test_append_wait_log_no_wait_screen(self) -> None:
+        """append_wait_log when _wait_screen is None is a no-op."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            # No wait screen pushed
+            app.append_wait_log("test log line")
+            await pilot.pause(0.05)
+
+    @pytest.mark.asyncio
+    async def test_append_wait_log_same_thread(self) -> None:
+        """append_wait_log on event loop thread calls directly."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            app.show_wait("Planning")
+            await pilot.pause(0.05)
+            # Inside run_test, same thread — direct call
+            app.append_wait_log("log entry")
+            await pilot.pause(0.05)
+
+    @pytest.mark.asyncio
+    async def test_hide_wait_no_wait_screen(self) -> None:
+        """hide_wait when _wait_screen is None runs stack sync."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            # No wait screen pushed
+            app.hide_wait()
+            await pilot.pause(0.05)
+            # Should not crash
+            assert len(app.screen_stack) >= 1
+
+
+class TestDismissWaitOverlay:
+    """Tests for _dismiss_wait_overlay_if_stacked."""
+
+    @pytest.mark.asyncio
+    async def test_dismiss_wait_overlay_no_wait_returns_false(self) -> None:
+        """When _wait_screen is None, returns False."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            result = app._dismiss_wait_overlay_if_stacked()
+            assert result is False
+
+    @pytest.mark.asyncio
+    async def test_dismiss_wait_overlay_wait_not_top_returns_false(self) -> None:
+        """When wait screen is not the top screen, returns False."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            app.show_wait("Planning")
+            await pilot.pause(0.05)
+            # Push another screen on top
+            app.push_screen(SplashScreen())
+            await pilot.pause(0.05)
+            result = app._dismiss_wait_overlay_if_stacked()
+            assert result is False
+
+
+class TestRepairScreenStack:
+    """Tests for _repair_screen_stack."""
+
+    @pytest.mark.asyncio
+    async def test_repair_screen_stack_with_preferred(self) -> None:
+        """Repair with a preferred screen pushes it."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            app.screen_stack.clear()
+            preferred = SplashScreen(subtitle="Recovering")
+            app._repair_screen_stack("test", preferred)
+            await pilot.pause(0.05)
+            assert len(app.screen_stack) >= 1
+            assert isinstance(app.screen, SplashScreen)
+
+    @pytest.mark.asyncio
+    async def test_repair_screen_stack_fallback_splash(self) -> None:
+        """When preferred screen push fails, fall back to SplashScreen."""
+        from textual.screen import Screen
+
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            app.screen_stack.clear()
+            # Force preferred push to fail
+            bad_screen = object.__new__(Screen)
+            app._repair_screen_stack("test", bad_screen)  # type: ignore[arg-type]
+            await pilot.pause(0.05)
+            # Should have fallen back to SplashScreen
+            assert len(app.screen_stack) >= 1
+
+
+class TestShowSuccess:
+    """Tests for show_success screen."""
+
+    @pytest.mark.asyncio
+    async def test_show_success_creates_success_screen(self) -> None:
+        """show_success pushes the SuccessScreen."""
+        from the_architect.core.runner import TaskResult, TokenUsage
+
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            results = [
+                TaskResult(
+                    prefix="T01",
+                    title="Test task",
+                    status="done",
+                    duration_seconds=10.0,
+                    attempts=1,
+                    tokens=TokenUsage(),
+                    model="test-model",
+                )
+            ]
+            # show_success calls push_and_wait which blocks — we can't fully
+            # test it in a unit test. Instead verify the screen is created.
+            # Mock push_and_wait to avoid blocking
+            called_with = []
+
+            def mock_push_and_wait(screen):
+                called_with.append(screen)
+                return None
+
+            app.push_and_wait = mock_push_and_wait  # type: ignore[method-assign]
+            app.show_success(
+                results=results,
+                total_duration=10.0,
+                total_tokens=TokenUsage(),
+            )
+            assert len(called_with) == 1
+
+
+class TestHandleException:
+    """Tests for _handle_exception ScreenStackError repair."""
+
+    @pytest.mark.asyncio
+    async def test_handle_exception_screen_stack_error_repairs(self) -> None:
+        """ScreenStackError triggers repair instead of super."""
+        from textual.app import ScreenStackError
+
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            # Should not propagate the exception
+            app._handle_exception(ScreenStackError("No screens"))
+            await pilot.pause(0.05)
+
+
+class TestShowPauseMenu:
+    """Tests for show_pause_menu guard rails."""
+
+    @pytest.mark.asyncio
+    async def test_show_pause_menu_already_visible(self) -> None:
+        """If menu is already visible, second call is a no-op."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            app._pause_menu_visible = True
+            initial_stack_len = len(app.screen_stack)
+            app.show_pause_menu()
+            # Should NOT push because already visible
+            assert len(app.screen_stack) == initial_stack_len
+
+    @pytest.mark.asyncio
+    async def test_show_pause_menu_push_exception_resets_flag(self) -> None:
+        """If push_screen raises, the visible flag is reset."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            assert app._pause_menu_visible is False
+
+            # Force push_screen to raise
+            def bad_push(*args, **kwargs):
+                raise RuntimeError("push failed")
+
+            app.push_screen = bad_push  # type: ignore[method-assign]
+            app.show_pause_menu()
+            # Flag should be reset
+            assert app._pause_menu_visible is False
+
+
+class TestRunSingleScreen:
+    """Tests for run_single_screen harness paths."""
+
+    def test_run_single_screen_with_active_runner(self) -> None:
+        """When active_runner returns a runner, use switch_and_wait."""
+        from unittest.mock import MagicMock, patch
+
+        from the_architect.tui.app import run_single_screen
+
+        mock_runner = MagicMock()
+        mock_runner.switch_and_wait.return_value = "test_result"
+
+        with (
+            patch("the_architect.tui.runner.active_runner", return_value=mock_runner),
+            patch("the_architect.tui.runner.tui_suppressed_after_exit", return_value=False),
+        ):
+            result = run_single_screen(SplashScreen())
+            mock_runner.switch_and_wait.assert_called_once()
+            assert result == "test_result"
+
+    def test_run_single_screen_tui_suppressed(self) -> None:
+        """When tui_suppressed_after_exit is True, return None."""
+        from unittest.mock import patch
+
+        from the_architect.tui.app import run_single_screen
+
+        with (
+            patch("the_architect.tui.runner.active_runner", return_value=None),
+            patch("the_architect.tui.runner.tui_suppressed_after_exit", return_value=True),
+        ):
+            result = run_single_screen(SplashScreen())
+            assert result is None

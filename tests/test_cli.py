@@ -1513,47 +1513,31 @@ class TestLogsCommandMore:
 class TestMonitorCommandMore:
     """More tests for monitor command branches."""
 
-    def test_monitor_session_exists(self, tmp_path: Path) -> None:
-        """Should attach when session exists."""
-        with (
-            patch("the_architect.core.tmux.is_tmux_available", return_value=True),
-            patch("the_architect.core.tmux.session_exists", return_value=True),
-            patch("the_architect.core.tmux.get_session_name", return_value="architect-test"),
-            patch("the_architect.core.tmux.attach_session") as mock_attach,
-        ):
+    def test_monitor_opens_tui_screen(self, tmp_path: Path) -> None:
+        """Should open TUI monitor screen."""
+        with patch("the_architect.tui.screens.run_monitor_screen") as mock_screen:
             runner = CliRunner()
-            result = runner.invoke(main, ["monitor", "-p", str(tmp_path)])  # noqa: F841
-            mock_attach.assert_called_once()
+            result = runner.invoke(main, ["monitor", "-p", str(tmp_path)])
+        mock_screen.assert_called_once()
+        assert result.exit_code == 0, result.output
 
-    def test_monitor_single_other_session(self, tmp_path: Path) -> None:
-        """Should attach to single running architect session."""
-        with (
-            patch("the_architect.core.tmux.is_tmux_available", return_value=True),
-            patch("the_architect.core.tmux.session_exists", return_value=False),
-            patch("the_architect.core.tmux.get_session_name", return_value="architect-test"),
-            patch(
-                "the_architect.core.tmux.list_architect_sessions", return_value=["architect-other"]
-            ),
-            patch("the_architect.core.tmux.attach_session") as mock_attach,
-        ):
-            runner = CliRunner()
-            result = runner.invoke(main, ["monitor", "-p", str(tmp_path)])  # noqa: F841
-            mock_attach.assert_called_once_with("architect-other")
-
-    def test_monitor_multiple_other_sessions(self, tmp_path: Path) -> None:
-        """Should list sessions when multiple exist."""
-        with (
-            patch("the_architect.core.tmux.is_tmux_available", return_value=True),
-            patch("the_architect.core.tmux.session_exists", return_value=False),
-            patch("the_architect.core.tmux.get_session_name", return_value="architect-test"),
-            patch(
-                "the_architect.core.tmux.list_architect_sessions",
-                return_value=["architect-other1", "architect-other2"],
-            ),
+    def test_monitor_tui_failure_exits_nonzero(self, tmp_path: Path) -> None:
+        """Should exit 1 when TUI screen raises."""
+        with patch(
+            "the_architect.tui.screens.run_monitor_screen",
+            side_effect=RuntimeError("broken"),
         ):
             runner = CliRunner()
             result = runner.invoke(main, ["monitor", "-p", str(tmp_path)])
-            assert "Other active sessions" in result.output or "architect-other" in result.output
+        assert result.exit_code == 1
+
+    def test_monitor_no_tui_flag_removed(self, tmp_path: Path) -> None:
+        """The --tui flag has been removed; monitor always uses TUI."""
+        with patch("the_architect.tui.screens.run_monitor_screen"):
+            runner = CliRunner()
+            result = runner.invoke(main, ["monitor", "--help"])
+        # --tui option should NOT appear in help
+        assert "--tui" not in result.output
 
 
 class TestConfigCommandMore:
@@ -4217,7 +4201,7 @@ class TestRunMainDeeper:
 
 
 class TestMainProviderSelection:
-    """Tests for main() provider selection after tmux launch."""
+    """Tests for main() provider selection."""
 
     def test_main_headless_dual_provider_selects_first(self, tmp_path: Path) -> None:
         """Should select first provider in headless when both installed."""
@@ -4237,14 +4221,13 @@ class TestMainProviderSelection:
             patch("the_architect.cli.detect_provider", return_value=mock_oc),
             patch("the_architect.cli.discover_tasks", return_value=[]),
             patch("the_architect.cli._filter_and_set_status", return_value=[]),
-            patch("the_architect.core.tmux.maybe_launch_tmux", return_value=False),
             patch("the_architect.cli._run_main"),
         ):
             runner = CliRunner()
             result = runner.invoke(main, ["--headless", "-p", str(tmp_path)])  # noqa: F841
 
-    def test_main_post_tmux_no_providers(self, tmp_path: Path) -> None:
-        """Should exit with error when no providers found after tmux."""
+    def test_main_no_providers(self, tmp_path: Path) -> None:
+        """Should exit with error when no providers found."""
         mock_provider = MagicMock()
         mock_provider.display_name = "OpenCode"
         mock_provider.name = "opencode"
@@ -4258,11 +4241,9 @@ class TestMainProviderSelection:
             patch("the_architect.cli.detect_provider", return_value=mock_provider),
             patch("the_architect.cli.discover_tasks", return_value=[]),
             patch("the_architect.cli._filter_and_set_status", return_value=[]),
-            patch("the_architect.core.tmux.maybe_launch_tmux", return_value=False),
         ):
             runner = CliRunner()
             result = runner.invoke(main, ["--headless", "-p", str(tmp_path)])  # noqa: F841
-            # Should fail because second call to detect_available_providers returns []
 
 
 class TestAlternateScreenException:
@@ -6017,83 +5998,27 @@ class TestCircuitCommandBranches:
 
 
 class TestMonitorCommandBranches:
-    """Tests for monitor command uncovered branches."""
+    """Tests for monitor command."""
 
-    def test_monitor_no_tmux(self, tmp_path: Path) -> None:
-        """Should exit with error when tmux not available."""
+    def test_monitor_opens_tui_screen(self, tmp_path: Path) -> None:
+        """Should open TUI monitor screen."""
         (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
+        with patch("the_architect.tui.screens.run_monitor_screen") as mock_screen:
+            runner = CliRunner()
+            result = runner.invoke(main, ["monitor", "-p", str(tmp_path)])
+        mock_screen.assert_called_once()
+        assert result.exit_code == 0, result.output
 
-        with (
-            patch("the_architect.cli._tui_mode_enabled", return_value=False),
-            patch("the_architect.core.tmux.is_tmux_available", return_value=False),
+    def test_monitor_tui_failure_exits_nonzero(self, tmp_path: Path) -> None:
+        """Should exit 1 if TUI screen raises."""
+        (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
+        with patch(
+            "the_architect.tui.screens.run_monitor_screen",
+            side_effect=RuntimeError("screen broken"),
         ):
             runner = CliRunner()
             result = runner.invoke(main, ["monitor", "-p", str(tmp_path)])
-            assert result.exit_code == 1
-            assert "tmux is not installed" in result.output
-
-    def test_monitor_session_exists(self, tmp_path: Path) -> None:
-        """Should attach to existing session."""
-        (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
-
-        with (
-            patch("the_architect.cli._tui_mode_enabled", return_value=False),
-            patch("the_architect.core.tmux.is_tmux_available", return_value=True),
-            patch("the_architect.core.tmux.session_exists", return_value=True),
-            patch("the_architect.core.tmux.attach_session"),
-        ):
-            runner = CliRunner()
-            result = runner.invoke(main, ["monitor", "-p", str(tmp_path)])
-            assert "Attaching" in result.output
-
-    def test_monitor_no_sessions(self, tmp_path: Path) -> None:
-        """Should show message when no sessions found."""
-        (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
-
-        with (
-            patch("the_architect.cli._tui_mode_enabled", return_value=False),
-            patch("the_architect.core.tmux.is_tmux_available", return_value=True),
-            patch("the_architect.core.tmux.session_exists", return_value=False),
-            patch("the_architect.core.tmux.list_architect_sessions", return_value=[]),
-        ):
-            runner = CliRunner()
-            result = runner.invoke(main, ["monitor", "-p", str(tmp_path)])
-            assert "No active session" in result.output
-
-    def test_monitor_multiple_sessions(self, tmp_path: Path) -> None:
-        """Should list sessions when multiple exist."""
-        (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
-
-        with (
-            patch("the_architect.cli._tui_mode_enabled", return_value=False),
-            patch("the_architect.core.tmux.is_tmux_available", return_value=True),
-            patch("the_architect.core.tmux.session_exists", return_value=False),
-            patch(
-                "the_architect.core.tmux.list_architect_sessions",
-                return_value=["architect-proj1", "architect-proj2"],
-            ),
-        ):
-            runner = CliRunner()
-            result = runner.invoke(main, ["monitor", "-p", str(tmp_path)])
-            assert "Other active sessions" in result.output
-
-    def test_monitor_single_other_session(self, tmp_path: Path) -> None:
-        """Should auto-attach when exactly one other session exists."""
-        (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
-
-        with (
-            patch("the_architect.cli._tui_mode_enabled", return_value=False),
-            patch("the_architect.core.tmux.is_tmux_available", return_value=True),
-            patch("the_architect.core.tmux.session_exists", return_value=False),
-            patch(
-                "the_architect.core.tmux.list_architect_sessions",
-                return_value=["architect-proj1"],
-            ),
-            patch("the_architect.core.tmux.attach_session"),
-        ):
-            runner = CliRunner()
-            result = runner.invoke(main, ["monitor", "-p", str(tmp_path)])
-            assert "Attaching" in result.output
+        assert result.exit_code == 1
 
 
 class TestMainProviderNoModels:

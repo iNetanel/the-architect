@@ -160,3 +160,29 @@ class TestRetryConstant:
     def test_retry_count_is_positive(self) -> None:
         assert isinstance(_REPLACE_MAX_RETRIES, int)
         assert _REPLACE_MAX_RETRIES > 0
+
+
+class TestAtomicWriteTextCleanupExceptions:
+    """Tests for exception swallowing during fd cleanup and temp file removal."""
+
+    def test_os_close_fails_during_cleanup(self, tmp_path: Path) -> None:
+        """When os.fdopen fails and os.close also raises OSError, the close error
+        is swallowed and the original fdopen error is re-raised."""
+        target = tmp_path / "f.txt"
+        with (
+            patch("os.fdopen", side_effect=OSError("disk full")),
+            patch("os.close", side_effect=OSError("ebadf")),
+        ):
+            with pytest.raises(OSError, match="disk full"):
+                atomic_write_text(target, "data")
+
+    def test_os_unlink_fails_during_cleanup(self, tmp_path: Path) -> None:
+        """When os.fdopen fails and os.unlink also raises OSError, the unlink error
+        is swallowed and the original fdopen error is re-raised."""
+        target = tmp_path / "f.txt"
+        with (
+            patch("os.fdopen", side_effect=OSError("disk full")),
+            patch("os.unlink", side_effect=OSError("no such file")),
+        ):
+            with pytest.raises(OSError, match="disk full"):
+                atomic_write_text(target, "data")

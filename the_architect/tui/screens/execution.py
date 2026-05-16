@@ -17,7 +17,6 @@ Layout mirrors :class:`~the_architect.tui.screens.wait.WaitScreen`:
 
 from __future__ import annotations
 
-import os
 from datetime import datetime
 
 from rich.markup import escape
@@ -48,33 +47,29 @@ def _idle_footer_text() -> str:
     """Initial footer text shown before any run activity.
 
     ESC opens the pause menu (Continue / Detach / Exit); Ctrl+C is a
-    direct hard stop. When running inside tmux we also advertise the
-    tmux detach shortcut so users know the "step away and come back
-    later" path is available without even opening the menu.
+    direct hard stop.  Detach is available when running in Infinite
+    Loop or persistent mode — the pause menu explains this inline.
     """
-    base = "(idle)  [l]ive / [p]rogress / [d]iagnostics / settin[g]s  ·  Esc=pause  ·  Ctrl+C=stop"
-    if os.environ.get("TMUX"):
-        base += "  ·  Ctrl+B D detaches"
-    return base
+    return "(idle)  [l]ive / [p]rogress / [d]iagnostics / settin[g]s  ·  Esc=pause  ·  Ctrl+C=stop"
 
 
 class ExecutionScreen(Screen[None]):
     """Main execution screen with animated header, tabbed viewport, and status footer."""
 
-    # ESC intentionally opens the pause menu instead of quitting —
-    # a stray Escape after focusing a field must never drop the
-    # backend provider mid-run. Ctrl+C remains the direct-hard-stop
-    # path and stays wired at the app level.
+    # All bindings use priority=True so they fire regardless of which
+    # child widget has focus (RichLog, TabbedContent, etc.).
+    # Without this, tab-switch keys (l/p/d/g/c) and ESC need the child
+    # widget to bubble them up first — causing missed or double keypresses.
     BINDINGS = [
-        Binding("l", "switch_tab('tab_live')", "Live", show=False),
-        Binding("p", "switch_tab('tab_progress')", "Progress", show=False),
-        Binding("d", "switch_tab('tab_diagnostics')", "Diagnostics", show=False),
-        Binding("g", "switch_tab('tab_settings')", "Settings", show=False),
-        Binding("c", "switch_tab('tab_costs')", "Costs", show=False),
-        Binding("o", "switch_tab('tab_live')", "Live", show=False),
-        Binding("e", "switch_tab('tab_diagnostics')", "Diagnostics", show=False),
-        Binding("s", "switch_tab('tab_progress')", "Progress", show=False),
-        Binding("escape", "pause_menu", "Pause menu"),
+        Binding("l", "switch_tab('tab_live')", "Live", show=False, priority=True),
+        Binding("p", "switch_tab('tab_progress')", "Progress", show=False, priority=True),
+        Binding("d", "switch_tab('tab_diagnostics')", "Diagnostics", show=False, priority=True),
+        Binding("g", "switch_tab('tab_settings')", "Settings", show=False, priority=True),
+        Binding("c", "switch_tab('tab_costs')", "Costs", show=False, priority=True),
+        Binding("o", "switch_tab('tab_live')", "Live", show=False, priority=True),
+        Binding("e", "switch_tab('tab_diagnostics')", "Diagnostics", show=False, priority=True),
+        Binding("s", "switch_tab('tab_progress')", "Progress", show=False, priority=True),
+        Binding("escape", "pause_menu", "Pause menu", priority=True),
     ]
 
     DEFAULT_CSS = """
@@ -232,6 +227,7 @@ class ExecutionScreen(Screen[None]):
                 self.query_one(scroll_id).can_focus = True
             except Exception:
                 pass
+        self._focus_active_tab_scroller()
         self.call_after_refresh(self._focus_active_tab_scroller)
         # Flush any output that arrived before the DOM was ready first,
         # then write placeholders only for tabs that received nothing.
@@ -312,9 +308,16 @@ class ExecutionScreen(Screen[None]):
         """Switch execution tabs from execution-scoped key bindings."""
         try:
             self.query_one("#exec_tabs", TabbedContent).active = tab_id
-            self.call_after_refresh(self._focus_active_tab_scroller)
+            # Focus synchronously — defer causes a one-frame gap where
+            # the next keypress goes to the wrong widget.
+            self._focus_active_tab_scroller()
         except Exception:
             pass
+
+    def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+        """Refocus the scrollable content after a mouse click on a tab header."""
+        self._focus_active_tab_scroller()
+        self.call_after_refresh(self._focus_active_tab_scroller)
 
     def _focus_active_tab_scroller(self) -> None:
         """Focus the active tab's scrollable body for keyboard scrolling."""
@@ -482,6 +485,7 @@ class ExecutionScreen(Screen[None]):
             "replanning": "yellow",
             "replan_done": "#7cc800",
             "resumed": "#7cc800",
+            "sleeping": "dim",
             "idle": "dim",
         }.get(phase, "dim")
         lines.append(f"  Now          [{phase_colour}]{phase}[/{phase_colour}]")

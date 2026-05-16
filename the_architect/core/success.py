@@ -337,11 +337,10 @@ def print_success_summary(
         retrospective_rounds: Optional list of retrospective round summaries.
     """
     from rich import box
+    from rich.console import Console
     from rich.table import Table
 
-    from the_architect.core.tmux import PaddedConsole
-
-    console = PaddedConsole()
+    console = Console()
     done_count = sum(1 for r in results if r.status == "done")
     failed_count = sum(1 for r in results if r.status == "failed")
     total_count = len(results)

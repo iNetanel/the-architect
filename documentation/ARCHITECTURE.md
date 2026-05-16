@@ -2,7 +2,7 @@
 
 > **Fire-and-forget autonomous development powered by your AI coding CLI of choice.**
 
-The Architect is an open-source Python CLI application that wraps supported AI coding CLIs such as [OpenCode](https://opencode.ai), [Codex CLI](https://developers.openai.com/codex/cli/), [Claude Code](https://docs.anthropic.com/en/docs/claude-code), and [Gemini CLI](https://github.com/google-gemini/gemini-cli) to provide fully autonomous development agents. You describe what you want to build — in plain English, or by pointing to a PRD, spec, or any document — The Architect plans it into numbered tasks, executes them unattended, detects and recovers from failures automatically, and shows live progress in the terminal with an optional tmux split-pane dashboard.
+The Architect is an open-source Python CLI application that wraps supported AI coding CLIs such as [OpenCode](https://opencode.ai), [Codex CLI](https://developers.openai.com/codex/cli/), [Claude Code](https://docs.anthropic.com/en/docs/claude-code), and [Gemini CLI](https://github.com/google-gemini/gemini-cli) to provide fully autonomous development agents. You describe what you want to build — in plain English, or by pointing to a PRD, spec, or any document — The Architect plans it into numbered tasks, executes them unattended, detects and recovers from failures automatically, and shows live progress in a full-screen Textual TUI.
 
 It is published to PyPI as `the-architect` and works on any project regardless of language, framework, or stack.
 
@@ -39,7 +39,7 @@ It is published to PyPI as `the-architect` and works on any project regardless o
 27. [PROGRESS.md](#27-progressmd)
 28. [tasks/SUMMARY.md — Run Summary](#28-taskssummarymd--run-summary)
 29. [ARCHITECT.md — Durable Project Intelligence](#29-architectmd--durable-project-intelligence)
-30. [tmux Dashboard — Live Monitoring](#30-tmux-dashboard--live-monitoring)
+30. [Monitor Screen — Live Monitoring](#30-monitor-screen--live-monitoring)
 31. [Error Handling](#31-error-handling)
 32. [Project Structure — What The Architect Creates](#32-project-structure--what-the-architect-creates)
 33. [Dependencies](#33-dependencies)
@@ -143,12 +143,12 @@ npm install -g @google/gemini-cli
 - Persistent mode
 - Token budget
 - Headless / CI mode
-- tmux dashboard
+- `architect monitor` live monitor screen
 - All configuration options except `free_mode` (OpenCode + OpenRouter only)
 
 ### Token Counts with Plain-Text Providers
 
-Claude Code outputs plain text — there are no structured JSON events carrying token usage. Token counts will show as `0` in `tasks/SUMMARY.md` and the dashboard when using Claude Code. Codex CLI and Gemini CLI do emit structured JSONL usage events, so token tracking is available there.
+Claude Code outputs plain text — there are no structured JSON events carrying token usage. Token counts will show as `0` in `tasks/SUMMARY.md` and the monitor screen when using Claude Code. Codex CLI and Gemini CLI do emit structured JSONL usage events, so token tracking is available there.
 
 ### Free Tier with Claude Code
 
@@ -934,11 +934,11 @@ These are permanent failures (the model is unusable), not transient rate limits.
 | Model-not-found handling | Fails the attempt | Immediate rotation to next free model |
 | Mid-stream detection | Yes (error JSON events) | Yes (same mechanism) |
 | Exhausted models | N/A | Falls back to provider's default model |
-| Free model count display | N/A | Shown at startup and on dashboard |
+| Free model count display | N/A | Shown at startup and in the monitor screen |
 
-### Free Mode Dashboard Info
+### Free Mode Monitor Info
 
-When free mode is active, the dashboard shows:
+When free mode is active, the monitor screen and TUI diagnostics show:
 - Current free model being used
 - Number of free models remaining
 - Model rotation count (how many times a model was switched due to rate limit)
@@ -1104,7 +1104,7 @@ architect > run.log 2>&1         # piped stdout
 | **status** | `architect status --tui` |
 | **logs** | `architect logs --tui` |
 | **circuit** | `architect circuit --tui` |
-| **monitor** | `architect monitor --tui` |
+| **monitor** | `architect monitor` |
 | **config** | `architect config --tui` |
 
 **Execution screen key bindings:** `o` Output tab · `e` Events tab · `d` Details tab · `q` / Ctrl+C quit.
@@ -2036,52 +2036,24 @@ During planning, execution, and retrospective, entries are appended to:
 
 ---
 
-## 30. tmux Dashboard — Live Monitoring
+## 30. Monitor Screen — Live Monitoring
 
-When **tmux** is installed and you are not already inside a tmux session, The Architect automatically opens a split-pane session:
+`architect monitor` opens the TUI monitor screen from any terminal. It reads `.architect/monitor_state.json`, which the runner updates after every significant event.
 
-```
-┌─────────────────────────────────────┬─────────────────────────────────┐
-│                                     │ THE ARCHITECT                   │
-│   opencode live output              │─────────────────────────────────│
-│   streams here in real-time         │ TASKS                           │
-│                                     │ ✓ T01 Setup (done)              │
-│   ══ T02  Build API  (2/3 remain) │ ● T02 Build API (RUNNING)      │
-│   ⠋  starting T02…                │ ○ T03 Frontend (pending)        │
-│                                     │─────────────────────────────────│
-│   [opencode output scrolls here]    │ STATUS                          │
-│                                     │ Task: T02 / 3                  │
-│                                     │ Status: RUNNING                │
-│                                     │ Attempt: 1 / 3                 │
-│                                     │─────────────────────────────────│
-│                                     │ CIRCUIT                         │
-│                                     │ State: CLOSED                   │
-│                                     │ No-progress: 0/3                │
-│                                     │ Same-error: 0/3                │
-│                                     │─────────────────────────────────│
-│                                     │ TOKENS                          │
-│                                     │ Session: 24.5K                  │
-│                                     │ Last task: 8.2K                 │
-└─────────────────────────────────────┴─────────────────────────────────┘
-```
+### State File
 
-### How It Works
+The runner writes `.architect/monitor_state.json` after every significant event (task start, task done, attempt start, attempt done, circuit state change, cooldown start/end, model rotation, replan). Writes are **atomic** (temp file + rename) so the reader never sees a partial file.
 
-The runner writes a state file at `.architect/monitor_state.json` after every significant event (task start, task done, attempt start, attempt done, circuit state change, cooldown start/end, model rotation, replan). The dashboard process reads this file every 2 seconds and renders the live view.
+### Monitor Screen Features
 
-Writes are **atomic** (temp file + rename) so the dashboard never reads a partial file.
-
-### Dashboard Features
-
-- Live streaming of opencode output (left pane)
 - Color-coded task states (`✓ Done`, `● Running`, `○ Pending`)
 - Circuit breaker state in real-time (CLOSED / OPEN / HALF_OPEN + counters)
-- Cooldown wait countdown when active (e.g., "Cooldown: 2,847s remaining")
-- Model rotation counter in free mode ("Free model 3/12")
+- Cooldown wait countdown when active
+- Model rotation counter in free mode
 - Token usage tracking (session total + last task)
 - Graceful stop / kill flag monitoring
 
-### Monitor State Writer
+### MonitorStateWriter
 
 `MonitorStateWriter` is the class responsible for writing state. It receives callbacks from the runner:
 - `on_task_start`, `on_task_done`, `on_task_failed`
@@ -2093,23 +2065,22 @@ Writes are **atomic** (temp file + rename) so the dashboard never reads a partia
 
 All writes are best-effort — failures are logged at debug level and silently swallowed.
 
-### tmux Controls
+### Session Survival (Infinite Loop / Persistent Mode)
 
-- **Detach** from the session: press `Ctrl+B` then `D`
-- **Reattach**: `tmux attach-session -t architect-<project-name>`
-- **List sessions**: `tmux ls | grep architect`
+Infinite Loop (`--infinite-loop`) and persistent (`--persistent`) runs spawn the worker as a **non-daemon thread** and install a `SIGHUP` handler. If the terminal closes or SSH drops, the TUI exits cleanly but the worker continues running headless, writing all output to `.architect/logs/`. Reconnect at any time:
 
-### tmux Auto-Install
+```bash
+architect monitor
+```
 
-If tmux is not installed, The Architect offers to install it automatically using your system's package manager (`apt`, `brew`, `pacman`, `dnf`, `apk`, `zypper`, `nix-env`, `port`, `choco`, `winget`, `scoop`). If the install fails, a one-time hint is shown and the run continues in the current terminal.
+### Pause → Detach
 
-### Own-Window Fallback
+During Infinite Loop or persistent runs, the pause menu (Esc during execution) offers a **Detach** button. Selecting it:
+1. Closes the Textual TUI and frees your terminal
+2. The non-daemon worker continues running headless
+3. A hint is printed: `architect monitor` to reconnect
 
-When tmux is unavailable and a GUI is detected, The Architect can launch itself in a new terminal window (gnome-terminal, konsole, kitty, alacritty, xfce4-terminal, mate-terminal, xterm, or macOS Terminal/iTerm2). This is also best-effort — failures are silently swallowed.
-
-### No Monitor Mode
-
-Use `--no-monitor` to skip all tmux and window-launching logic. The Architect runs in the current terminal with no dashboard.
+Detach is **not available** on normal runs (daemon worker) — the button shows an inline explanation.
 
 ---
 
@@ -2143,20 +2114,15 @@ The Architect handles failures robustly at every layer:
 When you press `Ctrl+C` during execution:
 1. The current task attempt is interrupted
 2. The lock file is released
-3. The tmux session is cleaned up
-4. A partial `tasks/SUMMARY.md` is written if possible
+3. A partial `tasks/SUMMARY.md` is written if possible
 
-The stop is "graceful" — no lock file is left behind, no tmux session is orphaned.
+The stop is "graceful" — no lock file is left behind.
 
-### Dashboard Stop Flags
+### Stop Flags
 
 Two flag files enable external process control:
 - `.architect/monitor_stop.flag` — requests graceful stop after current task
 - `.architect/monitor_kill.flag` — requests immediate kill
-
-### tmux Session Teardown
-
-When The Architect launches itself inside tmux (auto-launch), it kills the tmux session when the run ends so the user lands back in their original terminal cleanly. Without this, the user would be left inside a dead tmux session. This only kills sessions matching The Architect's naming convention (`architect-<project-name>`).
 
 ---
 
@@ -2188,7 +2154,7 @@ your-project/
 │   │   ├── reviewer_round1.log  # Retrospective transcript
 │   │   └── T01.attempt2.log # Per-attempt execution logs
 │   ├── circuit.json          # Circuit breaker state (persisted)
-│   ├── monitor_state.json    # Dashboard state (updated every event)
+│   ├── monitor_state.json    # Live state (updated every event, read by `architect monitor`)
 │   ├── runner.lock          # Lock file (prevents concurrent runs)
 │   ├── monitor_stop.flag    # Graceful stop flag (Ctrl+C)
 │   └── monitor_kill.flag    # Immediate kill flag
@@ -2211,10 +2177,9 @@ the_architect/              # Python package (published to PyPI as "the-architec
 │   ├── claude_code_provider.py  # Claude Code CLI provider implementation
 │   ├── codex_cli_provider.py    # Codex CLI provider implementation
 │   ├── context.py               # Context file/directory loading + goal extraction
-│   ├── dashboard.py             # tmux dashboard renderer (separate process)
 │   ├── free_models.py           # Free-tier OpenRouter model rotator (OpenCode only)
 │   ├── gemini_cli_provider.py   # Gemini CLI provider implementation
-│   ├── monitor_state.py         # Monitor state writer (feeds dashboard)
+│   ├── monitor_state.py         # Monitor state writer (.architect/monitor_state.json)
 │   ├── opencode_config.py       # Backward-compat shim (delegates to opencode_provider.py)
 │   ├── opencode_provider.py     # OpenCode CLI provider implementation
 │   ├── intelligence.py          # Pre-planning ARCHITECT.md quality gate + model refresh
@@ -2225,8 +2190,7 @@ the_architect/              # Python package (published to PyPI as "the-architec
 │   ├── runner.py                # Task execution engine (stream_provider, run_task, run_all)
 │   ├── structure.py             # Project structure detection (repo type, framework, deps)
 │   ├── success.py               # tasks/SUMMARY.md generation + terminal summary
-│   ├── tasks.py                 # Task discovery and state
-│   └── tmux.py                  # tmux session management + dashboard launcher
+│   └── tasks.py                 # Task discovery and state
 └── resources/
     ├── opencode_template.json  # OpenCode planning config (intelligence + architect + reviewer agents)
     └── prompts/
