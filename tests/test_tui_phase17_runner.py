@@ -651,6 +651,9 @@ class TestPersistenceActivation:
         runner.activate_persistence()
         assert runner._persistent is True
 
+    @pytest.mark.skipif(
+        not hasattr(__import__("signal"), "SIGHUP"), reason="SIGHUP not available on Windows"
+    )
     def test_install_sighup_from_main_thread(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """_install_sighup_from_main_thread installs SIGHUP handler."""
         import signal as signal_module
@@ -771,6 +774,9 @@ class TestSighupHandler:
 class TestSignalHandlerLifecycle:
     """Test signal handler installation and restoration paths."""
 
+    @pytest.mark.skipif(
+        not hasattr(__import__("signal"), "SIGHUP"), reason="SIGHUP not available on Windows"
+    )
     def test_persistent_run_installs_sighup(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """persistent=True runner installs SIGHUP handler in run()."""
         import signal as signal_module
@@ -817,6 +823,9 @@ class TestSignalHandlerLifecycle:
         result = runner.run()
         assert result == "ok"
 
+    @pytest.mark.skipif(
+        not hasattr(__import__("signal"), "SIGHUP"), reason="SIGHUP not available on Windows"
+    )
     def test_signal_restore_sighup_failure_swallowed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """SIGHUP restore failure in finally block is swallowed."""
         import signal as signal_module
