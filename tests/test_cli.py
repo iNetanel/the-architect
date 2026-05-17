@@ -252,21 +252,21 @@ class TestMoreHelperFunctions:
         assert config.retrospective_rounds == 2
 
     def test_unsafe_retrospective_tasks_detects_destructive_git(self, tmp_path: Path) -> None:
-        """Reviewer-created R-tasks must not execute destructive git recovery."""
+        """Reviewer-created retro tasks must not execute destructive git recovery."""
         from the_architect.cli import _unsafe_retrospective_tasks
 
-        task_path = tmp_path / "R01_bad.md"
-        task_path.write_text("# R01\n\nRun `git checkout HEAD -- file.py`.\n", encoding="utf-8")
+        task_path = tmp_path / "T04R1_bad.md"
+        task_path.write_text("# T04R1\n\nRun `git checkout HEAD -- file.py`.\n", encoding="utf-8")
         task = Task(
-            name="R01_bad",
-            prefix="R01",
-            number=1,
+            name="T04R1_bad",
+            prefix="T04R1",
+            number=4,
             path=task_path,
             title="Bad recovery",
             status=TaskStatus.PENDING,
         )
 
-        assert _unsafe_retrospective_tasks([task]) == ["R01_bad.md"]
+        assert _unsafe_retrospective_tasks([task]) == ["T04R1_bad.md"]
 
     def test_resolve_infinite_loop_goal_reads_goal_summary(self, tmp_path: Path) -> None:
         """Provider-written Goal Summary instructions should preserve loop goal."""
@@ -2152,7 +2152,7 @@ class TestRunMainExecution:
                 "| Task | Title | Status | Completed |\n"
                 "|------|-------|--------|-----------|\n"
                 "| T01 | Test | Failed | failed |\n"
-                "| R01 | Fix | Done | today |\n",
+                "| T01R1 | Fix | Done | today |\n",
                 encoding="utf-8",
             )
             return (True, [], 1.0)
@@ -2163,17 +2163,17 @@ class TestRunMainExecution:
             feedback_seen.append(request.validation_feedback)
             if request.round_number == 1:
                 return RetrospectiveResult(summary="No issues", issues_found=0)
-            (tasks_dir / "R01_fix.md").write_text("# R01 Fix\n", encoding="utf-8")
+            (tasks_dir / "T01R1_fix.md").write_text("# T01R1 Fix\n", encoding="utf-8")
             progress_file.write_text(
                 "# Progress\n\n"
                 "| Task | Title | Status | Completed |\n"
                 "|------|-------|--------|-----------|\n"
                 "| T01 | Test | Failed | failed |\n"
-                "| R01 | Fix | Pending | — |\n",
+                "| T01R1 | Fix | Pending | — |\n",
                 encoding="utf-8",
             )
             return RetrospectiveResult(
-                tasks_created=["R01"],
+                tasks_created=["T01R1"],
                 summary="Recovery planned",
                 issues_found=1,
                 fixes_planned=1,
@@ -6368,3 +6368,297 @@ class TestCheckProviderUpdateBeforeModelWork:
         health_check.assert_called_once()
         warning.assert_called_once_with("quota exceeded")
         assert getattr(config, "_provider_health_checked", None) is True
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Infinite Loop idle-timeout reset tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestInfiniteLoopResetIdleTimeoutTasks:
+    """_infinite_loop_reset_idle_timeout_tasks rewrites Failed→Pending for idle kills."""
+
+    def setup_method(self):
+        import the_architect.core.runner as _runner
+
+        with _runner._IDLE_TIMEOUT_TASKS_LOCK:
+            _runner._IDLE_TIMEOUT_TASKS.clear()
+
+    def test_resets_idle_timeout_task_to_pending(self, tmp_path: Path):
+        from the_architect.cli import _infinite_loop_reset_idle_timeout_tasks
+        from the_architect.core.runner import _mark_idle_timeout
+
+        progress = tmp_path / "PROGRESS.md"
+        progress.write_text(
+            "| T04 | TUI coverage | Failed | 3 attempts |\n",
+            encoding="utf-8",
+        )
+        config = ArchitectConfig(
+            project_root=tmp_path,
+            tasks_dir=tmp_path / "tasks",
+            progress_file=progress,
+            log_dir=tmp_path / ".architect" / "logs",
+        )
+
+        _mark_idle_timeout("T04")
+        reset_count = _infinite_loop_reset_idle_timeout_tasks(tmp_path, config)
+
+        assert reset_count == 1
+        content = progress.read_text(encoding="utf-8")
+        assert "Pending" in content
+        assert "Failed" not in content
+
+    def test_returns_zero_when_no_idle_timeout_tasks(self, tmp_path: Path):
+        from the_architect.cli import _infinite_loop_reset_idle_timeout_tasks
+
+        progress = tmp_path / "PROGRESS.md"
+        progress.write_text(
+            "| T04 | TUI coverage | Failed | 3 attempts |\n",
+            encoding="utf-8",
+        )
+        config = ArchitectConfig(
+            project_root=tmp_path,
+            tasks_dir=tmp_path / "tasks",
+            progress_file=progress,
+            log_dir=tmp_path / ".architect" / "logs",
+        )
+
+        # Registry is empty — no tasks marked as idle_timeout
+        reset_count = _infinite_loop_reset_idle_timeout_tasks(tmp_path, config)
+        assert reset_count == 0
+
+    def test_returns_zero_when_progress_missing(self, tmp_path: Path):
+        from the_architect.cli import _infinite_loop_reset_idle_timeout_tasks
+        from the_architect.core.runner import _mark_idle_timeout
+
+        config = ArchitectConfig(
+            project_root=tmp_path,
+            tasks_dir=tmp_path / "tasks",
+            progress_file=tmp_path / "PROGRESS.md",  # does not exist
+            log_dir=tmp_path / ".architect" / "logs",
+        )
+        _mark_idle_timeout("T04")
+        reset_count = _infinite_loop_reset_idle_timeout_tasks(tmp_path, config)
+        assert reset_count == 0
+
+    def test_does_not_reset_non_idle_timeout_tasks(self, tmp_path: Path):
+        from the_architect.cli import _infinite_loop_reset_idle_timeout_tasks
+        from the_architect.core.runner import _mark_idle_timeout
+
+        progress = tmp_path / "PROGRESS.md"
+        progress.write_text(
+            "| T04 | TUI coverage | Failed | 3 attempts |\n"
+            "| T05 | CI check | Failed | 2 attempts |\n",
+            encoding="utf-8",
+        )
+        config = ArchitectConfig(
+            project_root=tmp_path,
+            tasks_dir=tmp_path / "tasks",
+            progress_file=progress,
+            log_dir=tmp_path / ".architect" / "logs",
+        )
+
+        # Only T04 was idle-timeout; T05 was a real agent failure
+        _mark_idle_timeout("T04")
+        reset_count = _infinite_loop_reset_idle_timeout_tasks(tmp_path, config)
+
+        assert reset_count == 1
+        content = progress.read_text(encoding="utf-8")
+        # T04 reset to Pending, T05 stays Failed
+        assert "T04" in content and "Pending" in content
+        assert "T05" in content and "Failed" in content
+
+
+class TestSyncPlanFromDisk:
+    """Tests for the plan-sync logic that makes new split/retro tasks visible in the TUI."""
+
+    def test_split_tasks_added_to_plan_after_reassessment(self, tmp_path: Path) -> None:
+        """When reassessment writes T04A + T04B on disk, plan.tasks grows to include them."""
+        import asyncio
+
+        from the_architect.cli import _run_tasks_raw
+        from the_architect.core.tasks import TaskPlan
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        progress_file = tasks_dir / "PROGRESS.md"
+
+        # Initial task list: T04_big
+        (tasks_dir / "T04_big.md").write_text("# T04 — Big task\n", encoding="utf-8")
+        progress_file.write_text(
+            "**Tasks completed:** 0\n**Next task to run:** T04\n\n"
+            "## Task Log\n| Task | Title | Status | Completed |\n"
+            "|------|-------|--------|-----------|\n"
+            "| T04 | Big task | Pending | — |\n",
+            encoding="utf-8",
+        )
+
+        t04 = Task(
+            name="T04_big",
+            prefix="T04",
+            number=4,
+            path=tasks_dir / "T04_big.md",
+            title="Big task",
+            status=TaskStatus.PENDING,
+        )
+        config = ArchitectConfig()
+        config.max_retries = 1
+        config.force_reassessment = True
+
+        plan_ref: list[TaskPlan] = []
+
+        # Reassessment side effect: delete T04 and write T04A + T04B on disk
+        def _reassessment_side_effect(*args: object, **kwargs: object) -> object:
+            """Simulate the architect splitting T04 into T04A + T04B."""
+            (tasks_dir / "T04_big.md").unlink(missing_ok=True)
+            (tasks_dir / "T04A_part_a.md").write_text("# T04A — Part A\n", encoding="utf-8")
+            (tasks_dir / "T04B_part_b.md").write_text("# T04B — Part B\n", encoding="utf-8")
+            # Update PROGRESS.md to reflect split (agent responsibility)
+            progress_file.write_text(
+                "**Tasks completed:** 0\n**Next task to run:** T04A\n\n"
+                "## Task Log\n| Task | Title | Status | Completed |\n"
+                "|------|-------|--------|-----------|\n"
+                "| T04A | Part A | Pending | — |\n"
+                "| T04B | Part B | Pending | — |\n",
+                encoding="utf-8",
+            )
+            mock_result = MagicMock()
+            mock_result.tasks_updated = ["T04A", "T04B"]
+            mock_result.summary = "Split T04 into T04A and T04B"
+            return mock_result
+
+        async def _fake_run_all(plan: TaskPlan, **kwargs: object) -> bool:
+            plan_ref.append(plan)
+            # Trigger on_task_done for T04, which calls run_reassessment_if_needed
+            on_done = kwargs.get("on_task_done")
+            if on_done:
+                from the_architect.core.runner import TokenUsage
+
+                result = TaskResult(
+                    prefix="T04",
+                    title="Big task",
+                    status="done",
+                    duration_seconds=1.0,
+                    tokens=TokenUsage(),
+                    outcome_summary="Downstream impact: possible",
+                )
+                on_done(result)
+            return True
+
+        with (
+            patch("the_architect.cli._ansi_supported", return_value=False),
+            patch("the_architect.cli.run_all", side_effect=_fake_run_all),
+            patch("the_architect.cli.run_task_reassessment"),
+            patch(
+                "the_architect.cli._run_reassessment_in_thread",
+                side_effect=_fake_reassessment_runner(_reassessment_side_effect()),
+            ),
+        ):
+            # Pre-create split files before run starts so reassessment mock fires
+            _reassessment_side_effect()
+            success, results, duration = asyncio.run(
+                _run_tasks_raw(tmp_path, config, [t04], provider=MagicMock())
+            )
+
+        # plan.tasks should now contain T04A and T04B (added by _sync_plan_from_disk)
+        assert plan_ref, "run_all was not called"
+        plan = plan_ref[0]
+        prefixes = [t.prefix for t in plan.tasks]
+        assert "T04A" in prefixes, f"T04A missing from plan.tasks; got {prefixes}"
+        assert "T04B" in prefixes, f"T04B missing from plan.tasks; got {prefixes}"
+
+    def test_split_tasks_sorted_before_later_tasks(self, tmp_path: Path) -> None:
+        """T04A and T04B must appear before T05 in plan.tasks after _sync_plan_from_disk."""
+        import asyncio
+
+        from the_architect.cli import _run_tasks_raw
+        from the_architect.core.tasks import TaskPlan
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        progress_file = tasks_dir / "PROGRESS.md"
+
+        for name, prefix in [("T04_big.md", "T04"), ("T05_next.md", "T05")]:
+            (tasks_dir / name).write_text(f"# {prefix}\n", encoding="utf-8")
+
+        progress_file.write_text(
+            "**Tasks completed:** 0\n**Next task to run:** T04\n\n"
+            "## Task Log\n| Task | Title | Status | Completed |\n"
+            "|------|-------|--------|-----------|\n"
+            "| T04 | Big task | Pending | — |\n"
+            "| T05 | Next | Pending | — |\n",
+            encoding="utf-8",
+        )
+
+        t04 = Task(
+            name="T04_big",
+            prefix="T04",
+            number=4,
+            path=tasks_dir / "T04_big.md",
+            title="Big task",
+            status=TaskStatus.PENDING,
+        )
+        t05 = Task(
+            name="T05_next",
+            prefix="T05",
+            number=5,
+            path=tasks_dir / "T05_next.md",
+            title="Next",
+            status=TaskStatus.PENDING,
+        )
+        config = ArchitectConfig()
+        config.max_retries = 1
+        config.force_reassessment = True
+
+        plan_ref: list[TaskPlan] = []
+
+        def _reassessment_creates_split(*args: object, **kwargs: object) -> object:
+            (tasks_dir / "T04_big.md").unlink(missing_ok=True)
+            (tasks_dir / "T04A_part_a.md").write_text("# T04A\n", encoding="utf-8")
+            (tasks_dir / "T04B_part_b.md").write_text("# T04B\n", encoding="utf-8")
+            mock_result = MagicMock()
+            mock_result.tasks_updated = ["T04A", "T04B"]
+            mock_result.summary = "Split"
+            return mock_result
+
+        async def _fake_run_all(plan: TaskPlan, **kwargs: object) -> bool:
+            plan_ref.append(plan)
+            on_done = kwargs.get("on_task_done")
+            if on_done:
+                from the_architect.core.runner import TokenUsage
+
+                on_done(
+                    TaskResult(
+                        prefix="T04",
+                        title="Big task",
+                        status="done",
+                        duration_seconds=1.0,
+                        tokens=TokenUsage(),
+                        outcome_summary="Downstream impact: possible",
+                    )
+                )
+            return True
+
+        with (
+            patch("the_architect.cli._ansi_supported", return_value=False),
+            patch("the_architect.cli.run_all", side_effect=_fake_run_all),
+            patch("the_architect.cli.run_task_reassessment"),
+            patch(
+                "the_architect.cli._run_reassessment_in_thread",
+                side_effect=_fake_reassessment_runner(_reassessment_creates_split()),
+            ),
+        ):
+            _reassessment_creates_split()
+            asyncio.run(_run_tasks_raw(tmp_path, config, [t04, t05], provider=MagicMock()))
+
+        assert plan_ref
+        prefixes = [t.prefix for t in plan_ref[0].tasks]
+        # T04A and T04B must come before T05
+        assert "T04A" in prefixes
+        assert "T04B" in prefixes
+        assert prefixes.index("T04A") < prefixes.index("T05"), (
+            f"T04A should appear before T05; got order {prefixes}"
+        )
+        assert prefixes.index("T04B") < prefixes.index("T05"), (
+            f"T04B should appear before T05; got order {prefixes}"
+        )

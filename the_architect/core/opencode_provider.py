@@ -162,30 +162,6 @@ class OpenCodeProvider:
         self._version_cache = value
         return value
 
-    def _agent_flag_broken(self) -> bool:
-        """Return True when the --agent CLI flag is known to be broken.
-
-        The flag raises "InstanceRef not provided" in OpenCode 1.15.0 and
-        1.15.1 due to an Effect-based event system regression.  When broken,
-        agent selection falls back to ``default_agent`` in the injected config.
-        On older versions the flag works correctly and should still be used so
-        that ``execution_agent`` is honoured.
-
-        If the installed version cannot be determined we assume broken (safe
-        default — avoids a crash; the warning in build_command tells the user).
-
-        Returns:
-            True when version >= 1.15.0 or version is unknown.
-        """
-        version_str = self.get_version()
-        import re as _re
-
-        m = _re.search(r"(\d+)\.(\d+)\.(\d+)", version_str)
-        if not m:
-            return True  # unknown version — play it safe
-        major, minor = int(m.group(1)), int(m.group(2))
-        return (major, minor) >= (1, 15)
-
     def has_any_models(self) -> bool:
         """Return True if opencode can list at least one model."""
         if not self.is_installed():
@@ -630,18 +606,7 @@ class OpenCodeProvider:
             cmd.extend(["--model", model_override])
 
         if agent_override:
-            if self._agent_flag_broken():
-                # --agent is broken in OpenCode ≥ 1.15 (raises "InstanceRef not
-                # provided").  Planning is unaffected — architect.json sets
-                # default_agent.  For execution_agent, warn the user.
-                logger.warning(
-                    f"execution_agent='{agent_override}' cannot be applied: "
-                    f"the --agent flag is broken in OpenCode ≥ 1.15 "
-                    f"(see COMPATIBILITY.md [OC-1]). "
-                    f"Set default_agent in your opencode.json to select your agent."
-                )
-            else:
-                cmd.extend(["--agent", agent_override])
+            cmd.extend(["--agent", agent_override])
 
         cmd.extend(["--", instruction])
 

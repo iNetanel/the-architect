@@ -30,7 +30,7 @@ from the_architect.core.provider_setup import (
     provider_uses_architect_config,
 )
 from the_architect.core.runner import StreamRenderer, stream_provider
-from the_architect.core.tasks import Task, discover_tasks, duplicate_task_prefixes
+from the_architect.core.tasks import Task, discover_tasks, duplicate_task_prefixes, is_retro_task
 
 if TYPE_CHECKING:
     from the_architect.core.provider import ArchitectProvider
@@ -90,12 +90,29 @@ class ReassessmentResult(BaseModel):
 
 
 def _find_eval_snapshot_files(project_dir: Path) -> list[Path]:
-    """Return leftover architect_eval snapshot files outside skipped directories."""
-    skip_dirs = {"__pycache__", ".git", "node_modules", ".venv", ".architect", ".pytest_cache"}
+    """Return leftover architect_eval snapshot files outside skipped directories.
+
+    The tasks/ directory is always excluded — PROGRESS.md, task files, INSTRUCTIONS.md,
+    GOAL.md and similar files inside tasks/ are managed by The Architect itself and must
+    never be treated as corruption signals.  ARCHITECT.md at the project root is likewise
+    excluded.
+    """
+    skip_dirs = {
+        "__pycache__",
+        ".git",
+        "node_modules",
+        ".venv",
+        ".architect",
+        ".pytest_cache",
+        "tasks",
+    }
+    skip_names = {"architect_eval_ARCHITECT.md"}
     return [
         path
         for path in sorted(project_dir.rglob("architect_eval_*"))
-        if path.is_file() and not any(skip in path.parts for skip in skip_dirs)
+        if path.is_file()
+        and not any(skip in path.parts for skip in skip_dirs)
+        and path.name not in skip_names
     ]
 
 
@@ -136,31 +153,39 @@ def _prepend_provider_prompt(
 
 
 # ---------------------------------------------------------------------------
-# Next R-task number
+# Next retro-task prefix helpers
 # ---------------------------------------------------------------------------
 
 
-def _next_r_task_number(tasks_dir: Path) -> int:
-    """Return the next available R-prefixed task number.
+def _next_retro_task_slots(tasks_dir: Path, failed_prefixes: list[str]) -> dict[str, str]:
+    """Return the next available retro-task prefix for each failed T-task.
 
-    Scans tasks_dir for files matching RXX_*.md and returns max(existing) + 1,
-    or 1 if no R-prefixed tasks exist yet.
+    For each failed task prefix (e.g. ``"T04"``), scans ``tasks_dir`` for
+    existing retro files matching ``T04R<n>_*.md`` and returns the next
+    available slot, e.g. ``"T04R1"`` if none exist yet, ``"T04R2"`` if
+    ``T04R1_foo.md`` already exists.
 
     Args:
         tasks_dir: Directory containing task files.
+        failed_prefixes: List of plain task prefixes that failed, e.g.
+            ``["T04", "T05"]``.
 
     Returns:
-        The next R-task number to use (1-based).
+        Mapping of failed prefix → next retro prefix,
+        e.g. ``{"T04": "T04R1", "T05": "T05R1"}``.
     """
     if not tasks_dir.exists():
-        return 1
+        return {p: f"{p}R1" for p in failed_prefixes}
 
-    highest = 0
-    for f in tasks_dir.iterdir():
-        m = re.match(r"^[Rr](\d+)", f.name)
-        if m:
-            highest = max(highest, int(m.group(1)))
-    return highest + 1
+    result: dict[str, str] = {}
+    for base in failed_prefixes:
+        highest = 0
+        for f in tasks_dir.iterdir():
+            m = re.match(rf"^{re.escape(base)}R(\d+)", f.name, re.IGNORECASE)
+            if m:
+                highest = max(highest, int(m.group(1)))
+        result[base] = f"{base}R{highest + 1}"
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -390,11 +415,26 @@ def build_retrospective_instruction(request: RetrospectiveRequest, context: str)
     Returns:
         The complete instruction string for opencode run.
     """
+    from the_architect.core.progress import read_progress
+
     tasks_dir = request.project_dir / "tasks"
-    next_num = _next_r_task_number(tasks_dir)
-    next_prefix = f"R{next_num:02d}"
     project_root = str(request.project_dir)
     abs_tasks_dir = str(tasks_dir)
+
+    # Compute per-failed-task retro slots so the reviewer knows exactly
+    # which filename to use for each fix-up task.
+    progress_file = tasks_dir / "PROGRESS.md"
+    failed_prefixes: list[str] = []
+    if progress_file.exists():
+        try:
+            state = read_progress(progress_file)
+            failed_prefixes = list(state.failed_tasks)
+        except Exception:
+            pass
+
+    # Always include a catch-all "T00" slot so the reviewer has somewhere
+    # to put cross-cutting issues not tied to any one failed task.
+    retro_slots = _next_retro_task_slots(tasks_dir, failed_prefixes or ["T00"])
 
     lines = [
         f"PROJECT ROOT: {project_root}",
@@ -416,7 +456,7 @@ def build_retrospective_instruction(request: RetrospectiveRequest, context: str)
                 request.validation_feedback.strip(),
                 "",
                 "Your next fix-up tasks must directly address this validation failure. "
-                "If you believe it is a false positive, create a narrowly scoped R-task "
+                "If you believe it is a false positive, create a narrowly scoped retro task "
                 "that verifies and documents why the cycle is actually clean.",
                 "",
             ]
@@ -437,12 +477,12 @@ def build_retrospective_instruction(request: RetrospectiveRequest, context: str)
             "worktree findings as diagnostic only unless The Architect provides a task-start "
             "baseline proving the current task caused those changes.",
             "Do NOT create fix-up tasks that run destructive git commands or discard work.",
-            "Forbidden in R-task instructions: git checkout, git reset, git restore, "
+            "Forbidden in retro task instructions: git checkout, git reset, git restore, "
             "git clean, rm -rf, deleting user files, or reverting broad worktree changes.",
             "Dirty worktree findings are diagnostic unless The Architect provides a "
             "task-start baseline proving the current task created those changes.",
             "If destructive recovery might be needed, write a human-action note in the "
-            "review summary instead of an executable R-task.",
+            "review summary instead of an executable fix-up task.",
             "",
             "=== INSTRUCTIONS ===",
             "1. Read PROGRESS.md to understand what was done and what (if anything) failed",
@@ -450,18 +490,33 @@ def build_retrospective_instruction(request: RetrospectiveRequest, context: str)
             "3. Read the actual code that was written or modified",
             "4. Run the test suite (e.g., pytest) to verify everything passes",
             "5. Assess: completeness, quality, tests, consistency, correctness",
-            "6. If you find issues, write R-prefixed fix-up task files",
+            "6. If you find issues, write fix-up task files using the naming rules below",
             "7. If everything is clean, write no task files at all",
             "",
-            "CRITICAL — WHERE TO WRITE TASK FILES:",
+            "CRITICAL — TASK FILE NAMING AND LOCATION:",
             f"  Task files MUST go in: {abs_tasks_dir}/",
-            "  Use only the R prefix for all fix-up task files.",
-            f"  First fix-up task: {abs_tasks_dir}/{next_prefix}_<descriptive_name>.md",
-            f"  Number subsequent tasks R{next_num + 1:02d}, R{next_num + 2:02d}, etc.",
-            "  Do NOT skip numbers. Do NOT reuse numbers from existing task files.",
-            "  Create exactly one fix-up task file per RXX prefix. Before finishing, "
-            "verify no RXX prefix appears on more than one task file.",
-            "  Do NOT modify existing non-R task files.",
+            "  Use the TXXRn naming scheme for ALL fix-up task files:",
+            "    TXX   = the prefix of the task that needs fixing",
+            "    R     = literal letter R (marks this as a retrospective fix)",
+            "    n     = sequential number (1, 2, 3…) for multiple fixes for the same task",
+            "",
+            "  Available fix-up prefixes (pre-computed, do not change these):",
+        ]
+    )
+    for base_prefix, retro_prefix in sorted(retro_slots.items()):
+        lines.append(
+            f"    {base_prefix} failed → use prefix {retro_prefix} "
+            f"→ file: {abs_tasks_dir}/{retro_prefix}_<descriptive_name>.md"
+        )
+    lines.extend(
+        [
+            "",
+            "  If you need a second fix-up for the same task, append R2, R3, etc.:",
+            "    e.g. T04R1_first_fix.md, T04R2_second_fix.md",
+            "  For cross-cutting issues not tied to one task, use the lowest-numbered",
+            "  failed task's prefix (or T01R1 if no tasks failed).",
+            "  Do NOT use the old R01/R02 global numbering scheme.",
+            "  Do NOT modify existing non-retro task files.",
             "  Do NOT write PROGRESS.md or INSTRUCTIONS.md — The Architect handles those.",
             "",
             "IMPORTANT: Do NOT write any task files if your review finds no issues.",
@@ -673,14 +728,15 @@ async def run_retrospective(
         )
     new_task_names = [t.name for t in tasks_after if t.name not in tasks_before]
     new_r_tasks = [t for t in tasks_after if t.name in new_task_names]
-    invalid_new_tasks = [t.name for t in new_r_tasks if not t.prefix.startswith("R")]
+    invalid_new_tasks = [t.name for t in new_r_tasks if not is_retro_task(t.prefix)]
     if invalid_new_tasks:
         raise RetrospectiveFailedError(
-            "Retrospective created non-R task files. Reviewers may create only "
-            f"R-prefixed fix-up tasks: {', '.join(sorted(invalid_new_tasks))}"
+            "Retrospective created non-retro task files. Reviewers may create only "
+            "TXXRn fix-up tasks (e.g. T04R1_fix_name.md): "
+            f"{', '.join(sorted(invalid_new_tasks))}"
         )
 
-    # Update PROGRESS.md with any new R-prefixed tasks
+    # Update PROGRESS.md with any new retro tasks
     if new_r_tasks:
         progress_md = project_dir / "tasks" / "PROGRESS.md"
         _update_progress_with_retrospective_tasks(progress_md, new_r_tasks)
@@ -817,6 +873,26 @@ async def run_task_reassessment(
             "changes future work.",
             "Do not modify completed tasks. Do not rewrite the whole plan. Preserve "
             "numbering and intent whenever possible.",
+            "",
+            "=== TASK SPLITTING RULES ===",
+            "If a pending task is clearly too large for a single provider session (e.g. it",
+            "covers multiple unrelated concerns, or a similar task just failed due to scope),",
+            "you MAY split it into letter-suffixed parts:",
+            "  - Replace T03_big.md with T03A_part1.md and T03B_part2.md",
+            "  - Use letter suffixes only: T03A, T03B, T03C… (never T03.1 or T03_part2)",
+            "  - Split tasks execute in letter order: T03A runs before T03B",
+            "  - The base number stays the same — do NOT increment to T04",
+            "  - Delete the original T03_big.md after creating T03A and T03B",
+            "  - Update PROGRESS.md to replace the T03 row with T03A and T03B rows",
+            "Only split when there is a clear scope justification. Do not split tasks",
+            "that are already appropriately sized.",
+            "",
+            "=== TASK NAMING REMINDER ===",
+            "Plain tasks:  T01_name.md, T02_name.md (planner creates these)",
+            "Split tasks:  T01A_name.md, T01B_name.md (reassessment may create these)",
+            "Retro tasks:  T04R1_name.md, T04R2_name.md (reviewer creates these — NOT you)",
+            "Do NOT create TXXRn files — those belong to the retrospective reviewer.",
+            "",
             f"Original goal: {original_goal}",
             f"Task: {completed_task}",
             "=== Outcome Summary ===",

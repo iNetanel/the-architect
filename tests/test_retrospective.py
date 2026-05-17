@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from loguru import logger
 
 from the_architect.config import ArchitectConfig
 from the_architect.core.claude_code_provider import ClaudeCodeProvider
@@ -15,10 +16,12 @@ from the_architect.core.retrospective import (
     RetrospectiveRequest,
     RetrospectiveResult,
     _ensure_provider_setup_for_review,
+    _existing_review_setup_is_usable,
     _find_eval_snapshot_files,
     _gather_baseline_evidence,
     _gather_review_context,
-    _next_r_task_number,
+    _next_retro_task_slots,
+    _prepend_provider_prompt,
     _update_progress_with_retrospective_tasks,
     build_retrospective_instruction,
     run_retrospective,
@@ -556,43 +559,42 @@ class TestRetrospectiveEdgeCases:
 class TestRetrospectiveCoverage:
     """Additional tests to cover remaining uncovered lines."""
 
-    def test_next_r_task_number_empty_dir(self, tmp_path: Path) -> None:
-        """Test _next_r_task_number with empty tasks directory."""
+    def test_next_retro_task_slots_empty_dir(self, tmp_path: Path) -> None:
+        """_next_retro_task_slots returns R1 slot for each failed prefix."""
         tasks_dir = tmp_path / "tasks"
         tasks_dir.mkdir()
 
-        result = _next_r_task_number(tasks_dir)
-        assert result == 1
+        result = _next_retro_task_slots(tasks_dir, ["T01"])
+        assert result == {"T01": "T01R1"}
 
-    def test_next_r_task_number_with_existing_r_tasks(self, tmp_path: Path) -> None:
-        """Test _next_r_task_number with existing R-prefixed tasks."""
+    def test_next_retro_task_slots_with_existing_retro(self, tmp_path: Path) -> None:
+        """_next_retro_task_slots increments past existing retro files."""
         tasks_dir = tmp_path / "tasks"
         tasks_dir.mkdir()
-        (tasks_dir / "R01_fix.md").write_text("# R01\n", encoding="utf-8")
-        (tasks_dir / "R02_test.md").write_text("# R02\n", encoding="utf-8")
+        (tasks_dir / "T04R1_fix.md").write_text("# T04R1\n", encoding="utf-8")
+        (tasks_dir / "T04R2_test.md").write_text("# T04R2\n", encoding="utf-8")
 
-        result = _next_r_task_number(tasks_dir)
-        assert result == 3
+        result = _next_retro_task_slots(tasks_dir, ["T04"])
+        assert result == {"T04": "T04R3"}
 
-    def test_next_r_task_number_case_insensitive(self, tmp_path: Path) -> None:
-        """Test _next_r_task_number is case-insensitive for R/r prefix."""
+    def test_next_retro_task_slots_case_insensitive(self, tmp_path: Path) -> None:
+        """_next_retro_task_slots is case-insensitive when scanning existing files."""
         tasks_dir = tmp_path / "tasks"
         tasks_dir.mkdir()
-        (tasks_dir / "r01_fix.md").write_text("# r01\n", encoding="utf-8")
-        (tasks_dir / "R02_test.md").write_text("# R02\n", encoding="utf-8")
+        (tasks_dir / "t04r1_fix.md").write_text("# t04r1\n", encoding="utf-8")
 
-        result = _next_r_task_number(tasks_dir)
-        assert result == 3
+        result = _next_retro_task_slots(tasks_dir, ["T04"])
+        assert result == {"T04": "T04R2"}
 
-    def test_next_r_task_number_ignores_non_r_tasks(self, tmp_path: Path) -> None:
-        """Test _next_r_task_number ignores T and S prefixed tasks."""
+    def test_next_retro_task_slots_multiple_failed(self, tmp_path: Path) -> None:
+        """_next_retro_task_slots returns independent slots for each failed task."""
         tasks_dir = tmp_path / "tasks"
         tasks_dir.mkdir()
-        (tasks_dir / "T01_init.md").write_text("# T01\n", encoding="utf-8")
-        (tasks_dir / "T01_setup.md").write_text("# T01\n", encoding="utf-8")
+        (tasks_dir / "T03R1_fix.md").write_text("# T03R1\n", encoding="utf-8")
 
-        result = _next_r_task_number(tasks_dir)
-        assert result == 1
+        result = _next_retro_task_slots(tasks_dir, ["T03", "T05"])
+        assert result["T03"] == "T03R2"
+        assert result["T05"] == "T05R1"
 
     def test_build_retrospective_instruction(self, tmp_path: Path) -> None:
         """Test build_retrospective_instruction builds correct instruction."""
@@ -740,13 +742,13 @@ class TestRetrospectiveCoverage:
         assert "Original Goal" in context
         assert "Task Files" in context
 
-    def test_next_r_task_number_nonexistent_dir(self, tmp_path: Path) -> None:
-        """Test _next_r_task_number when tasks directory doesn't exist (line 93)."""
+    def test_next_retro_task_slots_nonexistent_dir(self, tmp_path: Path) -> None:
+        """_next_retro_task_slots returns R1 slot when tasks directory doesn't exist."""
         tasks_dir = tmp_path / "nonexistent_tasks"
         # Don't create the directory
 
-        result = _next_r_task_number(tasks_dir)
-        assert result == 1
+        result = _next_retro_task_slots(tasks_dir, ["T01"])
+        assert result == {"T01": "T01R1"}
 
     def test_gather_review_context_symlink_outside_root(self, tmp_path: Path) -> None:
         """Test _gather_review_context with symlink pointing outside project root (line 183)."""
@@ -898,13 +900,14 @@ class TestRetrospectiveCoverage:
     async def test_run_retrospective_with_new_tasks(
         self, tmp_path: Path, config: ArchitectConfig
     ) -> None:
-        """Test run_retrospective when new R tasks are created (lines 433-434)."""
+        """Test run_retrospective when new retro tasks are created."""
         # Create minimal project setup
         progress_file = tmp_path / "PROGRESS.md"
         progress_file.write_text(
             "**Tasks completed:** 1\n**Next task to run:** —\n"
             "## Task Log\n| Task | Title | Status |\n"
-            "|----- -|----- -|-------|\n",
+            "|----- -|----- -|-------|\n"
+            "| T01 | Test | Failed | failed |\n",
             encoding="utf-8",
         )
 
@@ -921,18 +924,18 @@ class TestRetrospectiveCoverage:
         async def fake_stream(**kwargs: object) -> StreamResult:
             return StreamResult(exit_code=0, tokens=TokenUsage())
 
-        # Mock discover_tasks to return tasks which includes new R tasks
+        # Mock discover_tasks to return tasks which includes new retro task
         with patch("the_architect.core.retrospective.stream_provider", side_effect=fake_stream):
             with patch("the_architect.core.retrospective.discover_tasks") as mock_discover:
-                # Simulate that R01 task was created
+                # Simulate that T01R1 task was created
                 mock_discover.side_effect = [
                     [],  # First call (tasks_before)
                     [
                         Task(
-                            name="R01_fix",
-                            prefix="R01",
+                            name="T01R1_fix",
+                            prefix="T01R1",
                             number=1,
-                            path=tasks_dir / "R01_fix.md",
+                            path=tasks_dir / "T01R1_fix.md",
                             status=TaskStatus.PENDING,
                             title="Fix",
                         )
@@ -943,7 +946,7 @@ class TestRetrospectiveCoverage:
 
                 assert isinstance(result, RetrospectiveResult)
                 # Should have created one task
-                assert "R01_fix" in result.tasks_created
+                assert "T01R1_fix" in result.tasks_created
 
     @pytest.mark.asyncio
     async def test_run_retrospective_rejects_new_non_r_tasks(
@@ -982,7 +985,7 @@ class TestRetrospectiveCoverage:
                     ],
                 ]
 
-                with pytest.raises(RetrospectiveFailedError, match="non-R task files"):
+                with pytest.raises(RetrospectiveFailedError, match="non-retro task files"):
                     await run_retrospective(request, config)
 
 
@@ -1515,3 +1518,342 @@ class TestGatherBaselineEvidence:
         context = _gather_review_context(tmp_path, "test goal")
 
         assert "## Task Baseline Evidence" not in context
+
+
+class TestRetrospectiveCoverageGaps:
+    """Tests for the remaining uncovered lines in retrospective.py."""
+
+    # Line 113: _existing_review_setup_is_usable — delegates to existing_provider_setup_is_usable
+    def test_existing_review_setup_is_usable_delegates(self, tmp_path: Path) -> None:
+        """_existing_review_setup_is_usable delegates to existing_provider_setup_is_usable."""
+        # Set up a valid existing review setup
+        architect_dir = tmp_path / ".architect"
+        prompts_dir = architect_dir / "prompts"
+        prompts_dir.mkdir(parents=True)
+        for filename in (
+            "architect.md",
+            "intelligence.md",
+            "reviewer.md",
+            "execution.md",
+        ):
+            (prompts_dir / filename).write_text(f"{filename} prompt\n", encoding="utf-8")
+        (architect_dir / "architect.json").write_text(
+            '{"agent":{"architect":{"prompt":"architect.md"},'
+            '"intelligence":{"prompt":"intelligence.md"},'
+            '"reviewer":{"prompt":"reviewer.md"}}}\n',
+            encoding="utf-8",
+        )
+
+        provider = MagicMock()
+        provider.name = "opencode"
+
+        result = _existing_review_setup_is_usable(provider, tmp_path)
+        assert result is True
+
+    # Line 131: _prepend_provider_prompt — getter not callable, returns instruction unchanged
+    def test_prepend_provider_prompt_getter_not_callable(self) -> None:
+        """When getter attribute exists but is not callable, instruction is returned as-is."""
+        provider = MagicMock()
+        # Set get_reviewer_prompt to a non-callable value
+        provider.get_reviewer_prompt = "not a function"
+
+        instruction = "My instruction"
+        result = _prepend_provider_prompt(provider, instruction, "get_reviewer_prompt")
+        assert result == instruction
+
+    # Line 134: _prepend_provider_prompt — empty prompt, returns instruction unchanged
+    def test_prepend_provider_prompt_empty_prompt(self) -> None:
+        """When prompt getter returns empty string, instruction is returned as-is."""
+        provider = MagicMock()
+        provider.get_reviewer_prompt.return_value = "   "  # whitespace only
+
+        instruction = "My instruction"
+        result = _prepend_provider_prompt(provider, instruction, "get_reviewer_prompt")
+        assert result == instruction
+
+    # Lines 208-210: Baseline change detection OSError
+    def test_baseline_detect_changes_oserror(self, tmp_path: Path) -> None:
+        """OSError during detect_changes is logged as warning, file skipped."""
+        from io import StringIO
+
+        # Create baselines dir with a valid baseline
+        baselines_dir = tmp_path / ".architect" / "baselines"
+        baselines_dir.mkdir(parents=True)
+
+        # Create a valid baseline JSON
+        from the_architect.core.baseline import capture_baseline, write_baseline
+
+        baseline = capture_baseline(tmp_path, task_prefix="T01")
+        write_baseline(baseline, baselines_dir / "T01.json")
+
+        sink = StringIO()
+        handler_id = logger.add(sink, level="WARNING", format="{message}")
+
+        # Mock detect_changes to raise OSError
+        with patch(
+            "the_architect.core.retrospective.detect_changes",
+            side_effect=OSError("Device busy"),
+        ):
+            evidence = _gather_baseline_evidence(tmp_path)
+
+        logger.remove(handler_id)
+        # All files skipped → None
+        assert evidence is None
+        assert "cannot detect changes" in sink.getvalue()
+
+    # Lines 232-234, 236-238: Modified and deleted file lists in baseline evidence
+    def test_baseline_evidence_with_modified_and_deleted(self, tmp_path: Path) -> None:
+        """Modified and deleted file lists are included in baseline evidence."""
+        from the_architect.core.baseline import (
+            FileRecord,
+            WorkspaceBaseline,
+            write_baseline,
+        )
+
+        # Create baselines dir
+        baselines_dir = tmp_path / ".architect" / "baselines"
+        baselines_dir.mkdir(parents=True)
+
+        # Create a baseline that records files as existing
+        # We'll then remove one (deleted) and modify another (modified)
+        existing_file = tmp_path / "existing.py"
+        existing_file.write_text("original content\n", encoding="utf-8")
+        to_delete = tmp_path / "to_delete.py"
+        to_delete.write_text("will be deleted\n", encoding="utf-8")
+
+        # Capture baseline with both files
+        baseline = WorkspaceBaseline(
+            task_prefix="T01",
+            files={
+                str(existing_file.relative_to(tmp_path)): FileRecord(
+                    path=str(existing_file.relative_to(tmp_path)),
+                    sha256="abc123",
+                    size=100,
+                ),
+                str(to_delete.relative_to(tmp_path)): FileRecord(
+                    path=str(to_delete.relative_to(tmp_path)),
+                    sha256="def456",
+                    size=200,
+                ),
+            },
+        )
+        write_baseline(baseline, baselines_dir / "T01.json")
+
+        # Now modify existing_file and delete to_delete
+        existing_file.write_text("modified content\n", encoding="utf-8")
+        to_delete.unlink()
+
+        evidence = _gather_baseline_evidence(tmp_path)
+
+        # Evidence should contain modified and deleted file lists
+        assert evidence is not None
+        assert "- Modified files:" in evidence
+        assert "- Deleted files:" in evidence
+
+    # Line 522: _update_progress_with_retrospective_tasks — duplicate R-task row skip
+    def test_update_progress_duplicate_r_task_row_skip(self, tmp_path: Path) -> None:
+        """Duplicate R-task rows are skipped when updating PROGRESS.md."""
+        progress_file = tmp_path / "tasks" / "PROGRESS.md"
+        progress_file.parent.mkdir(parents=True, exist_ok=True)
+        progress_file.write_text(
+            "**Tasks completed:** 1\n**Next task to run:** —\n"
+            "## Task Log\n"
+            "| Task | Title | Status | Completed |\n"
+            "|------|-------|--------|----------|\n"
+            "| R01 | R01_fix | Pending | — |\n",
+            encoding="utf-8",
+        )
+
+        task = Task(
+            name="R01_fix",
+            prefix="R01",
+            number=1,
+            path=tmp_path / "tasks" / "R01_fix.md",
+            status=TaskStatus.PENDING,
+            title="Fix",
+        )
+
+        _update_progress_with_retrospective_tasks(progress_file, [task])
+
+        content = progress_file.read_text(encoding="utf-8")
+        # R01 should only appear once (the original row)
+        assert content.count("| R01 |") == 1
+
+    # Lines 526-527: No new rows — logs info, returns early
+    def test_update_progress_no_new_rows_logs_info(self, tmp_path: Path) -> None:
+        """When all R-tasks already have rows, logs info and returns early."""
+        from io import StringIO
+
+        progress_file = tmp_path / "tasks" / "PROGRESS.md"
+        progress_file.parent.mkdir(parents=True, exist_ok=True)
+        progress_file.write_text(
+            "**Tasks completed:** 1\n**Next task to run:** —\n"
+            "## Task Log\n"
+            "| Task | Title | Status | Completed |\n"
+            "|------|-------|--------|----------|\n"
+            "| R01 | R01_fix | Pending | — |\n",
+            encoding="utf-8",
+        )
+
+        task = Task(
+            name="R01_fix",
+            prefix="R01",
+            number=1,
+            path=tmp_path / "tasks" / "R01_fix.md",
+            status=TaskStatus.PENDING,
+            title="Fix",
+        )
+
+        sink = StringIO()
+        handler_id = logger.add(sink, level="INFO", format="{message}")
+
+        _update_progress_with_retrospective_tasks(progress_file, [task])
+
+        logger.remove(handler_id)
+        assert "PROGRESS.md already contained retrospective task row" in sink.getvalue()
+
+    # Lines 667-670: Duplicate task prefix detection — raises RetrospectiveFailedError
+    @pytest.mark.asyncio
+    async def test_retrospective_duplicate_task_prefix_raises(
+        self, tmp_path: Path, config: ArchitectConfig
+    ) -> None:
+        """Retrospective raises RetrospectiveFailedError on duplicate task prefixes."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "PROGRESS.md").write_text(
+            "**Tasks completed:** 1\n**Next task to run:** —\n",
+            encoding="utf-8",
+        )
+
+        request = RetrospectiveRequest(
+            round_number=1,
+            project_dir=tmp_path,
+            original_goal="test",
+        )
+
+        async def fake_stream(**kwargs: object) -> StreamResult:
+            return StreamResult(exit_code=0, tokens=TokenUsage())
+
+        with patch("the_architect.core.retrospective.stream_provider", side_effect=fake_stream):
+            with patch("the_architect.core.retrospective.discover_tasks") as mock_discover:
+                # Both tasks have prefix R01 — duplicate
+                mock_discover.side_effect = [
+                    [],
+                    [
+                        Task(
+                            name="R01_first",
+                            prefix="R01",
+                            number=1,
+                            path=tasks_dir / "R01_first.md",
+                            status=TaskStatus.PENDING,
+                            title="First",
+                        ),
+                        Task(
+                            name="R01_second",
+                            prefix="R01",
+                            number=1,
+                            path=tasks_dir / "R01_second.md",
+                            status=TaskStatus.PENDING,
+                            title="Second",
+                        ),
+                    ],
+                ]
+
+                with pytest.raises(RetrospectiveFailedError, match="duplicate task prefixes"):
+                    await run_retrospective(request, config)
+
+    # Line 689: PROGRESS.md reconciliation logging after retrospective
+    @pytest.mark.asyncio
+    async def test_retrospective_reconciliation_logging(
+        self, tmp_path: Path, config: ArchitectConfig
+    ) -> None:
+        """Reconciled PROGRESS.md rows are logged after retrospective."""
+        from io import StringIO
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "PROGRESS.md").write_text(
+            "**Tasks completed:** 1\n**Next task to run:** —\n| T01 | Test | Failed | failed |\n",
+            encoding="utf-8",
+        )
+
+        request = RetrospectiveRequest(
+            round_number=1,
+            project_dir=tmp_path,
+            original_goal="test",
+        )
+
+        async def fake_stream(**kwargs: object) -> StreamResult:
+            return StreamResult(exit_code=0, tokens=TokenUsage())
+
+        sink = StringIO()
+        handler_id = logger.add(sink, level="INFO", format="{message}")
+
+        with patch("the_architect.core.retrospective.stream_provider", side_effect=fake_stream):
+            with patch("the_architect.core.retrospective.discover_tasks") as mock_discover:
+                mock_discover.side_effect = [
+                    [],
+                    [
+                        Task(
+                            name="T01R1_fix",
+                            prefix="T01R1",
+                            number=1,
+                            path=tasks_dir / "T01R1_fix.md",
+                            status=TaskStatus.PENDING,
+                            title="Fix",
+                        )
+                    ],
+                ]
+
+                # Mock reconcile to return repaired rows
+                with patch(
+                    "the_architect.core.retrospective.reconcile_progress_with_task_files",
+                    return_value=["T01R1"],
+                ):
+                    result = await run_retrospective(request, config)
+
+        logger.remove(handler_id)
+        assert isinstance(result, RetrospectiveResult)
+
+
+class TestRetrospectiveReadProgressException:
+    """Cover read_progress exception handler in build_retrospective_instruction (L432-433)."""
+
+    def test_build_retrospective_instruction_read_progress_raises(self, tmp_path: Path) -> None:
+        """read_progress raises during build_retrospective_instruction — exception swallowed."""
+        from the_architect.core.retrospective import (
+            RetrospectiveRequest,
+            build_retrospective_instruction,
+        )
+
+        project_dir = tmp_path
+        tasks_dir = project_dir / "tasks"
+        tasks_dir.mkdir(parents=True, exist_ok=True)
+        progress_file = tasks_dir / "PROGRESS.md"
+        progress_file.write_text("some content", encoding="utf-8")
+
+        request = RetrospectiveRequest(
+            project_dir=project_dir,
+            round_number=1,
+            completed_tasks=[],
+            failed_tasks=[],
+            all_task_files=[],
+            progress_file=progress_file,
+            context="test context",
+        )
+
+        # Patch read_progress to raise — the exception should be swallowed
+        # read_progress is imported locally inside build_retrospective_instruction,
+        # so patch it at its source module location
+        with patch(
+            "the_architect.core.progress.read_progress",
+            side_effect=RuntimeError("corrupt PROGRESS.md"),
+        ):
+            # Should not raise — the exception is caught at L432-433
+            instruction = build_retrospective_instruction(request, "context")
+
+        # The instruction should still be built (with T00 fallback since failed_prefixes is empty)
+        assert "RETROSPECTIVE ROUND 1" in instruction
+        assert "PROJECT ROOT:" in instruction
+        # T00 fallback means the exception in read_progress was swallowed correctly
+        assert "T00R1" in instruction

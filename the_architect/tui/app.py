@@ -22,6 +22,7 @@ Two shapes of caller:
 
 from __future__ import annotations
 
+import signal
 import threading
 import time
 from typing import Any, TypeVar
@@ -220,6 +221,8 @@ class ArchitectApp(App[None]):
         # Set when the app exits so the splash minimum-hold sleep in
         # push_and_wait wakes up immediately instead of blocking exit.
         self._quit_event: threading.Event = threading.Event()
+        # Previous SIGCONT handler, restored on unmount.
+        self._prev_sigcont: Any = None
 
     def on_mount(self) -> None:
         # Register and activate The Architect's branded theme before
@@ -248,15 +251,80 @@ class ArchitectApp(App[None]):
         # enforce the minimum display window from the worker thread.
         if isinstance(self._initial_screen, SplashScreen):
             self._splash_shown_at = time.monotonic()
+        # Install a SIGCONT handler so the TUI recovers gracefully when
+        # the system resumes from sleep. When the machine wakes up, the
+        # terminal emulator may have reset its alternate-screen state,
+        # mouse-tracking sequences, and raw-mode settings. SIGCONT is
+        # the first signal the process receives on resume; we use it to
+        # schedule a full layout refresh on the event loop so Textual
+        # re-queries the terminal size and repaints every widget — which
+        # also re-enables mouse tracking indirectly through the resize
+        # path. Without this, the TUI renders at wrong coordinates
+        # (broken scroll / overlapping screens) and mouse clicks on tabs
+        # stop working until the terminal window is manually resized.
+        try:
+            self._prev_sigcont = signal.signal(signal.SIGCONT, self._sigcont_handler)
+        except (ValueError, OSError, AttributeError):
+            # SIGCONT is POSIX-only; not available on Windows or in
+            # environments where signal registration is restricted
+            # (e.g. non-main thread). Safe to skip.
+            self._prev_sigcont = None
 
     def on_unmount(self) -> None:
         """Restore terminal modes whenever Textual tears down this app."""
+        # Restore the previous SIGCONT handler so we don't interfere
+        # with the shell or any subsequent process after the TUI exits.
+        try:
+            if self._prev_sigcont is not None:
+                signal.signal(signal.SIGCONT, self._prev_sigcont)
+            else:
+                signal.signal(signal.SIGCONT, signal.SIG_DFL)
+        except (ValueError, OSError, AttributeError):
+            pass
         try:
             from the_architect.tui.terminal import restore_terminal_input_modes
 
             restore_terminal_input_modes()
         except Exception:
             pass
+
+    def _sigcont_handler(self, signum: int, frame: Any) -> None:
+        """Handle SIGCONT (resume from sleep/suspend) by nudging Textual's resize path.
+
+        When the machine wakes from sleep the terminal emulator may have reset
+        its geometry.  We send SIGWINCH to ourselves so Textual's own
+        ``on_terminal_resize`` handler fires — it measures the real terminal
+        size and posts a ``Resize`` event through the normal event loop path.
+
+        This is intentionally minimal: we do NOT call ``refresh(layout=True)``
+        or write any escape sequences directly.  Doing so from a signal handler
+        injects raw bytes (mouse-tracking enable codes, alternate-screen codes)
+        into the terminal's input stream at an unpredictable moment, which
+        causes the mouse cursor position numbers to appear as literal text in
+        whatever input widget is active (the goal TextArea, tab bar, etc.) and
+        breaks tab/mouse interaction until the terminal is reset.
+
+        SIGWINCH is POSIX-only — guarded by ``hasattr`` so this is a safe
+        no-op on Windows where Textual uses a different resize mechanism.
+        """
+        logger.debug("SIGCONT received — nudging Textual resize via SIGWINCH")
+        try:
+            if hasattr(signal, "SIGWINCH"):
+                import os as _os
+
+                _os.kill(_os.getpid(), signal.SIGWINCH)
+        except Exception:
+            pass
+
+    def _force_full_refresh(self) -> None:
+        """Unused — kept as a no-op stub so any external callers don't crash.
+
+        The original implementation called ``refresh(layout=True)`` which
+        injected mouse-tracking escape codes into the terminal input stream and
+        broke tab/mouse interaction.  The actual wake recovery is now done by
+        :meth:`_sigcont_handler` via SIGWINCH, which routes through Textual's
+        own resize path without writing any escape sequences directly.
+        """
 
     # ── Run-scoped status (Phase 18) ───────────────────────────────────
 

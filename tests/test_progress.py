@@ -246,6 +246,123 @@ class TestReconcileProgressWithTaskFiles:
         assert content.count("| R01 |") == 1
         assert "| R01 | Fix | Failed | 3 attempts |" in content
 
+    def test_reconcile_with_string_path(self, tmp_path: Path) -> None:
+        """reconcile_progress_with_task_files should accept a string path."""
+        progress_file = tmp_path / "PROGRESS.md"
+        progress_file.write_text(
+            PROGRESS_TEMPLATE.format(
+                tasks_completed=1,
+                next_task="T02",
+                task_rows="| T01 | First | Done | 2026-05-13 |\n",
+                current_state="State",
+                last_summary="Summary",
+            ),
+            encoding="utf-8",
+        )
+        task_path = tmp_path / "R01_fix.md"
+        task_path.write_text("# R01 — Fix\n", encoding="utf-8")
+        task = Task(name="R01_fix", prefix="R01", number=1, path=task_path, title="Fix")
+
+        added = reconcile_progress_with_task_files(str(progress_file), [task])
+
+        assert added == ["R01"]
+
+    def test_reconcile_empty_tasks_returns_empty(self, tmp_path: Path) -> None:
+        """An empty tasks list should return [] without modifying the file."""
+        progress_file = tmp_path / "PROGRESS.md"
+        progress_file.write_text(
+            PROGRESS_TEMPLATE.format(
+                tasks_completed=1,
+                next_task="T02",
+                task_rows="| T01 | First | Done | 2026-05-13 |\n",
+                current_state="State",
+                last_summary="Summary",
+            ),
+            encoding="utf-8",
+        )
+
+        added = reconcile_progress_with_task_files(progress_file, [])
+        assert added == []
+
+    def test_reconcile_missing_file_returns_empty(self, tmp_path: Path) -> None:
+        """A missing progress file should return [] without error."""
+        task_path = tmp_path / "R01_fix.md"
+        task_path.write_text("# R01 — Fix\n", encoding="utf-8")
+        task = Task(name="R01_fix", prefix="R01", number=1, path=task_path, title="Fix")
+
+        added = reconcile_progress_with_task_files(tmp_path / "NOPE.md", [task])
+        assert added == []
+
+    def test_reconcile_oserror_returns_empty(self, tmp_path: Path) -> None:
+        """OSError when reading should return [] without raising."""
+        from unittest.mock import patch
+
+        progress_file = tmp_path / "PROGRESS.md"
+        progress_file.write_text("content", encoding="utf-8")
+        task_path = tmp_path / "R01_fix.md"
+        task_path.write_text("# R01 — Fix\n", encoding="utf-8")
+        task = Task(name="R01_fix", prefix="R01", number=1, path=task_path, title="Fix")
+
+        with patch.object(Path, "read_text", side_effect=OSError("permission denied")):
+            added = reconcile_progress_with_task_files(progress_file, [task])
+
+        assert added == []
+
+    def test_reconcile_unicode_decode_error_returns_empty(self, tmp_path: Path) -> None:
+        """UnicodeDecodeError when reading should return [] without raising."""
+        from unittest.mock import patch
+
+        progress_file = tmp_path / "PROGRESS.md"
+        progress_file.write_text("content", encoding="utf-8")
+        task_path = tmp_path / "R01_fix.md"
+        task_path.write_text("# R01 — Fix\n", encoding="utf-8")
+        task = Task(name="R01_fix", prefix="R01", number=1, path=task_path, title="Fix")
+
+        with patch.object(
+            Path, "read_text", side_effect=UnicodeDecodeError("utf-8", b"", 0, 1, "invalid")
+        ):
+            added = reconcile_progress_with_task_files(progress_file, [task])
+
+        assert added == []
+
+    def test_reconcile_no_task_log_pattern_returns_empty(self, tmp_path: Path) -> None:
+        """Content without a Task Log section should return [] without modifying."""
+        progress_file = tmp_path / "PROGRESS.md"
+        progress_file.write_text(
+            "**Tasks completed:** 0\n**Next task to run:** T01\n",
+            encoding="utf-8",
+        )
+        task_path = tmp_path / "R01_fix.md"
+        task_path.write_text("# R01 — Fix\n", encoding="utf-8")
+        task = Task(name="R01_fix", prefix="R01", number=1, path=task_path, title="Fix")
+
+        added = reconcile_progress_with_task_files(progress_file, [task])
+        assert added == []
+
+    def test_reconcile_write_oserror_returns_empty(self, tmp_path: Path) -> None:
+        """OSError when writing should return [] without raising."""
+        from unittest.mock import patch
+
+        progress_file = tmp_path / "PROGRESS.md"
+        progress_file.write_text(
+            PROGRESS_TEMPLATE.format(
+                tasks_completed=1,
+                next_task="T02",
+                task_rows="| T01 | First | Done | 2026-05-13 |\n",
+                current_state="State",
+                last_summary="Summary",
+            ),
+            encoding="utf-8",
+        )
+        task_path = tmp_path / "R01_fix.md"
+        task_path.write_text("# R01 — Fix\n", encoding="utf-8")
+        task = Task(name="R01_fix", prefix="R01", number=1, path=task_path, title="Fix")
+
+        with patch.object(Path, "write_text", side_effect=OSError("disk full")):
+            added = reconcile_progress_with_task_files(progress_file, [task])
+
+        assert added == []
+
 
 # ---------------------------------------------------------------------------
 # T01 — Canonical regex helper tests
@@ -451,10 +568,10 @@ class TestStringPathBranches:
         with tempfile.TemporaryDirectory() as tmpdir:
             progress_file = Path(tmpdir) / "PROGRESS.md"
             progress_file.write_text(
-                "**Next task to run:** R02\n",
+                "**Next task to run:** T04R1\n",
                 encoding="utf-8",
             )
-            assert get_next_task(str(progress_file)) == "R02"
+            assert get_next_task(str(progress_file)) == "T04R1"
 
     def test_task_is_resolved_with_str_path(self) -> None:
         """task_is_resolved should accept a string path and convert to Path."""

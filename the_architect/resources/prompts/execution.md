@@ -20,7 +20,7 @@ override your agent's delegation or orchestration instructions.
 6. Follow the task's Exploration Plan before editing — inspect the smallest relevant code slice first
 7. Complete every item in the task file — work autonomously without asking the human for confirmation
 8. Rewrite `tasks/PROGRESS.md` when done — this is how The Architect knows you finished
-9. Output the exact completion promise for your task prefix when done (for example, `<promise>T01_COMPLETE</promise>` or `<promise>R01_COMPLETE</promise>`) — this is the primary completion signal
+9. Output the exact completion promise for your task prefix when done (for example, `<promise>T01_COMPLETE</promise>` or `<promise>T04R1_COMPLETE</promise>`) — this is the primary completion signal
 
 ---
 
@@ -117,7 +117,7 @@ your task is done. It checks four independent signals and applies these rules:
 When you have completed ALL items in the task file:
 
 1. Update PROGRESS.md (mark task Done, set next task)
-2. Output the exact completion promise for your task prefix, e.g. `<promise>T01_COMPLETE</promise>` or `<promise>R01_COMPLETE</promise>`
+2. Output the exact completion promise for your task prefix, e.g. `<promise>T01_COMPLETE</promise>`, `<promise>T01A_COMPLETE</promise>`, or `<promise>T04R1_COMPLETE</promise>`
 
 ONLY output the promise tag when ALL of these are true:
 
@@ -146,7 +146,7 @@ Do not edit in place — rewrite it completely. Keep this exact structure:
 ## Overall Status
 
 **Tasks completed:** N
-**Next task to run:** TXX or RXX
+**Next task to run:** TXX or TXXRn or TXXA
 
 ---
 
@@ -156,6 +156,7 @@ Do not edit in place — rewrite it completely. Keep this exact structure:
 |------|-------|--------|-----------|
 | T01 | task_name | Done | 2026-04-13 |
 | T02 | task_name | Pending | — |
+| T02R1 | retro_fix_name | Pending | — |
 
 ---
 
@@ -201,7 +202,7 @@ What you did, what changed, what decisions you made.
 ### Rules
 
 - Increment `**Tasks completed:**` by 1 for your task
-- Set `**Next task to run:**` to the next pending task prefix
+- Set `**Next task to run:**` to the next pending task prefix (e.g. `T02`, `T01A`, `T04R1`)
 - Change your task's row from `Pending` to `Done` and add today's date
 - Leave other tasks' rows unchanged
 - Update `Current State` and `Last Task Summary`
@@ -214,10 +215,24 @@ What you did, what changed, what decisions you made.
 
 ## Task file format
 
-Your task file is in `tasks/TXX_name.md` or `tasks/RXX_name.md`. It follows this structure:
+Your task file is in `tasks/TXX_name.md`, `tasks/TXXA_name.md`, or `tasks/TXXRn_name.md`.
+
+### Prefix grammar
+
+| Prefix | Meaning | Example file |
+|--------|---------|-------------|
+| `T01` | Planned task 1 | `tasks/T01_user_model.md` |
+| `T01A` | Split part A of T01 (reassessment) | `tasks/T01A_backend.md` |
+| `T01B` | Split part B of T01 (reassessment) | `tasks/T01B_frontend.md` |
+| `T04R1` | First retro fix for T04 | `tasks/T04R1_fix_tests.md` |
+| `T04R2` | Second retro fix for T04 | `tasks/T04R2_fix_types.md` |
+
+Your promise tag must match your exact prefix: `<promise>T04R1_COMPLETE</promise>`.
+
+It follows this structure:
 
 ```markdown
-# TXX/RXX — Task Title
+# TXX/TXXA/TXXRn — Task Title
 
 ## Goal
 One sentence describing what this task accomplishes.
@@ -231,7 +246,7 @@ starting point for discovery, not as permission to wander through the whole repo
 
 ## Tasks
 
-### TXX.1 or RXX.1 — Sub-task title
+### TXX.1 or TXXA.1 or TXXRn.1 — Sub-task title
 [Outcome to achieve; discover and follow existing implementation patterns]
 
 ### TXX.2 or RXX.2 — Sub-task title
@@ -391,6 +406,6 @@ was discovered, do not edit ARCHITECT.md.
 - Never ask the human for confirmation — proceed autonomously
 - Tests must pass before marking a task Done — run them, do not assume
 - Rewrite PROGRESS.md completely when done — do not skip this step
-- Output the exact `<promise>PREFIX_COMPLETE</promise>` tag for your task prefix when all items are complete — this is the primary completion signal
+- Output the exact `<promise>PREFIX_COMPLETE</promise>` tag for your task prefix when all items are complete — this is the primary completion signal (e.g. `<promise>T01_COMPLETE</promise>`, `<promise>T01A_COMPLETE</promise>`, `<promise>T04R1_COMPLETE</promise>`)
 - If a task is partially done but blocked, set status to `Pending` and explain in Current State — do NOT output the promise tag
 - Stay inside the project directory — never read, write, or modify files outside the project root

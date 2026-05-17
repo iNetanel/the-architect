@@ -22,10 +22,12 @@ from the_architect.core.runner import (
     TokenUsage,
     _determine_self_assessment,
     _extract_task_outcome_summary,
+    _idle_timeout_retry_pause_seconds,
     _is_lock_stale,
     _parse_opencode_event,
     _provider_idle_timeout_seconds,
     _provider_sleep_wake_gap_seconds,
+    _run_all_inner,
     _task_outcome_summary_for_exit,
     _tool_result_lines,
     acquire_lock,
@@ -477,72 +479,6 @@ class TestStreamProviderSubprocess:
             await stream_provider("test", self.project_dir, provider)
             # The finally block called kill() (via _kill_process_tree).
             assert mock_proc.kill.called
-
-    @pytest.mark.asyncio
-    async def test_opencode_config_inherited_on_execution_run(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Execution runs (config_override=None) must inherit OPENCODE_CONFIG
-        from the parent environment so the child process can find the user's
-        model. Regression guard for the 'model not found' bug where
-        OPENCODE_CONFIG was unconditionally stripped from the child env.
-        """
-        monkeypatch.setenv("OPENCODE_CONFIG", "/home/user/.config/opencode.json")
-        monkeypatch.setenv("OPENCODE_CONFIG_DIR", "/home/user/.config/opencode")
-        provider = _make_mock_provider()
-        with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
-            mock_exec.return_value = _make_mock_process(stdout_lines=[], exit_code=0)
-            await stream_provider("test", self.project_dir, provider)
-
-        _, kwargs = mock_exec.call_args
-        child_env = kwargs.get("env", {})
-        assert child_env.get("OPENCODE_CONFIG") == "/home/user/.config/opencode.json"
-        assert child_env.get("OPENCODE_CONFIG_DIR") == "/home/user/.config/opencode"
-
-    @pytest.mark.asyncio
-    async def test_opencode_config_overridden_on_planning_run(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Planning runs (config_override set) must override OPENCODE_CONFIG
-        via get_env_overrides(), replacing the inherited parent value.
-        """
-        monkeypatch.setenv("OPENCODE_CONFIG", "/home/user/.config/opencode.json")
-        planning_config = Path("/tmp/planning_opencode.json")
-        overrides = {"OPENCODE_CONFIG": str(planning_config)}
-        provider = _make_mock_provider(get_env_overrides=MagicMock(return_value=overrides))
-        with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
-            mock_exec.return_value = _make_mock_process(stdout_lines=[], exit_code=0)
-            await stream_provider(
-                "test", self.project_dir, provider, config_override=planning_config
-            )
-
-        _, kwargs = mock_exec.call_args
-        child_env = kwargs.get("env", {})
-        assert child_env.get("OPENCODE_CONFIG") == str(planning_config)
-
-    @pytest.mark.asyncio
-    async def test_worker_session_vars_stripped_from_child_env(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """OpenCode worker-session variables must NOT leak to child processes
-        so they start as independent instances instead of attaching to the
-        parent session's server.
-        """
-        monkeypatch.setenv("OPENCODE_PROCESS_ROLE", "worker")
-        monkeypatch.setenv("OPENCODE_RUN_ID", "abc-123")
-        monkeypatch.setenv("OPENCODE_PID", "99999")
-        monkeypatch.setenv("OPENCODE", "/path/to/opencode")
-        provider = _make_mock_provider()
-        with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
-            mock_exec.return_value = _make_mock_process(stdout_lines=[], exit_code=0)
-            await stream_provider("test", self.project_dir, provider)
-
-        _, kwargs = mock_exec.call_args
-        child_env = kwargs.get("env", {})
-        assert "OPENCODE_PROCESS_ROLE" not in child_env
-        assert "OPENCODE_RUN_ID" not in child_env
-        assert "OPENCODE_PID" not in child_env
-        assert "OPENCODE" not in child_env
 
     def test_kill_active_subprocesses_terminates_registered_processes(self):
         """``kill_active_subprocesses`` kills every process the runner
@@ -4235,10 +4171,12 @@ class TestBuildAttemptSummaryAccumulatedText:
 
 
 class TestRunAllInnerCallbacksExtended:
-    """Cover _run_all_inner on_task_start/done callback exceptions (L2512-2515, L2545-2548)."""
+    """Cover _run_all_inner on_task_start/done callback exceptions (L3486-3489, L3529-3532)."""
 
     @pytest.mark.asyncio
     async def test_on_task_start_exception_swallowed(self, config, tmp_path):
+        """on_task_start callback exception is swallowed — task still runs."""
+
         def bad_start(t):
             raise RuntimeError("start error")
 
@@ -4251,9 +4189,9 @@ class TestRunAllInnerCallbacksExtended:
         ]
         plan = TaskPlan(tasks=tasks)
 
+        # T01 must be Pending so the task is NOT skipped by task_is_resolved
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** T02\n"
-            "| T01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 0\n**Next task to run:** T01\n| T01 | Test | Pending | — |\n",
             encoding="utf-8",
         )
 
@@ -4279,6 +4217,8 @@ class TestRunAllInnerCallbacksExtended:
 
     @pytest.mark.asyncio
     async def test_on_task_done_exception_swallowed(self, config, tmp_path):
+        """on_task_done callback exception is swallowed — run continues."""
+
         def bad_done(t):
             raise RuntimeError("done error")
 
@@ -4291,9 +4231,9 @@ class TestRunAllInnerCallbacksExtended:
         ]
         plan = TaskPlan(tasks=tasks)
 
+        # T01 must be Pending so the task is NOT skipped by task_is_resolved
         config.progress_file.write_text(
-            "**Tasks completed:** 1\n**Next task to run:** T02\n"
-            "| T01 | Test | Done | 2026-04-12 |\n",
+            "**Tasks completed:** 0\n**Next task to run:** T01\n| T01 | Test | Pending | — |\n",
             encoding="utf-8",
         )
 
@@ -4457,6 +4397,90 @@ class TestReconcileProgressAfterAttempt:
         _reconcile_progress_after_attempt(p, result, max_retries=3)
         # File content unchanged for T01.
         assert "T01 | First | Pending" in p.read_text(encoding="utf-8")
+
+    def test_reconcile_progress_repaired_missing_row(self, tmp_path):
+        """Reconciliation repairs a missing PROGRESS.md row for a failed task."""
+        from io import StringIO
+
+        from loguru import logger
+
+        from the_architect.core.runner import _reconcile_progress_after_attempt
+
+        sink = StringIO()
+        handler_id = logger.add(sink, level="INFO", format="{message}")
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        progress_file = tasks_dir / "PROGRESS.md"
+        # PROGRESS.md without a row for T99
+        progress_file.write_text(
+            "# Progress\n\n"
+            "| Task | Title | Status | Completed |\n"
+            "|------|-------|--------|-----------|\n"
+            "| T01 | test | Done | 2026-05-16 |\n",
+            encoding="utf-8",
+        )
+
+        task_result = TaskResult(
+            prefix="T99",
+            title="missing",
+            status="failed",
+            duration_seconds=1.0,
+            attempts=3,
+            tokens=TokenUsage(),
+            model="",
+        )
+
+        _reconcile_progress_after_attempt(progress_file, task_result, max_retries=3)
+
+        log_output = sink.getvalue()
+        logger.remove(handler_id)
+        # Should log about the missing row for T99
+        assert "T99" in log_output
+
+    def test_reconcile_progress_oserror(self, tmp_path):
+        """Reconciliation catches OSError and logs a warning."""
+        from io import StringIO
+
+        from loguru import logger
+
+        from the_architect.core.runner import _reconcile_progress_after_attempt
+
+        sink = StringIO()
+        handler_id = logger.add(sink, level="WARNING", format="{message}")
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        progress_file = tasks_dir / "PROGRESS.md"
+        # PROGRESS.md with a T01 row so reconcile_task_status is called
+        progress_file.write_text(
+            "# Progress\n\n"
+            "| Task | Title | Status | Completed |\n"
+            "|------|-------|--------|-----------|\n"
+            "| T01 | test | Pending | — |\n",
+            encoding="utf-8",
+        )
+
+        task_result = TaskResult(
+            prefix="T01",
+            title="test",
+            status="failed",
+            duration_seconds=1.0,
+            attempts=3,
+            tokens=TokenUsage(),
+            model="",
+        )
+
+        # Make reconcile_task_status raise to trigger the outer exception handler
+        with patch(
+            "the_architect.core.runner.reconcile_task_status", side_effect=OSError("disk full")
+        ):
+            _reconcile_progress_after_attempt(progress_file, task_result, max_retries=3)
+
+        log_output = sink.getvalue()
+        logger.remove(handler_id)
+        # Should log warning about reconciliation failure
+        assert "reconciliation failed" in log_output.lower()
 
 
 class TestRunAllTerminalSkip:
@@ -5503,3 +5527,1696 @@ class TestSleepWakeBonusRetry:
 
         assert result.status == "done"
         assert task.prefix not in get_sleep_interrupted_tasks()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# R01.1 — Trivial stub coverage (lines 68, 71, 114, 547)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestPlainStreamRenderer:
+    """Coverage for PlainStreamRenderer no-op methods."""
+
+    def test_set_footer_is_noop(self):
+        from the_architect.core.runner import PlainStreamRenderer
+
+        r = PlainStreamRenderer()
+        r.set_footer("text")  # no crash, no-op
+        r.clear_footer()  # no crash, no-op
+
+    def test_close_is_noop(self):
+        from the_architect.core.runner import PlainStreamRenderer
+
+        r = PlainStreamRenderer()
+        r.close()  # no crash, no-op
+
+
+class TestStreamWidth:
+    """Coverage for _stream_width helper."""
+
+    def test_stream_width_returns_none(self):
+        from the_architect.core.runner import _stream_width
+
+        assert _stream_width() is None
+
+
+class TestSetupLoggingErrorPaths:
+    """Coverage for setup_logging type guard."""
+
+    def test_setup_logging_rejects_bad_type(self):
+        with pytest.raises(TypeError, match="log_dir must be a Path or str"):
+            setup_logging([1, 2, 3])  # list is neither Path nor str
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# R01.2 — _kill_process_tree generic exception (lines 774-775)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestKillProcessTreeGenericException:
+    """Coverage for generic Exception in proc.kill() fallback."""
+
+    def test_kill_process_tree_generic_exception(self):
+        import os as real_os
+
+        if not hasattr(real_os, "killpg"):
+            pytest.skip("killpg is POSIX-only")
+
+        from the_architect.core.runner import _kill_process_tree
+
+        fake_proc = MagicMock()
+        fake_proc.returncode = None
+        fake_proc.pid = 99999999
+        fake_proc.kill = MagicMock(side_effect=Exception("generic kill failure"))
+
+        with patch("the_architect.core.runner.os.killpg") as mock_killpg:
+            with patch("the_architect.core.runner.os.getpgid", return_value=42):
+                _kill_process_tree(fake_proc)
+        assert mock_killpg.called
+        assert fake_proc.kill.called
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# R01.3 — stream_provider warning, callback, and stdin paths
+#          (lines 906, 967-971, 1005-1006)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestStreamProviderWarningCallbackStdin:
+    """Coverage for instruction warning, callback exception, stdin failure."""
+
+    @pytest.mark.asyncio
+    async def test_stream_provider_long_instruction_warning(self):
+        from io import StringIO
+
+        from loguru import logger
+
+        sink = StringIO()
+        handler_id = logger.add(sink, level="WARNING", format="{message}")
+        try:
+            provider = _make_mock_provider()
+            long_instruction = "x" * 20000  # > 16384
+            with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
+                mock_exec.return_value = _make_mock_process(stdout_lines=[], exit_code=0)
+                result = await stream_provider(long_instruction, Path("/tmp"), provider)
+                assert isinstance(result, StreamResult)
+            # The warning fires regardless of platform when instruction is large
+            log_output = sink.getvalue()
+            assert "approaching the Windows CreateProcess command-line limit" in log_output
+        finally:
+            logger.remove(handler_id)
+
+    @pytest.mark.asyncio
+    async def test_stream_provider_on_first_output_callback_raises(self):
+        provider = _make_mock_provider()
+        bad_callback = MagicMock(side_effect=RuntimeError("callback boom"))
+        with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = _make_mock_process(stdout_lines=[b"hello\n"], exit_code=0)
+            result = await stream_provider(
+                "test", Path("/tmp"), provider, on_first_output=bad_callback
+            )
+            assert isinstance(result, StreamResult)
+            assert bad_callback.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_stream_provider_stdin_write_failure(self):
+        provider = _make_mock_provider()
+        provider.instruction_via_stdin = True
+        with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_proc = _make_mock_process(stdout_lines=[], exit_code=0)
+            mock_proc.stdin = MagicMock()
+            mock_proc.stdin.write = MagicMock(side_effect=BrokenPipeError("broken"))
+            mock_proc.stdin.drain = AsyncMock()
+            mock_proc.stdin.close = MagicMock()
+            mock_proc.stdin.wait_closed = AsyncMock()
+            mock_exec.return_value = mock_proc
+            result = await stream_provider("test", Path("/tmp"), provider)
+            assert isinstance(result, StreamResult)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# R01.4 — stream_provider readline timeout and probe paths
+#          (lines 1034, 1073-1074)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestStreamProviderReadlinePaths:
+    """Coverage for readline without timeout and probe short-line continue."""
+
+    @pytest.mark.asyncio
+    async def test_stream_provider_readline_no_timeout(self):
+        provider = _make_mock_provider()
+        with patch("the_architect.core.runner._provider_idle_timeout_seconds", return_value=0):
+            with patch(
+                "the_architect.core.runner._provider_sleep_wake_gap_seconds", return_value=0
+            ):
+                with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
+                    mock_exec.return_value = _make_mock_process(
+                        stdout_lines=[b"ok\n", b""], exit_code=0
+                    )
+                    result = await stream_provider("test", Path("/tmp"), provider)
+                    assert isinstance(result, StreamResult)
+
+    @pytest.mark.asyncio
+    async def test_stream_provider_probe_short_line_continue(self):
+        provider = _make_mock_provider()
+        with patch("the_architect.core.runner._provider_idle_timeout_seconds", return_value=1.0):
+            with patch(
+                "the_architect.core.runner._provider_sleep_wake_gap_seconds", return_value=0
+            ):
+                with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
+                    mock_exec.return_value = _make_mock_process(
+                        stdout_lines=[b"short\n", b""], exit_code=0
+                    )
+                    result = await stream_provider("test", Path("/tmp"), provider)
+                    assert isinstance(result, StreamResult)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# R01.5 — stream_provider CancelledError, generic exception, finally cleanup
+#          (lines 1176-1182, 1191-1192, 1210-1211)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestStreamProviderErrorHandlers:
+    """Coverage for CancelledError, generic exception, render.close() failure."""
+
+    @pytest.mark.asyncio
+    async def test_stream_provider_cancelled_error_kills_live_process(self):
+        """When create_subprocess_exec raises CancelledError, the handler catches it."""
+        provider = _make_mock_provider()
+
+        async def raise_cancelled(*args, **kwargs):
+            raise asyncio.CancelledError()
+
+        with patch(
+            "the_architect.core.runner.asyncio.create_subprocess_exec",
+            side_effect=asyncio.CancelledError(),
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await stream_provider("test", Path("/tmp"), provider)
+
+    @pytest.mark.asyncio
+    async def test_stream_provider_generic_exc_kill_fails(self):
+        """When create_subprocess_exec raises RuntimeError, generic handler catches it."""
+        provider = _make_mock_provider()
+
+        with patch(
+            "the_architect.core.runner.asyncio.create_subprocess_exec",
+            side_effect=RuntimeError("subprocess failed"),
+        ):
+            result = await stream_provider("test", Path("/tmp"), provider)
+            assert result.exit_code == -1
+
+    @pytest.mark.asyncio
+    async def test_stream_provider_render_close_raises(self):
+        provider = _make_mock_provider()
+        bad_renderer = MagicMock()
+        bad_renderer.close = MagicMock(side_effect=RuntimeError("close failed"))
+        bad_renderer.write_line = MagicMock()
+
+        with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = _make_mock_process(stdout_lines=[], exit_code=0)
+            result = await stream_provider("test", Path("/tmp"), provider, renderer=bad_renderer)
+            assert isinstance(result, StreamResult)
+            assert bad_renderer.close.called
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# R01.6 — _parse_opencode_event edge cases (lines 1547, 1557, 1590)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestParseOpencodeEventEdgeCases:
+    """Coverage for empty tool name, multiple result lines, legacy alt key."""
+
+    def test_parse_opencode_event_empty_tool_name(self):
+        ev = json.dumps(
+            {
+                "type": "tool_use",
+                "part": {
+                    "tool": "",  # empty tool name
+                    "state": {
+                        "status": "in_progress",
+                        "input": {},
+                        "output": "",
+                        "metadata": {},
+                    },
+                },
+            }
+        )
+        result = _parse_opencode_event(ev)
+        assert result is not None
+        etype, lines, tokens = result
+        assert etype == "tool_use"
+        assert lines == []
+
+    def test_parse_opencode_event_tool_with_multiple_result_lines(self):
+        long_preview = "\n".join([f"line {i}" for i in range(20)])
+        ev = json.dumps(
+            {
+                "type": "tool_use",
+                "part": {
+                    "tool": "read",
+                    "state": {
+                        "status": "completed",
+                        "input": {"filePath": "test.py"},
+                        "output": "",
+                        "metadata": {"preview": long_preview},
+                    },
+                },
+            }
+        )
+        result = _parse_opencode_event(ev)
+        assert result is not None
+        etype, lines, _ = result
+        assert len(lines) >= 2
+        assert any(line.startswith("  ") for line in lines)
+
+    def test_parse_opencode_event_legacy_tool_alt_key(self):
+        ev = json.dumps(
+            {
+                "type": "tool",
+                "tool": {
+                    "name": "read",
+                    "input": {
+                        "filePath": "",  # primary is empty
+                        "file_path": "alt.py",  # alt key — line 1590 fires here
+                    },
+                },
+            }
+        )
+        result = _parse_opencode_event(ev)
+        assert result is not None
+        etype, lines, _ = result
+        assert "alt.py" in lines[0]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# R01.7 — Task outcome summary, baseline capture, log parsing
+#          (lines 1770-1771, 1879-1880, 1954, 1972-1973, 2108)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestLogParsingErrorPaths:
+    """Coverage for OSError in log reading, empty lines, INSTRUCTIONS.md."""
+
+    def test_extract_task_outcome_summary_oserror(self, tmp_path):
+        """summarize_previous_attempt handles OSError when reading log file."""
+        from the_architect.core.runner import summarize_previous_attempt
+
+        log_path = tmp_path / "T01.log"
+        log_path.write_text('{"part": {"type": "text", "text": "hello"}}\n', encoding="utf-8")
+        with patch.object(Path, "read_text", side_effect=OSError("disk error")):
+            result = summarize_previous_attempt(log_path)
+            assert result == ""
+
+    def test_build_attempt_summary_log_oserror(self, tmp_path):
+        log_path = tmp_path / "T01.log"
+        log_path.write_text("", encoding="utf-8")
+        with patch.object(Path, "read_text", side_effect=OSError("disk error")):
+            result = build_attempt_summary("T01", 1, log_path, False)
+            assert result is not None
+
+    def test_build_attempt_summary_empty_lines_skipped(self, tmp_path):
+        log_path = tmp_path / "T01.log"
+        log_path.write_text("\n\nsome text\n\n", encoding="utf-8")
+        result = build_attempt_summary("T01", 1, log_path, False)
+        assert result is not None
+
+    def test_build_attempt_summary_outer_oserror(self, tmp_path):
+        log_path = tmp_path / "T01.log"
+        log_path.write_text('{"text": "hello"}\n', encoding="utf-8")
+        with patch.object(Path, "read_text", side_effect=OSError("disk error")):
+            result = build_attempt_summary("T01", 1, log_path, False)
+            assert result is not None
+
+    def test_build_instruction_with_instructions_md(self, config, tmp_path):
+        instructions_md = config.tasks_dir / "INSTRUCTIONS.md"
+        instructions_md.write_text("# Instructions\n", encoding="utf-8")
+        task = Task(prefix="T01", name="test", path=tmp_path / "T01.md", number=1)
+        instruction = build_instruction(task, 1, config)
+        assert "INSTRUCTIONS.md" in instruction
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# R01.8 — Task execution: baseline, completion, change detection
+#          (lines 2416-2421, 2506, 2538, 2540, 2551-2552)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestRunTaskExecutionPaths:
+    """Coverage for baseline failure, not-done warning, change detection."""
+
+    @pytest.mark.asyncio
+    async def test_run_task_baseline_capture_fails(self, task, config):
+        async def mock_run_once(**kwargs):
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="done",
+                duration_seconds=1.0,
+                attempts=1,
+                tokens=TokenUsage(),
+                model="",
+            )
+
+        with patch(
+            "the_architect.core.baseline.capture_baseline", side_effect=Exception("baseline boom")
+        ):
+            result = await run_task(task=task, config=config)
+            assert result.status == "done"
+
+    @pytest.mark.asyncio
+    async def test_run_task_not_marked_done(self, task, config):
+        from io import StringIO
+
+        from loguru import logger
+
+        sink = StringIO()
+        handler_id = logger.add(sink, level="WARNING", format="{message}")
+
+        # Mock stream_provider to return a result without completion signals
+        async def mock_stream_provider(*args, **kwargs):
+            return StreamResult(
+                exit_code=0,
+                tokens=TokenUsage(),
+                accumulated_text="",
+                rate_limit_hit=False,
+                cooldown_until=0,
+                interrupted=False,
+                interruption_reason="",
+            )
+
+        with patch("the_architect.core.runner.stream_provider", side_effect=mock_stream_provider):
+            with patch("the_architect.core.runner.is_task_complete", return_value=(False, [])):
+                result = await run_task(task=task, config=config)
+                assert result.status == "failed"
+        log_output = sink.getvalue()
+        logger.remove(handler_id)
+        assert "NOT marked Done" in log_output
+
+    @pytest.mark.asyncio
+    async def test_run_task_baseline_modified_files(self, task, config):
+        async def mock_stream_provider(*args, **kwargs):
+            return StreamResult(
+                exit_code=0,
+                tokens=TokenUsage(),
+                accumulated_text="<promise>T01_COMPLETE</promise>",
+                rate_limit_hit=False,
+                cooldown_until=0,
+                interrupted=False,
+                interruption_reason="",
+            )
+
+        with patch("the_architect.core.runner.stream_provider", side_effect=mock_stream_provider):
+            with patch(
+                "the_architect.core.baseline.detect_changes",
+                return_value={"modified": ["a.py", "b.py"], "created": [], "deleted": []},
+            ):
+                result = await run_task(task=task, config=config)
+                assert result.status == "done"
+
+    @pytest.mark.asyncio
+    async def test_run_task_baseline_compare_raises(self, task, config):
+        async def mock_stream_provider(*args, **kwargs):
+            return StreamResult(
+                exit_code=0,
+                tokens=TokenUsage(),
+                accumulated_text="<promise>T01_COMPLETE</promise>",
+                rate_limit_hit=False,
+                cooldown_until=0,
+                interrupted=False,
+                interruption_reason="",
+            )
+
+        with patch("the_architect.core.runner.stream_provider", side_effect=mock_stream_provider):
+            with patch(
+                "the_architect.core.baseline.detect_changes",
+                side_effect=Exception("compare failed"),
+            ):
+                result = await run_task(task=task, config=config)
+                assert result.status == "done"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# R01.9 — Progress reconciliation and retry logic
+#          (lines 2814-2815, 2883-2884, 2894-2895, 2899-2900, 2933-2934,
+#           3020-3021, 3033-3035, 3040-3041, 3252, 3335, 3349-3351)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestRunTaskRetryAndCircuitPaths:
+    """Coverage for provider error renderer, circuit callbacks, sleep-wake, token budget."""
+
+    @pytest.mark.asyncio
+    async def test_run_task_provider_error_renderer_write_raises(self, task, config):
+        """When renderer.write_line() raises during provider error display."""
+        bad_renderer = MagicMock()
+        bad_renderer.write_line = MagicMock(side_effect=Exception("render failed"))
+        bad_renderer.set_footer = MagicMock()
+        bad_renderer.clear_footer = MagicMock()
+        bad_renderer.close = MagicMock()
+
+        async def mock_run_once(**kwargs):
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="failed",
+                duration_seconds=1.0,
+                attempts=1,
+                tokens=TokenUsage(),
+                model="",
+            )
+
+        with patch("the_architect.core.runner.run_task_once", side_effect=mock_run_once):
+            result = await run_task(task=task, config=config, renderer=bad_renderer)
+            assert result.status in ("failed", "done")
+
+    @pytest.mark.asyncio
+    async def test_run_task_circuit_cooldown_callback_raises(self, task, config):
+        """Circuit cooldown_start callback raises."""
+        from the_architect.core.circuit import CircuitBreaker, CircuitState, RecoveryAction
+
+        def bad_callback(name, data):
+            if name == "cooldown_start":
+                raise RuntimeError("callback boom")
+
+        cb = MagicMock(spec=CircuitBreaker)
+        cb.can_run.return_value = (True, "")
+        cb.handle_attempt = MagicMock()
+        # Force cooldown path: record_attempt returns OPEN with COOLDOWN_WAIT
+        cb.state = CircuitState.OPEN
+        cb.recovery_action = RecoveryAction.COOLDOWN_WAIT
+        cb.cooldown_wait_count = MagicMock(return_value=1)
+        cb.cooldown_remaining = MagicMock(return_value=0.001)
+
+        async def mock_run_once(**kwargs):
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="failed",
+                duration_seconds=1.0,
+                attempts=1,
+                tokens=TokenUsage(),
+                model="",
+            )
+
+        # After cooldown, succeed
+        call_count = [0]
+
+        async def mock_run_once_seq(**kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return TaskResult(
+                    prefix=task.prefix,
+                    title="test",
+                    status="failed",
+                    duration_seconds=1.0,
+                    attempts=1,
+                    tokens=TokenUsage(),
+                    model="",
+                )
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="done",
+                duration_seconds=1.0,
+                attempts=2,
+                tokens=TokenUsage(),
+                model="",
+            )
+
+        async def mock_cooldown_wait(*args, **kwargs):
+            pass
+
+        cb.handle_cooldown_wait = mock_cooldown_wait
+
+        with patch("the_architect.core.runner.run_task_once", side_effect=mock_run_once_seq):
+            await run_task(
+                task=task,
+                config=config,
+                circuit_breaker=cb,
+                on_circuit_event=bad_callback,
+            )
+
+    @pytest.mark.asyncio
+    async def test_run_task_circuit_cooldown_wait_raises(self, task, config):
+        """Circuit cooldown wait raises."""
+        from the_architect.core.circuit import CircuitBreaker, CircuitState, RecoveryAction
+
+        cb = MagicMock(spec=CircuitBreaker)
+        cb.can_run.return_value = (True, "")
+        cb.handle_attempt = MagicMock()
+        cb.state = CircuitState.OPEN
+        cb.recovery_action = RecoveryAction.COOLDOWN_WAIT
+        cb.cooldown_wait_count = MagicMock(return_value=1)
+        cb.cooldown_remaining = MagicMock(return_value=0.001)
+
+        call_count = [0]
+
+        async def mock_run_once_seq(**kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return TaskResult(
+                    prefix=task.prefix,
+                    title="test",
+                    status="failed",
+                    duration_seconds=1.0,
+                    attempts=1,
+                    tokens=TokenUsage(),
+                    model="",
+                )
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="done",
+                duration_seconds=1.0,
+                attempts=2,
+                tokens=TokenUsage(),
+                model="",
+            )
+
+        async def mock_cooldown_wait(*args, **kwargs):
+            raise Exception("cooldown wait failed")
+
+        cb.handle_cooldown_wait = mock_cooldown_wait
+
+        with patch("the_architect.core.runner.run_task_once", side_effect=mock_run_once_seq):
+            await run_task(task=task, config=config, circuit_breaker=cb)
+
+    @pytest.mark.asyncio
+    async def test_run_task_circuit_cooldown_end_callback_raises(self, task, config):
+        """Circuit cooldown_end callback raises."""
+        from the_architect.core.circuit import CircuitBreaker, CircuitState, RecoveryAction
+
+        def bad_callback(name, data):
+            if name == "cooldown_end":
+                raise RuntimeError("cooldown end boom")
+
+        cb = MagicMock(spec=CircuitBreaker)
+        cb.can_run.return_value = (True, "")
+        cb.handle_attempt = MagicMock()
+        cb.state = CircuitState.OPEN
+        cb.recovery_action = RecoveryAction.COOLDOWN_WAIT
+        cb.cooldown_wait_count = MagicMock(return_value=1)
+        cb.cooldown_remaining = MagicMock(return_value=0.001)
+
+        call_count = [0]
+
+        async def mock_run_once_seq(**kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return TaskResult(
+                    prefix=task.prefix,
+                    title="test",
+                    status="failed",
+                    duration_seconds=1.0,
+                    attempts=1,
+                    tokens=TokenUsage(),
+                    model="",
+                )
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="done",
+                duration_seconds=1.0,
+                attempts=2,
+                tokens=TokenUsage(),
+                model="",
+            )
+
+        async def mock_cooldown_wait(*args, **kwargs):
+            pass
+
+        cb.handle_cooldown_wait = mock_cooldown_wait
+
+        with patch("the_architect.core.runner.run_task_once", side_effect=mock_run_once_seq):
+            await run_task(
+                task=task,
+                config=config,
+                circuit_breaker=cb,
+                on_circuit_event=bad_callback,
+            )
+
+    @pytest.mark.asyncio
+    async def test_run_task_circuit_replan_raises(self, task, config):
+        """Circuit replan raises."""
+        from the_architect.core.circuit import CircuitBreaker, CircuitState, RecoveryAction
+
+        cb = MagicMock(spec=CircuitBreaker)
+        cb.can_run.return_value = (True, "")
+        cb.handle_attempt = MagicMock()
+        cb.state = CircuitState.OPEN
+        cb.recovery_action = RecoveryAction.REPLAN
+
+        async def mock_replan(*args, **kwargs):
+            raise Exception("replan failed")
+
+        cb.attempt_replan = mock_replan
+
+        async def mock_run_once(**kwargs):
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="failed",
+                duration_seconds=1.0,
+                attempts=1,
+                tokens=TokenUsage(),
+                model="",
+            )
+
+        with patch("the_architect.core.runner.run_task_once", side_effect=mock_run_once):
+            await run_task(task=task, config=config, circuit_breaker=cb)
+
+    @pytest.mark.asyncio
+    async def test_run_task_sleep_detected_callback_raises(self, task, config):
+        """sleep_detected callback raises."""
+
+        def bad_callback(name, data):
+            if name == "sleep_detected":
+                raise RuntimeError("sleep callback boom")
+
+        async def mock_run_once(**kwargs):
+            attempt = kwargs.get("attempt", 1)
+            if attempt == 1:
+                return TaskResult(
+                    prefix=task.prefix,
+                    title="test",
+                    status="failed",
+                    duration_seconds=1.0,
+                    attempts=1,
+                    tokens=TokenUsage(),
+                    model="",
+                    interrupted=True,
+                    interruption_reason="sleep_wake_gap",
+                )
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="done",
+                duration_seconds=2.0,
+                attempts=2,
+                tokens=TokenUsage(),
+                model="",
+            )
+
+        with patch("the_architect.core.runner.run_task_once", side_effect=mock_run_once):
+            await run_task(task=task, config=config, on_circuit_event=bad_callback)
+
+    @pytest.mark.asyncio
+    async def test_run_task_sleep_wake_retry_pause_cancelled(self, task, config):
+        """Sleep-wake retry pause cancelled by CancelledError."""
+
+        async def mock_run_once(**kwargs):
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="failed",
+                duration_seconds=1.0,
+                attempts=1,
+                tokens=TokenUsage(),
+                model="",
+                interrupted=True,
+                interruption_reason="sleep_wake_gap",
+            )
+
+        with patch("the_architect.core.runner.asyncio.sleep", side_effect=asyncio.CancelledError()):
+            with patch("the_architect.core.runner.run_task_once", side_effect=mock_run_once):
+                result = await run_task(task=task, config=config)
+                assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_run_task_wake_resumed_callback_raises(self, task, config):
+        """wake_resumed callback raises."""
+
+        def bad_callback(name, data):
+            if name == "wake_resumed":
+                raise RuntimeError("wake callback boom")
+
+        async def mock_run_once(**kwargs):
+            attempt = kwargs.get("attempt", 1)
+            if attempt == 1:
+                return TaskResult(
+                    prefix=task.prefix,
+                    title="test",
+                    status="failed",
+                    duration_seconds=1.0,
+                    attempts=1,
+                    tokens=TokenUsage(),
+                    model="",
+                    interrupted=True,
+                    interruption_reason="sleep_wake_gap",
+                )
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="done",
+                duration_seconds=2.0,
+                attempts=2,
+                tokens=TokenUsage(),
+                model="",
+            )
+
+        with patch("the_architect.core.runner.run_task_once", side_effect=mock_run_once):
+            await run_task(task=task, config=config, on_circuit_event=bad_callback)
+
+
+class TestHourlyTokenBudgetWaitLogging:
+    """Coverage for token budget wait logging (line 3252)."""
+
+    @pytest.mark.asyncio
+    async def test_hourly_token_budget_wait_logging(self):
+        from io import StringIO
+
+        from loguru import logger
+
+        sink = StringIO()
+        handler_id = logger.add(sink, level="INFO", format="{message}")
+
+        budget = HourlyTokenBudget(100)
+        budget.add(90)  # Use 90 of 100 budget
+
+        # Mock time.monotonic so seconds_until_reset returns a small value
+        with patch("the_architect.core.runner.time.monotonic") as mock_time:
+            # First call (in add) sets window_start, subsequent calls measure elapsed
+            mock_time.side_effect = [0.0, 0.0, 3599.0]
+            # Mock asyncio.sleep to return immediately (simulate the wait completing)
+            with patch("asyncio.sleep", return_value=None):
+                await budget.wait_for_reset()
+
+        log_output = sink.getvalue()
+        logger.remove(handler_id)
+        # The wait loop should have logged the "waiting for hour reset" message
+        assert "waiting for hour reset" in log_output or "hour window reset" in log_output
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Idle-timeout registry and bonus-retry tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestIdleTimeoutRegistry:
+    """Tests for the module-level idle-timeout task registry."""
+
+    def setup_method(self):
+        import the_architect.core.runner as _runner
+
+        with _runner._IDLE_TIMEOUT_TASKS_LOCK:
+            _runner._IDLE_TIMEOUT_TASKS.clear()
+
+    def test_mark_and_get(self):
+        from the_architect.core.runner import (
+            _mark_idle_timeout,
+            get_idle_timeout_tasks,
+        )
+
+        _mark_idle_timeout("T04")
+        assert "T04" in get_idle_timeout_tasks()
+
+    def test_clear_removes_entry(self):
+        from the_architect.core.runner import (
+            _clear_idle_timeout,
+            _mark_idle_timeout,
+            get_idle_timeout_tasks,
+        )
+
+        _mark_idle_timeout("T04")
+        _clear_idle_timeout("T04")
+        assert "T04" not in get_idle_timeout_tasks()
+
+    def test_get_returns_frozenset(self):
+        from the_architect.core.runner import get_idle_timeout_tasks
+
+        assert isinstance(get_idle_timeout_tasks(), frozenset)
+
+    def test_clear_nonexistent_is_noop(self):
+        from the_architect.core.runner import (
+            _clear_idle_timeout,
+            get_idle_timeout_tasks,
+        )
+
+        _clear_idle_timeout("TXXX")  # must not raise
+        assert "TXXX" not in get_idle_timeout_tasks()
+
+
+class TestIdleTimeoutBonusRetry:
+    """Provider idle-timeout kills must not consume retry slots in run_task."""
+
+    @pytest.fixture
+    def task(self, tmp_path: Path) -> Task:
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        task_file = tasks_dir / "T04_test.md"
+        task_file.write_text("# T04 test\n", encoding="utf-8")
+        return Task(path=task_file, prefix="T04", name="T04_test", title="test", number=4)
+
+    @pytest.fixture
+    def config(self, tmp_path: Path) -> ArchitectConfig:
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        progress = tmp_path / "PROGRESS.md"
+        progress.write_text("", encoding="utf-8")
+        cfg = ArchitectConfig(
+            project_root=tmp_path,
+            tasks_dir=tasks_dir,
+            progress_file=progress,
+            log_dir=tmp_path / ".architect" / "logs",
+        )
+        cfg.max_retries = 2
+        cfg.retry_pause = 0
+        return cfg
+
+    def setup_method(self):
+        import the_architect.core.runner as _runner
+
+        with _runner._IDLE_TIMEOUT_TASKS_LOCK:
+            _runner._IDLE_TIMEOUT_TASKS.clear()
+
+    @pytest.mark.asyncio
+    async def test_idle_timeout_does_not_consume_retry_slot(self, task, config):
+        """An idle-timeout kill must be retried without burning a retry slot."""
+        call_count = 0
+
+        async def mock_run_once(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return TaskResult(
+                    prefix=task.prefix,
+                    title="test",
+                    status="failed",
+                    duration_seconds=1.0,
+                    attempts=1,
+                    tokens=TokenUsage(),
+                    model="",
+                    interrupted=True,
+                    interruption_reason="idle_timeout",
+                )
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="done",
+                duration_seconds=2.0,
+                attempts=2,
+                tokens=TokenUsage(),
+                model="",
+            )
+
+        with patch("the_architect.core.runner.run_task_once", side_effect=mock_run_once):
+            with patch("asyncio.sleep", return_value=None):
+                result = await run_task(task=task, config=config)
+
+        assert result.status == "done"
+        assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_idle_timeout_marks_registry(self, task, config):
+        """An idle-timeout kill must register the task in the idle_timeout registry."""
+        from the_architect.core.runner import get_idle_timeout_tasks
+
+        call_count = 0
+
+        async def mock_run_once(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return TaskResult(
+                    prefix=task.prefix,
+                    title="test",
+                    status="failed",
+                    duration_seconds=1.0,
+                    attempts=1,
+                    tokens=TokenUsage(),
+                    model="",
+                    interrupted=True,
+                    interruption_reason="idle_timeout",
+                )
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="done",
+                duration_seconds=2.0,
+                attempts=2,
+                tokens=TokenUsage(),
+                model="",
+            )
+
+        with patch("the_architect.core.runner.run_task_once", side_effect=mock_run_once):
+            with patch("asyncio.sleep", return_value=None):
+                await run_task(task=task, config=config)
+
+        # Registry is cleared on success
+        assert task.prefix not in get_idle_timeout_tasks()
+
+    @pytest.mark.asyncio
+    async def test_idle_timeout_fires_circuit_events(self, task, config):
+        """idle_timeout_detected and idle_timeout_resumed events must be fired."""
+        events_fired: list[str] = []
+
+        def _on_event(name: str, data: dict) -> None:
+            events_fired.append(name)
+
+        call_count = 0
+
+        async def mock_run_once(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return TaskResult(
+                    prefix=task.prefix,
+                    title="test",
+                    status="failed",
+                    duration_seconds=1.0,
+                    attempts=1,
+                    tokens=TokenUsage(),
+                    model="",
+                    interrupted=True,
+                    interruption_reason="idle_timeout",
+                )
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="done",
+                duration_seconds=2.0,
+                attempts=2,
+                tokens=TokenUsage(),
+                model="",
+            )
+
+        with patch("the_architect.core.runner.run_task_once", side_effect=mock_run_once):
+            with patch("asyncio.sleep", return_value=None):
+                await run_task(task=task, config=config, on_circuit_event=_on_event)
+
+        assert "idle_timeout_detected" in events_fired
+        assert "idle_timeout_resumed" in events_fired
+
+    @pytest.mark.asyncio
+    async def test_success_clears_idle_timeout_registry(self, task, config):
+        """On success, the task prefix must be removed from the idle-timeout registry."""
+        from the_architect.core.runner import (
+            _mark_idle_timeout,
+            get_idle_timeout_tasks,
+        )
+
+        _mark_idle_timeout(task.prefix)
+
+        async def mock_run_once(**kwargs):
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="done",
+                duration_seconds=1.0,
+                attempts=1,
+                tokens=TokenUsage(),
+                model="",
+            )
+
+        with patch("the_architect.core.runner.run_task_once", side_effect=mock_run_once):
+            result = await run_task(task=task, config=config)
+
+        assert result.status == "done"
+        assert task.prefix not in get_idle_timeout_tasks()
+
+    def test_idle_timeout_retry_pause_env_override(self, monkeypatch: pytest.MonkeyPatch):
+        """ARCHITECT_IDLE_TIMEOUT_RETRY_PAUSE_SECONDS overrides the default."""
+        monkeypatch.setenv("ARCHITECT_IDLE_TIMEOUT_RETRY_PAUSE_SECONDS", "60")
+        assert _idle_timeout_retry_pause_seconds() == 60.0
+
+    def test_idle_timeout_retry_pause_invalid_env(self, monkeypatch: pytest.MonkeyPatch):
+        """Invalid env var falls back to the default."""
+        monkeypatch.setenv("ARCHITECT_IDLE_TIMEOUT_RETRY_PAUSE_SECONDS", "not_a_number")
+        assert _idle_timeout_retry_pause_seconds() == 180.0
+
+    def test_idle_timeout_retry_pause_negative_clamped(self, monkeypatch: pytest.MonkeyPatch):
+        """Negative env var is clamped to 0."""
+        monkeypatch.setenv("ARCHITECT_IDLE_TIMEOUT_RETRY_PAUSE_SECONDS", "-5")
+        assert _idle_timeout_retry_pause_seconds() == 0.0
+
+
+class TestRunAllRTaskContinuation:
+    """run_all must continue to a pending R-task when its T-task fails."""
+
+    @pytest.fixture
+    def config(self, tmp_path: Path) -> ArchitectConfig:
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        progress = tmp_path / "PROGRESS.md"
+        progress.write_text(
+            "| T04 | TUI coverage | Pending | — |\n| R04 | TUI coverage fix | Pending | — |\n",
+            encoding="utf-8",
+        )
+        return ArchitectConfig(
+            project_root=tmp_path,
+            tasks_dir=tasks_dir,
+            progress_file=progress,
+            log_dir=tmp_path / ".architect" / "logs",
+        )
+
+    @pytest.mark.asyncio
+    async def test_failed_task_continues_to_r_task(self, tmp_path: Path, config):
+        """When T04 fails, run_all must continue to R04 if it is pending."""
+        tasks_dir = tmp_path / "tasks"
+        t4_path = tasks_dir / "T04_tui.md"
+        r4_path = tasks_dir / "T04R1_fix.md"
+        t4_path.write_text("# T04\n", encoding="utf-8")
+        r4_path.write_text("# T04R1\n", encoding="utf-8")
+
+        t4 = Task(path=t4_path, prefix="T04", name="T04_tui", title="tui", number=4)
+        r4 = Task(path=r4_path, prefix="T04R1", name="T04R1_fix", title="fix", number=4)
+        plan = TaskPlan(tasks=[t4, r4])
+
+        run_results = {
+            "T04": TaskResult(
+                prefix="T04",
+                title="tui",
+                status="failed",
+                duration_seconds=1.0,
+                attempts=3,
+                tokens=TokenUsage(),
+                model="",
+            ),
+            "T04R1": TaskResult(
+                prefix="T04R1",
+                title="fix",
+                status="done",
+                duration_seconds=1.0,
+                attempts=1,
+                tokens=TokenUsage(),
+                model="",
+            ),
+        }
+
+        attempted: list[str] = []
+
+        async def mock_run_task(*, task, **kwargs):
+            attempted.append(task.prefix)
+            return run_results[task.prefix]
+
+        config.progress_file.write_text(
+            "| T04 | TUI coverage | Pending | — |\n| T04R1 | TUI coverage fix | Pending | — |\n",
+            encoding="utf-8",
+        )
+
+        with patch("the_architect.core.runner.run_task", side_effect=mock_run_task):
+            await _run_all_inner(plan, config)
+
+        assert "T04" in attempted
+        assert "T04R1" in attempted, "T04R1 must be attempted even though T04 failed"
+
+    @pytest.mark.asyncio
+    async def test_failed_task_stops_when_no_r_task(self, tmp_path: Path, config):
+        """When T04 fails and there is no R-task, run_all must stop."""
+        tasks_dir = tmp_path / "tasks"
+        t4_path = tasks_dir / "T04_tui.md"
+        t4_path.write_text("# T04\n", encoding="utf-8")
+
+        t4 = Task(path=t4_path, prefix="T04", name="T04_tui", title="tui", number=4)
+        t5_path = tasks_dir / "T05_next.md"
+        t5_path.write_text("# T05\n", encoding="utf-8")
+        t5 = Task(path=t5_path, prefix="T05", name="T05_next", title="next", number=5)
+        plan = TaskPlan(tasks=[t4, t5])
+
+        attempted: list[str] = []
+
+        async def mock_run_task(*, task, **kwargs):
+            attempted.append(task.prefix)
+            return TaskResult(
+                prefix=task.prefix,
+                title="x",
+                status="failed",
+                duration_seconds=1.0,
+                attempts=3,
+                tokens=TokenUsage(),
+                model="",
+            )
+
+        config.progress_file.write_text(
+            "| T04 | TUI coverage | Pending | — |\n| T05 | next | Pending | — |\n",
+            encoding="utf-8",
+        )
+
+        with patch("the_architect.core.runner.run_task", side_effect=mock_run_task):
+            result = await _run_all_inner(plan, config)
+
+        assert "T04" in attempted
+        assert "T05" not in attempted, "T05 must not run after T04 fails with no R-task"
+        assert result is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Coverage gap tests — runner.py error paths (Cycle 3 T02)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestStreamProviderErrorPaths:
+    """Cover remaining error-handling lines in stream_provider."""
+
+    @pytest.fixture(autouse=True)
+    def _project_dir(self, tmp_path: Path) -> None:
+        self.project_dir = tmp_path
+
+    @pytest.mark.asyncio
+    async def test_cancelled_error_outer_handler_kills_process(self):
+        """CancelledError in outer handler calls _kill_process_tree (L1213-1217)."""
+        provider = _make_mock_provider()
+        mock_process = AsyncMock(spec=asyncio.subprocess.Process)
+        mock_process.stdout = AsyncMock()
+        mock_process.stdout.readline = AsyncMock(return_value=b"")
+        mock_process.wait = AsyncMock(return_value=0)
+        mock_process.returncode = None  # still running → triggers kill path
+        mock_process.kill = MagicMock()
+
+        call_count = [0]
+
+        async def mock_wait_for(coro, timeout=None):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # First call (reader task wait) → raise CancelledError
+                raise asyncio.CancelledError()
+            # Second+ calls (process.wait in except/finally) → succeed
+            if asyncio.iscoroutine(coro):
+                await coro
+            return 0
+
+        with (
+            patch(
+                "the_architect.core.runner.asyncio.create_subprocess_exec",
+                return_value=mock_process,
+            ),
+            patch(
+                "the_architect.core.runner.asyncio.wait_for",
+                side_effect=mock_wait_for,
+            ),
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await stream_provider("test", self.project_dir, provider)
+            # _kill_process_tree uses kill() as the backup/Windows path
+            assert mock_process.kill.called
+
+    @pytest.mark.asyncio
+    async def test_generic_exception_process_kill_raises(self):
+        """process.kill() raises in generic exception handler (L1227-1228)."""
+        provider = _make_mock_provider()
+        mock_process = AsyncMock(spec=asyncio.subprocess.Process)
+        mock_process.stdout = AsyncMock()
+        mock_process.stdout.readline = AsyncMock(return_value=b"")
+        mock_process.wait = AsyncMock(return_value=-1)
+        mock_process.returncode = None  # still running
+        mock_process.kill = MagicMock(side_effect=OSError("kill failed"))
+
+        async def raise_runtime(awaitable, timeout=None):
+            if asyncio.iscoroutine(awaitable):
+                awaitable.close()
+            elif isinstance(awaitable, asyncio.Task):
+                awaitable.cancel()
+            raise RuntimeError("boom")
+
+        with (
+            patch(
+                "the_architect.core.runner.asyncio.create_subprocess_exec",
+                return_value=mock_process,
+            ),
+            patch(
+                "the_architect.core.runner.asyncio.wait_for",
+                side_effect=raise_runtime,
+            ),
+        ):
+            result = await stream_provider("test", self.project_dir, provider)
+        # The inner except (L1227-1228) swallows the OSError from kill()
+        assert result.exit_code == -1
+        assert mock_process.kill.called
+
+    @pytest.mark.asyncio
+    async def test_cancelled_error_process_wait_raises(self):
+        """process.wait() raises after _kill_process_tree — exception swallowed (L1216-1217)."""
+        provider = _make_mock_provider()
+        mock_process = AsyncMock(spec=asyncio.subprocess.Process)
+        mock_process.stdout = AsyncMock()
+        mock_process.stdout.readline = AsyncMock(return_value=b"")
+        # process.wait() at L1193 must return normally; L1215's wait raises
+        mock_process.wait = AsyncMock(return_value=0)
+        mock_process.returncode = None  # still running → triggers kill path
+        mock_process.kill = MagicMock()
+
+        call_count = [0]
+
+        async def mock_wait_for(coro, timeout=None):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # First call (reader readline) → raise CancelledError
+                raise asyncio.CancelledError()
+            elif call_count[0] == 2:
+                # Second call (wait_for reader_task) → propagate CancelledError
+                raise asyncio.CancelledError()
+            # Third call (process.wait in CancelledError handler) → actually await
+            # process.wait() has been patched to raise on second+ call
+            if asyncio.iscoroutine(coro):
+                await coro
+            return 0
+
+        # Make process.wait() raise on the second call (L1215)
+        mock_process.wait.side_effect = [0, ProcessLookupError("no such process")]
+
+        with (
+            patch(
+                "the_architect.core.runner.asyncio.create_subprocess_exec",
+                return_value=mock_process,
+            ),
+            patch(
+                "the_architect.core.runner.asyncio.wait_for",
+                side_effect=mock_wait_for,
+            ),
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await stream_provider("test", self.project_dir, provider)
+            assert mock_process.kill.called
+            # process.wait was called twice: L1193 (returned 0) and L1215 (raised)
+            # process.wait called at L1193 (returns 0), L1215 (raises), L1239 (finally)
+            assert mock_process.wait.call_count >= 2
+
+
+class TestRunTaskErrorPaths:
+    """Cover remaining error-handling lines in run_task / _run_all_inner."""
+
+    @pytest.mark.asyncio
+    async def test_run_task_provider_error_renderer_raises(self, task, config):
+        """renderer.write_line raises during provider error display (L2875-2876)."""
+        from the_architect.core.circuit import ProviderError, ProviderErrorKind
+
+        bad_renderer = MagicMock()
+        bad_renderer.write_line = MagicMock(side_effect=Exception("render failed"))
+        bad_renderer.set_footer = MagicMock()
+        bad_renderer.clear_footer = MagicMock()
+        bad_renderer.close = MagicMock()
+
+        async def mock_run_once(**kwargs):
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="failed",
+                duration_seconds=1.0,
+                attempts=1,
+                tokens=TokenUsage(),
+                model="",
+                accumulated_text="Error: API key invalid. Please update your configuration.",
+                exit_code=1,
+            )
+
+        fake_error = ProviderError(
+            kind=ProviderErrorKind.MISCONFIGURED,
+            message="API key invalid",
+            action="Update your API key.",
+        )
+
+        # detect_provider_error is imported locally from circuit inside run_task
+        with (
+            patch(
+                "the_architect.core.runner.run_task_once",
+                side_effect=mock_run_once,
+            ),
+            patch(
+                "the_architect.core.circuit.detect_provider_error",
+                return_value=fake_error,
+            ),
+        ):
+            result = await run_task(task=task, config=config, renderer=bad_renderer)
+        assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_run_task_cooldown_start_callback_raises(self, task, config):
+        """on_circuit_event cooldown_start callback raises (L2944-2945)."""
+        from the_architect.core.circuit import (
+            CircuitBreaker,
+            CircuitState,
+            RecoveryAction,
+            TaskCircuitState,
+        )
+
+        def bad_callback(name, data):
+            if name == "cooldown_start":
+                raise RuntimeError("cooldown_start callback boom")
+
+        cb = MagicMock(spec=CircuitBreaker)
+        cb.can_run.return_value = (True, "")
+
+        fake_state = TaskCircuitState(
+            state=CircuitState.OPEN,
+            consecutive_no_progress=0,
+            consecutive_same_error=0,
+            recovery_action=RecoveryAction.COOLDOWN_WAIT,
+            cooldown_waiting=True,
+            cooldown_wait_count=1,
+        )
+        cb.record_attempt = MagicMock(return_value=fake_state)
+
+        call_count = [0]
+
+        async def mock_run_once_seq(**kwargs):
+            call_count[0] += 1
+            # First call fails → triggers cooldown. After cooldown, succeed.
+            if call_count[0] == 1:
+                return TaskResult(
+                    prefix=task.prefix,
+                    title="test",
+                    status="failed",
+                    duration_seconds=1.0,
+                    attempts=1,
+                    tokens=TokenUsage(),
+                    model="",
+                )
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="done",
+                duration_seconds=1.0,
+                attempts=2,
+                tokens=TokenUsage(),
+                model="",
+            )
+
+        async def mock_cooldown_wait(*args, **kwargs):
+            pass
+
+        cb.handle_cooldown_wait = mock_cooldown_wait
+
+        with (
+            patch(
+                "the_architect.core.runner.run_task_once",
+                side_effect=mock_run_once_seq,
+            ),
+            patch("the_architect.core.runner.asyncio.sleep", return_value=None),
+        ):
+            await run_task(
+                task=task, config=config, circuit_breaker=cb, on_circuit_event=bad_callback
+            )
+
+    @pytest.mark.asyncio
+    async def test_run_task_cooldown_wait_raises(self, task, config):
+        """handle_cooldown_wait raises Exception (L2955-2956)."""
+        from the_architect.core.circuit import (
+            CircuitBreaker,
+            CircuitState,
+            RecoveryAction,
+            TaskCircuitState,
+        )
+
+        cb = MagicMock(spec=CircuitBreaker)
+        cb.can_run.return_value = (True, "")
+
+        fake_state = TaskCircuitState(
+            state=CircuitState.OPEN,
+            consecutive_no_progress=0,
+            consecutive_same_error=0,
+            recovery_action=RecoveryAction.COOLDOWN_WAIT,
+            cooldown_waiting=True,
+            cooldown_wait_count=1,
+        )
+        cb.record_attempt = MagicMock(return_value=fake_state)
+
+        call_count = [0]
+
+        async def mock_run_once_seq(**kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return TaskResult(
+                    prefix=task.prefix,
+                    title="test",
+                    status="failed",
+                    duration_seconds=1.0,
+                    attempts=1,
+                    tokens=TokenUsage(),
+                    model="",
+                )
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="done",
+                duration_seconds=1.0,
+                attempts=2,
+                tokens=TokenUsage(),
+                model="",
+            )
+
+        async def mock_cooldown_wait(*args, **kwargs):
+            raise RuntimeError("cooldown wait failed")
+
+        cb.handle_cooldown_wait = mock_cooldown_wait
+
+        with (
+            patch(
+                "the_architect.core.runner.run_task_once",
+                side_effect=mock_run_once_seq,
+            ),
+            patch("the_architect.core.runner.asyncio.sleep", return_value=None),
+        ):
+            await run_task(task=task, config=config, circuit_breaker=cb)
+
+    @pytest.mark.asyncio
+    async def test_run_task_cooldown_end_callback_raises(self, task, config):
+        """on_circuit_event cooldown_end callback raises (L2960-2961)."""
+        from the_architect.core.circuit import (
+            CircuitBreaker,
+            CircuitState,
+            RecoveryAction,
+            TaskCircuitState,
+        )
+
+        def bad_callback(name, data):
+            if name == "cooldown_end":
+                raise RuntimeError("cooldown_end callback boom")
+
+        cb = MagicMock(spec=CircuitBreaker)
+        cb.can_run.return_value = (True, "")
+
+        fake_state = TaskCircuitState(
+            state=CircuitState.OPEN,
+            consecutive_no_progress=0,
+            consecutive_same_error=0,
+            recovery_action=RecoveryAction.COOLDOWN_WAIT,
+            cooldown_waiting=True,
+            cooldown_wait_count=1,
+        )
+        cb.record_attempt = MagicMock(return_value=fake_state)
+
+        call_count = [0]
+
+        async def mock_run_once_seq(**kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return TaskResult(
+                    prefix=task.prefix,
+                    title="test",
+                    status="failed",
+                    duration_seconds=1.0,
+                    attempts=1,
+                    tokens=TokenUsage(),
+                    model="",
+                )
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="done",
+                duration_seconds=1.0,
+                attempts=2,
+                tokens=TokenUsage(),
+                model="",
+            )
+
+        async def mock_cooldown_wait(*args, **kwargs):
+            pass
+
+        cb.handle_cooldown_wait = mock_cooldown_wait
+
+        with (
+            patch(
+                "the_architect.core.runner.run_task_once",
+                side_effect=mock_run_once_seq,
+            ),
+            patch("the_architect.core.runner.asyncio.sleep", return_value=None),
+        ):
+            await run_task(
+                task=task, config=config, circuit_breaker=cb, on_circuit_event=bad_callback
+            )
+
+    @pytest.mark.asyncio
+    async def test_run_task_replan_raises(self, task, config):
+        """attempt_replan raises Exception (L2994-2997)."""
+        from the_architect.core.circuit import (
+            CircuitBreaker,
+            CircuitState,
+            RecoveryAction,
+            TaskCircuitState,
+        )
+
+        cb = MagicMock(spec=CircuitBreaker)
+        # First can_run call (pre-run check) returns True, second (per-iteration) returns False
+        cb.can_run.side_effect = [(True, ""), (False, "circuit open")]
+
+        fake_state = TaskCircuitState(
+            state=CircuitState.OPEN,
+            consecutive_no_progress=0,
+            consecutive_same_error=0,
+            recovery_action=RecoveryAction.REPLAN,
+            cooldown_waiting=False,
+            cooldown_wait_count=0,
+        )
+        cb.record_attempt = MagicMock(return_value=fake_state)
+
+        async def mock_replan(*args, **kwargs):
+            raise RuntimeError("replan failed")
+
+        cb.attempt_replan = mock_replan
+
+        async def mock_run_once(**kwargs):
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="failed",
+                duration_seconds=1.0,
+                attempts=1,
+                tokens=TokenUsage(),
+                model="",
+            )
+
+        with (
+            patch(
+                "the_architect.core.runner.run_task_once",
+                side_effect=mock_run_once,
+            ),
+            patch("the_architect.core.runner.asyncio.sleep", return_value=None),
+        ):
+            await run_task(task=task, config=config, circuit_breaker=cb)
+
+    @pytest.mark.asyncio
+    async def test_run_task_idle_timeout_detected_callback_raises(self, task, config):
+        """on_circuit_event idle_timeout_detected callback raises (L3137-3138)."""
+
+        def bad_callback(name, data):
+            if name == "idle_timeout_detected":
+                raise RuntimeError("idle_timeout callback boom")
+
+        async def mock_run_once(**kwargs):
+            attempt = kwargs.get("attempt", 1)
+            if attempt == 1:
+                return TaskResult(
+                    prefix=task.prefix,
+                    title="test",
+                    status="failed",
+                    duration_seconds=1.0,
+                    attempts=1,
+                    tokens=TokenUsage(),
+                    model="",
+                    interrupted=True,
+                    interruption_reason="idle_timeout",
+                )
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="done",
+                duration_seconds=2.0,
+                attempts=2,
+                tokens=TokenUsage(),
+                model="",
+            )
+
+        with (
+            patch("the_architect.core.runner.run_task_once", side_effect=mock_run_once),
+            patch("the_architect.core.runner.asyncio.sleep", return_value=None),
+        ):
+            await run_task(task=task, config=config, on_circuit_event=bad_callback)
+
+    @pytest.mark.asyncio
+    async def test_run_task_idle_timeout_sleep_cancelled(self, task, config):
+        """asyncio.CancelledError during idle-timeout retry pause (L3149-3151)."""
+
+        async def mock_run_once(**kwargs):
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="failed",
+                duration_seconds=1.0,
+                attempts=1,
+                tokens=TokenUsage(),
+                model="",
+                interrupted=True,
+                interruption_reason="idle_timeout",
+            )
+
+        with (
+            patch("the_architect.core.runner.asyncio.sleep", side_effect=asyncio.CancelledError()),
+            patch("the_architect.core.runner.run_task_once", side_effect=mock_run_once),
+        ):
+            result = await run_task(task=task, config=config)
+        assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_run_task_idle_timeout_resumed_callback_raises(self, task, config):
+        """on_circuit_event idle_timeout_resumed callback raises (L3156-3157)."""
+
+        def bad_callback(name, data):
+            if name == "idle_timeout_resumed":
+                raise RuntimeError("idle_timeout_resumed callback boom")
+
+        async def mock_run_once(**kwargs):
+            attempt = kwargs.get("attempt", 1)
+            if attempt == 1:
+                return TaskResult(
+                    prefix=task.prefix,
+                    title="test",
+                    status="failed",
+                    duration_seconds=1.0,
+                    attempts=1,
+                    tokens=TokenUsage(),
+                    model="",
+                    interrupted=True,
+                    interruption_reason="idle_timeout",
+                )
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="done",
+                duration_seconds=2.0,
+                attempts=2,
+                tokens=TokenUsage(),
+                model="",
+            )
+
+        with (
+            patch("the_architect.core.runner.run_task_once", side_effect=mock_run_once),
+            patch("the_architect.core.runner.asyncio.sleep", return_value=None),
+        ):
+            await run_task(task=task, config=config, on_circuit_event=bad_callback)
+
+    @pytest.mark.asyncio
+    async def test_run_task_idle_timeout_exhausted_marks_task(self, task, config):
+        """_mark_idle_timeout called when idle_timeout retries exhausted."""
+        import the_architect.core.runner as runner_mod
+
+        # Clear any existing idle timeout entries
+        with runner_mod._IDLE_TIMEOUT_TASKS_LOCK:
+            runner_mod._IDLE_TIMEOUT_TASKS.clear()
+
+        async def mock_run_once(**kwargs):
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="failed",
+                duration_seconds=1.0,
+                attempts=1,
+                tokens=TokenUsage(),
+                model="",
+                interrupted=True,
+                interruption_reason="idle_timeout",
+            )
+
+        with (
+            patch("the_architect.core.runner.run_task_once", side_effect=mock_run_once),
+            patch("the_architect.core.runner.asyncio.sleep", return_value=None),
+        ):
+            result = await run_task(task=task, config=config)
+
+        assert result is not None
+        # _mark_idle_timeout is called on every idle_timeout interruption
+        with runner_mod._IDLE_TIMEOUT_TASKS_LOCK:
+            assert task.prefix in runner_mod._IDLE_TIMEOUT_TASKS

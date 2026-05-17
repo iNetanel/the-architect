@@ -54,6 +54,8 @@ coverage.xml
 tests/*.backup
 tests/*.corrupted
 /test_*.py
+# coverage annotate output (*.py,cover files written by `coverage annotate`)
+*.py,cover
 
 # ---------------------------------------------------------------------------
 # The Architect runtime — generated when `architect` runs inside a project

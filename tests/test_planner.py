@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
+from loguru import logger
 
 from the_architect.config import ArchitectConfig
 from the_architect.core.planner import (
@@ -15,6 +16,7 @@ from the_architect.core.planner import (
     TaskScope,
     _clear_log_dir,
     _enforce_planning_lifecycle_contract,
+    _ensure_lifecycle_contract,
     _next_task_number,
     _rescue_stray_tasks,
     _summarize_progress_historical,
@@ -1572,3 +1574,388 @@ class TestRunPlannerRendererPassthrough:
             await run_planner(request, config)
 
         assert captured.get("renderer") is None
+
+
+class TestPlannerCoverageGaps:
+    """Tests for the remaining uncovered lines in planner.py."""
+
+    # Lines 271-278: symlink directory resolve failure (OSError/ValueError)
+    def test_gather_context_symlink_dir_resolve_oserror(self, tmp_path: Path) -> None:
+        """Symlink dir where resolve() raises OSError — dirnames cleared, continues."""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+
+        # Create a real subdirectory (os.walk will yield it as dirpath)
+        subdir = project_dir / "subdir"
+        subdir.mkdir()
+        (subdir / "file.txt").write_text("content", encoding="utf-8")
+
+        original_is_symlink = Path.is_symlink
+        original_resolve = Path.resolve
+
+        def mock_is_symlink(self: Path) -> bool:
+            if "subdir" in str(self):
+                return True  # Pretend subdir is a symlink
+            return original_is_symlink(self)
+
+        def mock_resolve(self: Path) -> Path:
+            if "subdir" in str(self):
+                raise OSError("resolve failed")
+            return original_resolve(self)
+
+        with (
+            patch.object(Path, "is_symlink", mock_is_symlink),
+            patch.object(Path, "resolve", mock_resolve),
+        ):
+            context = gather_project_context(project_dir)
+            # Should not crash; the bad symlink dir should be skipped
+            assert "File tree:" in context
+
+    # Line 427: goal extraction breaks on second heading (empty goal section)
+    def test_gather_context_goal_extraction_breaks_on_second_heading(self, tmp_path: Path) -> None:
+        """Archive INSTRUCTIONS.md with empty goal — break fires on second ## heading."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        archive_dir = tasks_dir / "archive" / "2024-01-01_000000"
+        archive_dir.mkdir(parents=True)
+
+        # Goal section is empty — only whitespace before next heading
+        instructions = archive_dir / "INSTRUCTIONS.md"
+        instructions.write_text("## Goal\n\n## Constraints\nMust use Python", encoding="utf-8")
+        (archive_dir / "T01_setup.md").write_text("# T01", encoding="utf-8")
+
+        context = gather_project_context(tmp_path)
+        # Should not crash; goal extraction should break on "## Constraints"
+        assert "archive/" in context
+
+    # Line 676: _enforce_planning_lifecycle_contract — file already has contract
+    def test_enforce_lifecycle_contract_already_present(self, tmp_path: Path) -> None:
+        """Returns False when file already contains the lifecycle contract."""
+        from the_architect.core.planner import _LIFECYCLE_CONTRACT
+
+        task_file = tmp_path / "T01_task.md"
+        task_file.write_text("Some content\n" + _LIFECYCLE_CONTRACT + "\n", encoding="utf-8")
+
+        result = _ensure_lifecycle_contract(task_file)
+        assert result is False
+        # File should not be modified
+        assert (
+            task_file.read_text(encoding="utf-8") == "Some content\n" + _LIFECYCLE_CONTRACT + "\n"
+        )
+
+    # Line 758: symlink pointing outside project in _rescue_stray_tasks
+    def test_rescue_symlink_outside_project(self, tmp_path: Path) -> None:
+        """Symlink .md file pointing outside project is skipped."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+
+        # Create a file outside the project
+        outside_file = tmp_path.parent / "outside_task.md"
+        outside_file.write_text("# Outside", encoding="utf-8")
+
+        # Create a stray dir with a symlink pointing outside
+        stray_dir = tmp_path / "mbi" / "tasks"
+        stray_dir.mkdir(parents=True)
+        symlink_file = stray_dir / "T01_outside.md"
+        symlink_file.symlink_to(outside_file)
+
+        # Mock resolve to return a path outside the project
+        original_resolve = Path.resolve
+
+        def mock_resolve(self: Path) -> Path:
+            if "T01_outside.md" in str(self):
+                return Path("/tmp/outside_project")
+            return original_resolve(self)
+
+        original_is_symlink = Path.is_symlink
+
+        def mock_is_symlink(self: Path) -> bool:
+            if "T01_outside.md" in str(self):
+                return True
+            return original_is_symlink(self)
+
+        with (
+            patch.object(Path, "resolve", mock_resolve),
+            patch.object(Path, "is_symlink", mock_is_symlink),
+        ):
+            rescued = _rescue_stray_tasks(tmp_path, tasks_dir)
+            # Symlink pointing outside should be skipped
+            assert rescued == 0
+
+    # Line 945: _write_goal_md — empty goal returns early
+    def test_write_goal_md_empty_goal(self, tmp_path: Path) -> None:
+        """_write_goal_md returns early when goal is empty/whitespace."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+
+        _write_goal_md(tasks_dir, "")
+        assert not (tasks_dir / "GOAL.md").exists()
+
+        _write_goal_md(tasks_dir, "   ")
+        assert not (tasks_dir / "GOAL.md").exists()
+
+    # Lines 977-978: _sync_goal_md — OSError on unlink, logs warning
+    def test_sync_goal_md_unlink_oserror(self, tmp_path: Path) -> None:
+        """OSError during stale GOAL.md removal is logged as warning."""
+        from io import StringIO
+
+        from the_architect.core.planner import _sync_goal_md
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        goal_file = tasks_dir / "GOAL.md"
+        goal_file.write_text("# Goal\nOld goal\n", encoding="utf-8")
+
+        sink = StringIO()
+        handler_id = logger.add(sink, level="WARNING", format="{message}")
+
+        with patch.object(goal_file.__class__, "unlink", side_effect=OSError("Device busy")):
+            _sync_goal_md(tasks_dir, "", preserve_existing=False)
+
+        logger.remove(handler_id)
+        assert "Failed to remove stale tasks/GOAL.md" in sink.getvalue()
+
+    # Lines 1108-1109: archive_previous_run — OSError on copy2 for GOAL.md/PROGRESS.md
+    def test_archive_copy2_oserror(self, tmp_path: Path) -> None:
+        """OSError during shutil.copy2 of GOAL.md/PROGRESS.md is logged."""
+        from io import StringIO
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01_task.md").write_text("# T01", encoding="utf-8")
+        (tasks_dir / "GOAL.md").write_text("# Goal\nMission\n", encoding="utf-8")
+        (tasks_dir / "PROGRESS.md").write_text("# Progress", encoding="utf-8")
+
+        log_dir = tmp_path / ".architect" / "logs"
+        log_dir.mkdir(parents=True)
+
+        sink = StringIO()
+        handler_id = logger.add(sink, level="WARNING", format="{message}")
+
+        # Mock copy2 to raise OSError for GOAL.md and PROGRESS.md
+        original_copy2 = __import__("shutil").copy2
+
+        def mock_copy2(src, dst):
+            if src.name in ("GOAL.md", "PROGRESS.md"):
+                raise OSError("copy failed")
+            return original_copy2(src, dst)
+
+        with patch("shutil.copy2", side_effect=mock_copy2):
+            result = archive_previous_run(tasks_dir, log_dir, tasks_dir / "PROGRESS.md")
+
+        logger.remove(handler_id)
+        assert result is not None
+        assert "Failed to archive" in sink.getvalue()
+
+    # Line 1129: _clear_log_dir — entry is not a file, continues
+    def test_clear_log_dir_skips_subdir(self, tmp_path: Path) -> None:
+        """_clear_log_dir skips subdirectories (not files)."""
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        (log_dir / "test.log").write_text("log", encoding="utf-8")
+        sub_dir = log_dir / "subdir"
+        sub_dir.mkdir()
+
+        _clear_log_dir(log_dir)
+
+        # File should be cleared, subdir should remain
+        assert not (log_dir / "test.log").exists()
+        assert sub_dir.exists()
+
+    # Line 1136: _clear_log_dir — persistent runtime log preserved
+    def test_clear_log_dir_preserves_runtime_log(self, tmp_path: Path) -> None:
+        """_clear_log_dir preserves the_architect.log and architect_runtime.log."""
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        (log_dir / "test.log").write_text("log", encoding="utf-8")
+        (log_dir / "the_architect.log").write_text("runtime log", encoding="utf-8")
+        (log_dir / "architect_runtime.log").write_text("runtime log 2", encoding="utf-8")
+
+        _clear_log_dir(log_dir)
+
+        assert not (log_dir / "test.log").exists()
+        assert (log_dir / "the_architect.log").exists()
+        assert (log_dir / "architect_runtime.log").exists()
+
+    # Line 1328: UPDATE_REQUIRED with no update_msg — uses fallback message
+    @pytest.mark.asyncio
+    async def test_run_planner_update_required_no_update_msg(self, tmp_path: Path) -> None:
+        """UPDATE_REQUIRED with no check_update_available message uses fallback."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+
+        config = ArchitectConfig().resolve(tmp_path)
+        request = PlanningRequest(
+            goal="Test goal",
+            scope=TaskScope.STANDARD,
+            project_dir=tmp_path,
+        )
+
+        provider = Mock()
+        provider.name = "opencode"
+        provider.display_name = "OpenCode"
+        provider.supports_agents.return_value = True
+        provider.ensure_setup.return_value = None
+        provider.check_update_available.return_value = None  # No update message
+
+        async def fake_stream(**kwargs: object) -> StreamResult:  # type: ignore[misc]
+            return StreamResult(
+                exit_code=1,
+                tokens=TokenUsage(),
+                accumulated_text="A new version of opencode is available.",
+            )
+
+        with patch("the_architect.core.planner.stream_provider", side_effect=fake_stream):
+            with pytest.raises(PlanningFailedError, match="[Uu]pdate"):
+                await run_planner(request, config, provider=provider)
+
+    # Lines 1461-1464: INSTRUCTIONS.md read succeeds
+    @pytest.mark.asyncio
+    async def test_run_planner_instructions_md_read_succeeds(self, tmp_path: Path) -> None:
+        """INSTRUCTIONS.md exists and is readable — architect_instructions is used."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+
+        config = ArchitectConfig().resolve(tmp_path)
+        request = PlanningRequest(
+            goal="Test goal",
+            scope=TaskScope.STANDARD,
+            project_dir=tmp_path,
+        )
+
+        provider = Mock()
+        provider.name = "opencode"
+        provider.display_name = "OpenCode"
+        provider.supports_agents.return_value = True
+
+        async def fake_stream(**kwargs: object) -> StreamResult:  # type: ignore[misc]
+            # Create INSTRUCTIONS.md during stream (after archive_previous_run)
+            (tasks_dir / "T01_test.md").write_text("# T01", encoding="utf-8")
+            (tasks_dir / "INSTRUCTIONS.md").write_text(
+                "# Custom Instructions\n\nArchitect wrote this.\n", encoding="utf-8"
+            )
+            return StreamResult(exit_code=0, tokens=TokenUsage(), accumulated_text="")
+
+        with patch("the_architect.core.planner.stream_provider", side_effect=fake_stream):
+            result = await run_planner(request, config, provider=provider)
+
+        assert "T01_test" in result.tasks_created
+
+    # Line 1469: lifecycle_updates > 0, logs warning
+    @pytest.mark.asyncio
+    async def test_run_planner_lifecycle_updates_logs_warning(self, tmp_path: Path) -> None:
+        """lifecycle_updates > 0 triggers a warning log after planning."""
+        from io import StringIO
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+
+        config = ArchitectConfig().resolve(tmp_path)
+        request = PlanningRequest(
+            goal="Test goal",
+            scope=TaskScope.STANDARD,
+            project_dir=tmp_path,
+        )
+
+        provider = Mock()
+        provider.name = "opencode"
+        provider.display_name = "OpenCode"
+        provider.supports_agents.return_value = True
+
+        # Create a task file with lifecycle contradiction to trigger enforcement
+        task_file = tasks_dir / "T01_test.md"
+
+        async def fake_stream(**kwargs: object) -> StreamResult:  # type: ignore[misc]
+            task_file.write_text("# T01\nNo build counter bump is needed.\n", encoding="utf-8")
+            return StreamResult(exit_code=0, tokens=TokenUsage(), accumulated_text="")
+
+        sink = StringIO()
+        handler_id = logger.add(sink, level="WARNING", format="{message}")
+
+        with patch("the_architect.core.planner.stream_provider", side_effect=fake_stream):
+            result = await run_planner(request, config, provider=provider)
+
+        logger.remove(handler_id)
+        assert "T01_test" in result.tasks_created
+        assert "lifecycle-rule contradictions" in sink.getvalue()
+
+    # Lines 274-275: symlink dir resolves to path NOT relative to project root
+    def test_gather_context_symlink_dir_not_relative(self, tmp_path: Path) -> None:
+        """Symlink dir that resolves outside project — dirnames cleared, continues."""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+
+        # Create a real subdirectory (os.walk will yield it as dirpath)
+        subdir = project_dir / "subdir"
+        subdir.mkdir()
+        (subdir / "file.txt").write_text("content", encoding="utf-8")
+
+        original_is_symlink = Path.is_symlink
+        original_resolve = Path.resolve
+
+        def mock_is_symlink(self: Path) -> bool:
+            if "subdir" in str(self):
+                return True  # Pretend subdir is a symlink
+            return original_is_symlink(self)
+
+        def mock_resolve(self: Path) -> Path:
+            if "subdir" in str(self):
+                # Resolves to a path OUTSIDE the project root
+                return Path("/tmp/outside_project")
+            return original_resolve(self)
+
+        with (
+            patch.object(Path, "is_symlink", mock_is_symlink),
+            patch.object(Path, "resolve", mock_resolve),
+        ):
+            context = gather_project_context(project_dir)
+            # Should not crash; the symlink dir should be skipped
+            assert "File tree:" in context
+
+    # Lines 1463-1464: INSTRUCTIONS.md exists but read_text raises OSError
+    @pytest.mark.asyncio
+    async def test_run_planner_instructions_md_read_oserror(self, tmp_path: Path) -> None:
+        """INSTRUCTIONS.md exists but read_text raises OSError — falls back to None."""
+        from io import StringIO
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+
+        config = ArchitectConfig().resolve(tmp_path)
+        request = PlanningRequest(
+            goal="Test goal",
+            scope=TaskScope.STANDARD,
+            project_dir=tmp_path,
+        )
+
+        provider = Mock()
+        provider.name = "opencode"
+        provider.display_name = "OpenCode"
+        provider.supports_agents.return_value = True
+
+        async def fake_stream(**kwargs: object) -> StreamResult:  # type: ignore[misc]
+            (tasks_dir / "T01_test.md").write_text("# T01", encoding="utf-8")
+            # Create INSTRUCTIONS.md that will be readable (exists=True)
+            (tasks_dir / "INSTRUCTIONS.md").write_text("# Instructions", encoding="utf-8")
+            return StreamResult(exit_code=0, tokens=TokenUsage(), accumulated_text="")
+
+        # Patch read_text on the instructions file to raise OSError AFTER exists() succeeds
+        original_read_text = Path.read_text
+
+        def mock_read_text(self: Path, **kw: object) -> str:
+            if self.name == "INSTRUCTIONS.md":
+                raise OSError("permission denied")
+            return original_read_text(self, **kw)
+
+        sink = StringIO()
+        handler_id = logger.add(sink, level="WARNING", format="{message}")
+
+        with (
+            patch("the_architect.core.planner.stream_provider", side_effect=fake_stream),
+            patch.object(Path, "read_text", mock_read_text),
+        ):
+            result = await run_planner(request, config, provider=provider)
+
+        logger.remove(handler_id)
+        # Should succeed despite read failure — architect_instructions falls back to None
+        assert "T01_test" in result.tasks_created

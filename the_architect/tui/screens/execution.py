@@ -523,7 +523,7 @@ class ExecutionScreen(Screen[None]):
                 marker = ">" if status == "running" else " "
                 status_label = status.upper()
                 task_line = (
-                    f"  {marker} [{colour}]{prefix:<4} {status_label:<8}[/{colour}] "
+                    f"  {marker} [{colour}]{prefix:<6} {status_label:<8}[/{colour}] "
                     f"[dim]{title}[/dim]"
                 )
                 lines.append(task_line)

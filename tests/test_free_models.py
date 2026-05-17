@@ -574,6 +574,78 @@ class TestIsModelNotFoundEvent:
         assert is_model_not_found_event("Model not found: something") is False
 
 
+class TestFreeModelFetchLogging:
+    """Tests for the debug logging path in fetch_free_models when >10 models."""
+
+    @pytest.mark.asyncio
+    async def test_fetch_logs_and_more_for_over_ten_models(self) -> None:
+        """fetch_free_models should log a summary for >10 models.
+
+        When more than 10 free models are found, the code logs the first 10
+        individually and then logs '... and N more' for the remainder.
+        This test exercises that logging path (line 187).
+        """
+        # Create 12 free models to trigger the >10 branch
+        models_data = [
+            {
+                "id": f"free-model-{i}",
+                "name": f"Free Model {i}",
+                "context_length": 32000 + i * 1000,
+                "pricing": {"prompt": "0", "completion": "0"},
+            }
+            for i in range(12)
+        ]
+        api_response = {"data": models_data}
+
+        mock_response = AsyncMock()
+        mock_response.json = lambda: api_response
+        mock_response.raise_for_status = lambda: None
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("the_architect.core.free_models.httpx.AsyncClient", return_value=mock_client):
+            rotator = FreeModelRotator()
+            await rotator.fetch_free_models()
+
+        # 12 models found, sorted by context_length descending
+        assert rotator.total_count == 12
+        # The first model should have the highest context_length
+        assert rotator.models[0].id == "openrouter/free-model-11"
+
+
+class TestFreeModelCurrentModelInfoAdvancement:
+    """Tests for current_model_info advancing past multiple exhausted models."""
+
+    def test_current_model_info_advances_past_multiple_exhausted(self) -> None:
+        """current_model_info must advance _current_index past all exhausted models.
+
+        When the first N models are exhausted, calling current_model_info should
+        skip all of them in one pass — exercising the self._current_index += 1
+        increment path on each iteration (line 220).
+        """
+        rotator = FreeModelRotator(
+            models=[
+                FreeModelInfo(id="openrouter/model-a", context_length=32000),
+                FreeModelInfo(id="openrouter/model-b", context_length=16000),
+                FreeModelInfo(id="openrouter/model-c", context_length=8000),
+                FreeModelInfo(id="openrouter/model-d", context_length=4000),
+            ]
+        )
+        # Exhaust the first three models
+        rotator.exhausted.add("openrouter/model-a")
+        rotator.exhausted.add("openrouter/model-b")
+        rotator.exhausted.add("openrouter/model-c")
+
+        info = rotator.current_model_info
+        assert info is not None
+        assert info.id == "openrouter/model-d"
+        # Index should have advanced past all three exhausted models
+        assert rotator._current_index == 3
+
+
 class TestFreeModelModalityFilter:
     """Tests for the modality filter in fetch_free_models."""
 

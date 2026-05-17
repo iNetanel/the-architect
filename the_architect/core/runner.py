@@ -25,11 +25,12 @@ from the_architect.core.progress import (
     task_is_done,
     task_is_resolved,
 )
-from the_architect.core.tasks import Task, TaskPlan, discover_tasks
+from the_architect.core.tasks import Task, TaskPlan, discover_tasks, is_retro_task
 
 _STREAM_LEFT_PAD = "  "
 _PROVIDER_IDLE_TIMEOUT_SECONDS = 900.0
 _PROVIDER_SLEEP_WAKE_GAP_SECONDS = 120.0
+_IDLE_TIMEOUT_RETRY_PAUSE_SECONDS = 180.0  # 3 min cool-down before retry after idle kill
 _PROVIDER_READ_PROBE_SECONDS = 5.0
 _FORCED_TERMINATION_EXIT_CODE = -int(getattr(signal, "SIGKILL", signal.SIGTERM))
 _PROGRESS_FLUSH_DELAY_SECONDS = 2.0
@@ -266,7 +267,7 @@ class OutputAnalysis(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-_PROMISE_PATTERN = re.compile(r"<promise>([TR]\d+)_COMPLETE</promise>")
+_PROMISE_PATTERN = re.compile(r"<promise>(T\d+[A-Z]?(?:R\d+)?)_COMPLETE</promise>")
 
 _ERROR_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"I('m| am) (stuck|blocked|unable to)", re.IGNORECASE),
@@ -700,6 +701,9 @@ _ACTIVE_PROCS_LOCK = threading.Lock()
 _SLEEP_INTERRUPTED_TASKS: set[str] = set()
 _SLEEP_INTERRUPTED_TASKS_LOCK = threading.Lock()
 
+_IDLE_TIMEOUT_TASKS: set[str] = set()
+_IDLE_TIMEOUT_TASKS_LOCK = threading.Lock()
+
 
 def get_sleep_interrupted_tasks() -> frozenset[str]:
     """Return the set of task prefixes interrupted only by sleep/wake gaps.
@@ -712,6 +716,18 @@ def get_sleep_interrupted_tasks() -> frozenset[str]:
         return frozenset(_SLEEP_INTERRUPTED_TASKS)
 
 
+def get_idle_timeout_tasks() -> frozenset[str]:
+    """Return the set of task prefixes that failed only due to provider idle timeouts.
+
+    Thread-safe snapshot.  Used by the Infinite Loop driver to detect
+    runs that failed because the provider subprocess went silent (not because
+    the agent produced wrong output), so it can reset those tasks to Pending
+    and continue instead of exiting.
+    """
+    with _IDLE_TIMEOUT_TASKS_LOCK:
+        return frozenset(_IDLE_TIMEOUT_TASKS)
+
+
 def _mark_sleep_interrupted(task_prefix: str) -> None:
     """Record that ``task_prefix`` was killed only by a sleep/wake gap."""
     with _SLEEP_INTERRUPTED_TASKS_LOCK:
@@ -722,6 +738,18 @@ def _clear_sleep_interrupted(task_prefix: str) -> None:
     """Clear the sleep-interrupted flag for ``task_prefix`` (e.g. on success)."""
     with _SLEEP_INTERRUPTED_TASKS_LOCK:
         _SLEEP_INTERRUPTED_TASKS.discard(task_prefix)
+
+
+def _mark_idle_timeout(task_prefix: str) -> None:
+    """Record that ``task_prefix`` was killed by a provider idle timeout."""
+    with _IDLE_TIMEOUT_TASKS_LOCK:
+        _IDLE_TIMEOUT_TASKS.add(task_prefix)
+
+
+def _clear_idle_timeout(task_prefix: str) -> None:
+    """Clear the idle-timeout flag for ``task_prefix`` (e.g. on success)."""
+    with _IDLE_TIMEOUT_TASKS_LOCK:
+        _IDLE_TIMEOUT_TASKS.discard(task_prefix)
 
 
 def _register_process(proc: asyncio.subprocess.Process) -> None:
@@ -821,6 +849,26 @@ def _provider_sleep_wake_gap_seconds() -> float:
     return max(0.0, value)
 
 
+def _idle_timeout_retry_pause_seconds() -> float:
+    """Return the cool-down pause applied before retrying after a provider idle timeout.
+
+    Defaults to :data:`_IDLE_TIMEOUT_RETRY_PAUSE_SECONDS` (180 s).
+    Override with the ``ARCHITECT_IDLE_TIMEOUT_RETRY_PAUSE_SECONDS`` env var.
+    """
+    raw = os.environ.get("ARCHITECT_IDLE_TIMEOUT_RETRY_PAUSE_SECONDS", "").strip()
+    if not raw:
+        return _IDLE_TIMEOUT_RETRY_PAUSE_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid ARCHITECT_IDLE_TIMEOUT_RETRY_PAUSE_SECONDS value "
+            f"{raw!r}; using default {int(_IDLE_TIMEOUT_RETRY_PAUSE_SECONDS)}s"
+        )
+        return _IDLE_TIMEOUT_RETRY_PAUSE_SECONDS
+    return max(0.0, value)
+
+
 def _provider_read_probe_seconds(
     idle_timeout_seconds: float, sleep_wake_gap_seconds: float
 ) -> float:
@@ -909,23 +957,11 @@ async def stream_provider(
             "Consider enabling instruction_via_stdin on the provider."
         )
 
-    # Build environment: inherit parent env + provider-specific overrides.
-    # Strip OpenCode worker-session vars so a child opencode process does not
-    # inherit the parent session's process role and try to attach to the wrong
-    # server instance (OpenCode ≥ 1.15 uses OPENCODE_PROCESS_ROLE=worker +
-    # OPENCODE_RUN_ID to bind a worker to an existing server; child processes
-    # spawned by The Architect must always start as independent instances).
-    # OPENCODE_CONFIG / OPENCODE_CONFIG_DIR are NOT stripped — execution runs
-    # need the user's config to find their model; planning runs override
-    # OPENCODE_CONFIG via get_env_overrides() which is applied below.
-    _OPENCODE_WORKER_VARS = {
-        "OPENCODE_PROCESS_ROLE",
-        "OPENCODE_RUN_ID",
-        "OPENCODE_PID",
-        "OPENCODE",
+    # Build environment: inherit parent env + provider-specific overrides
+    env = {
+        **os.environ.copy(),
+        "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS": "900000",
     }
-    env = {k: v for k, v in os.environ.items() if k not in _OPENCODE_WORKER_VARS}
-    env["OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS"] = "900000"
 
     if "PATH" not in env or not env.get("PATH"):
         logger.warning(
@@ -2066,15 +2102,35 @@ def build_instruction(
     if config.integrity:
         lines.append("=== FILE INTEGRITY PROTOCOL ===")
         lines.append(
-            "Before modifying any existing file, create a same-directory snapshot named "
-            "architect_eval_<original_filename>. This is mandatory for existing files and "
-            "is how you protect against truncated mid-write corruption."
+            "Before modifying any existing file, create a snapshot named "
+            "architect_eval_<original_filename> in THE EXACT SAME DIRECTORY as the original. "
+            "This is mandatory for existing files and is how you protect against truncated "
+            "mid-write corruption."
+        )
+        lines.append("")
+        lines.append(
+            "PLACEMENT RULE — the snapshot MUST live in the same directory as the file it "
+            "backs up. Examples:\n"
+            "  the_architect/core/runner.py      → the_architect/core/architect_eval_runner.py\n"
+            "  tests/test_planner.py             → tests/architect_eval_test_planner.py\n"
+            "  version.py                        → architect_eval_version.py\n"
+            "NEVER place a snapshot at the project root unless the original file is also at the "
+            "project root. A snapshot in the wrong directory is worse than no snapshot."
+        )
+        lines.append("")
+        lines.append(
+            "EXEMPT FILES — do NOT create architect_eval snapshots for these; "
+            "they are managed by The Architect itself and must never be snapshotted:\n"
+            "  - tasks/PROGRESS.md\n"
+            "  - ARCHITECT.md\n"
+            "  - Any file inside the tasks/ directory (task files, INSTRUCTIONS.md, GOAL.md, etc.)"
         )
         lines.append("")
         lines.append("Follow this protocol exactly:")
         lines.append(
-            "1. Before editing an existing file, copy it to architect_eval_<filename> in the "
-            "same directory. Do not create snapshots for brand-new files."
+            "1. Before editing an existing file (other than exempt files above), copy it to "
+            "architect_eval_<filename> in the same directory as the original. "
+            "Do not create snapshots for brand-new files."
         )
         lines.append(
             "2. Make your change to the original file normally. Never create snapshots for "
@@ -2711,9 +2767,14 @@ async def run_task(
     # non-cooldown) attempts.  ``sleep_wake_retries`` tracks bonus retries
     # granted when the machine woke from sleep mid-attempt; these are
     # capped separately so a pathological suspend loop can't spin forever.
+    # ``idle_timeout_retries`` does the same for provider idle timeouts —
+    # the subprocess going silent is an environmental event, not a real
+    # agent failure, so it should not burn a retry slot either.
     _MAX_SLEEP_WAKE_BONUS_RETRIES = 10
+    _MAX_IDLE_TIMEOUT_BONUS_RETRIES = 5
     attempt = 0
     sleep_wake_retries = 0
+    idle_timeout_retries = 0
     while attempt < config.max_retries:
         attempt += 1
 
@@ -2963,9 +3024,10 @@ async def run_task(
                 except Exception:
                     pass
 
-            # This task succeeded — clear any sleep-interrupted flag so the
-            # Infinite Loop driver doesn't mistakenly reset it to Pending.
+            # This task succeeded — clear any sleep-interrupted and idle-timeout
+            # flags so the Infinite Loop driver doesn't mistakenly reset it to Pending.
             _clear_sleep_interrupted(task.prefix)
+            _clear_idle_timeout(task.prefix)
 
             # Update the result with accumulated tokens and total attempts.
             # outcome_summary must be forwarded so downstream reassessment
@@ -3041,6 +3103,60 @@ async def run_task(
                     pass
             continue
 
+        # ── Provider idle timeout: don't consume a retry slot ─────────────
+        # When the provider subprocess went silent for too long and was
+        # killed by the idle-timeout watchdog, this is an environmental /
+        # provider-side event — not a real agent failure.  Burning a retry
+        # slot for it would exhaust ``max_retries`` without the agent ever
+        # getting a fair chance.  Mirror the sleep/wake gap logic: grant up
+        # to ``_MAX_IDLE_TIMEOUT_BONUS_RETRIES`` bonus retries, each
+        # preceded by a longer cool-down pause so we don't hammer a
+        # potentially rate-limited or overloaded provider.
+        if (
+            not success
+            and result.interruption_reason == "idle_timeout"
+            and idle_timeout_retries < _MAX_IDLE_TIMEOUT_BONUS_RETRIES
+        ):
+            idle_timeout_retries += 1
+            _mark_idle_timeout(task.prefix)
+            idle_pause = _idle_timeout_retry_pause_seconds()
+            logger.warning(
+                f"Task {task.prefix} attempt {attempt} killed by provider idle timeout; "
+                f"pausing {int(idle_pause)}s then granting bonus retry "
+                f"(idle_timeout_retries={idle_timeout_retries}/{_MAX_IDLE_TIMEOUT_BONUS_RETRIES})"
+            )
+            if on_circuit_event:
+                try:
+                    on_circuit_event(
+                        "idle_timeout_detected",
+                        {
+                            "task_id": task.prefix,
+                            "idle_retries": str(idle_timeout_retries),
+                        },
+                    )
+                except Exception:
+                    pass
+            _set_renderer_footer(
+                renderer,
+                _footer_text(
+                    f"{task.prefix} {task.title or task.name}",
+                    f"provider idle | waiting {int(idle_pause)}s "
+                    f"(idle-retry {idle_timeout_retries})",
+                ),
+            )
+            try:
+                await asyncio.sleep(idle_pause)
+            except asyncio.CancelledError:
+                logger.warning(f"Idle-timeout retry pause cancelled for task {task.prefix}")
+                break
+            attempt -= 1  # don't consume the retry slot
+            if on_circuit_event:
+                try:
+                    on_circuit_event("idle_timeout_resumed", {"task_id": task.prefix})
+                except Exception:
+                    pass
+            continue
+
         # ── Free mode: rotate model on rate limit or model-not-found ──────
         if (
             result.rate_limit_hit
@@ -3111,6 +3227,10 @@ async def run_task(
         # Belt-and-suspenders: ensure the Infinite Loop driver can detect
         # this even if sleep_wake_retries was somehow exhausted.
         _mark_sleep_interrupted(task.prefix)
+    if _last_reason == "idle_timeout":
+        # Belt-and-suspenders: ensure the Infinite Loop driver can detect
+        # this even if idle_timeout_retries was somehow exhausted.
+        _mark_idle_timeout(task.prefix)
     return TaskResult(
         prefix=task.prefix,
         title=task.title or task.name,
@@ -3468,6 +3588,14 @@ async def _run_all_inner(
     # Hourly token budget — disabled when token_budget_per_hour == 0
     token_budget = HourlyTokenBudget(config.token_budget_per_hour)
 
+    # Build a lookup from task number → retro-task prefixes so that when a
+    # plain or split T-task fails we can decide whether to continue (a retro
+    # task is waiting) or stop.  Retro tasks are identified by is_retro_task().
+    _r_tasks_by_number: dict[int, list[str]] = {}
+    for _t in plan.tasks:
+        if is_retro_task(_t.prefix):
+            _r_tasks_by_number.setdefault(_t.number, []).append(_t.prefix)
+
     for task in plan.tasks:
         # A task is skipped when its PROGRESS.md row is in any terminal
         # state (Done, Failed, or Blocked) — not just Done.  This closes
@@ -3536,12 +3664,28 @@ async def _run_all_inner(
                     on_task_failed(task_result)
                 except Exception:
                     pass  # Callback failure must not stop the run
-            logger.error(
-                f"Task {task.prefix} failed after {config.max_retries} attempts — "
-                "stopping (subsequent tasks depend on this one).  PROGRESS.md has "
-                "been updated to Failed so the next run will not silently re-pick it."
-            )
-            return False
+
+            # ── Check for a pending retro task before stopping ───────────
+            # If a retro task (TXXRn) for this same task number exists and
+            # is not yet resolved, continue the loop so it can attempt
+            # recovery rather than stopping the entire run.
+            pending_r_tasks = [
+                r_prefix
+                for r_prefix in _r_tasks_by_number.get(task.number, [])
+                if not task_is_resolved(config.progress_file, r_prefix)
+            ]
+            if pending_r_tasks:
+                logger.warning(
+                    f"Task {task.prefix} failed after {config.max_retries} attempts — "
+                    f"pending retro task(s) {pending_r_tasks} found; continuing run for recovery."
+                )
+            else:
+                logger.error(
+                    f"Task {task.prefix} failed after {config.max_retries} attempts — "
+                    "stopping (subsequent tasks depend on this one).  PROGRESS.md has "
+                    "been updated to Failed so the next run will not silently re-pick it."
+                )
+                return False
 
         # ── Hourly token budget check ────────────────────────────────────
         # Add this task's tokens to the rolling hour window.  If the budget

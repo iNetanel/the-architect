@@ -85,47 +85,60 @@ class TaskPlan(BaseModel):
 def task_prefix(name: str) -> str:
     """Extract the task prefix from a task name.
 
+    Supports the full prefix grammar:
+    - ``T01``      — plain planned task
+    - ``T01A``     — split variant A of T01 (reassessment)
+    - ``T01B``     — split variant B of T01 (reassessment)
+    - ``T01R1``    — first retrospective fix for T01
+    - ``T01R2``    — second retrospective fix for T01
+
     Args:
-        name: Task name like "T09_foo", "R01_fix", or "T01"
+        name: Task name like ``"T09_foo"``, ``"T01A_bar"``, ``"T04R1_fix"``.
 
     Returns:
-        The prefix part like "T09", "R01", or "T01"
+        The prefix part, e.g. ``"T09"``, ``"T01A"``, ``"T04R1"``.
 
     Examples:
         >>> task_prefix("T09_foo")
         'T09'
-        >>> task_prefix("R01_fix_bugs")
-        'R01'
+        >>> task_prefix("T01A_split")
+        'T01A'
+        >>> task_prefix("T04R1_fix_bugs")
+        'T04R1'
         >>> task_prefix("T01")
         'T01'
     """
-    match = re.match(r"^(R\d+)", name)
-    if match:
-        return match.group(1)
-    match = re.match(r"^(T\d+)", name)
+    # Full grammar: T<digits>[R<digits>|<uppercase-letter>]
+    # Retro suffix and split letter are mutually exclusive.
+    match = re.match(r"^(T\d+(?:R\d+|[A-Z])?)(?:_|$)", name)
     if match:
         return match.group(1)
     return name
 
 
 def task_number(name: str) -> int:
-    """Extract the task number from a task name.
+    """Extract the base task number from a task name.
+
+    Always returns the leading integer regardless of split letter or
+    retro suffix, so ``T01``, ``T01A``, and ``T01R1`` all return ``1``.
 
     Args:
-        name: Task name like "T09_foo", "R01_fix", or "T01"
+        name: Task name like ``"T09_foo"``, ``"T01A_bar"``, ``"T04R1_fix"``.
 
     Returns:
-        The task number as an integer
+        The task number as an integer.
 
     Examples:
         >>> task_number("T09_foo")
         9
-        >>> task_number("R01_fix_bugs")
+        >>> task_number("T01A_split")
         1
+        >>> task_number("T04R1_fix_bugs")
+        4
         >>> task_number("T01")
         1
     """
-    match = re.search(r"[TR](\d+)", name)
+    match = re.search(r"T(\d+)", name)
     if match:
         return int(match.group(1))
     return 0
@@ -156,17 +169,63 @@ def _extract_title(file_path: Path, fallback_name: str) -> str:
     if first_line.startswith("#"):
         # Strip leading "# " or "# " with multiple hashes
         heading = first_line.lstrip("#").strip()
-        # Strip optional prefix like "T01 — ", "R01 - ", "T01 "
-        heading = re.sub(r"^[TR]\d+\s*[—–\-]\s*", "", heading)
-        heading = re.sub(r"^[TR]\d+\s+", "", heading)
+        # Strip optional prefix like "T01 — ", "T01A - ", "T04R1 "
+        heading = re.sub(r"^T\d+(?:R\d+|[A-Z])?\s*[—–\-]\s*", "", heading)
+        heading = re.sub(r"^T\d+(?:R\d+|[A-Z])?\s+", "", heading)
         if heading:
             return heading
 
     # Fallback: derive from filename stem
     # "T01_changelog_and_version" → "Changelog and version"
-    # "R01_fix_missing_tests" → "Fix missing tests"
-    stripped = re.sub(r"^[TR]\d+_", "", fallback_name)
+    # "T01A_split_part_a"        → "Split part a"
+    # "T04R1_fix_missing_tests"  → "Fix missing tests"
+    stripped = re.sub(r"^T\d+(?:R\d+|[A-Z])?_", "", fallback_name)
     return stripped.replace("_", " ").capitalize()
+
+
+def task_sort_key(t: Task) -> tuple[int, int, int]:
+    """Return a stable sort key for a task, ordering by base number then variant.
+
+    Sort order within the same base number:
+      - plain ``T01``              → slot 0
+      - split ``T01A``, ``T01B``   → slot 1, sub-sorted by letter ordinal
+      - retro ``T01R1``, ``T01R2`` → slot 2, sub-sorted by retro number
+
+    This is the canonical ordering used by :func:`discover_tasks` and must be
+    used anywhere :class:`Task` lists are re-sorted — notably when new tasks
+    are merged into a live plan after reassessment.
+
+    Args:
+        t: The task to produce a sort key for.
+
+    Returns:
+        A ``(base_number, variant_slot, sub_sort)`` tuple.
+
+    Examples:
+        >>> from pathlib import Path
+        >>> t = Task(name='T01_foo', prefix='T01', number=1, path=Path('/tmp/T01_foo.md'))
+        >>> task_sort_key(t)
+        (1, 0, 0)
+        >>> ta = Task(name='T01A_bar', prefix='T01A', number=1, path=Path('/tmp/T01A_bar.md'))
+        >>> task_sort_key(ta)
+        (1, 1, 65)
+        >>> tr = Task(name='T01R1_fix', prefix='T01R1', number=1, path=Path('/tmp/T01R1_fix.md'))
+        >>> task_sort_key(tr)
+        (1, 2, 1)
+    """
+    # Strip the leading "T<digits>" from the prefix to get the variant suffix.
+    # Regex is safer than slicing by length because zero-padding means "T01"
+    # has 3 chars for number=1 while "T10" also has 3 chars for number=10.
+    m = re.match(r"^T\d+(.*)$", t.prefix, re.IGNORECASE)
+    suffix = m.group(1) if m else ""
+    if not suffix:
+        return (t.number, 0, 0)
+    if suffix.upper().startswith("R"):
+        retro_part = suffix[1:]
+        retro_num = int(retro_part) if retro_part.isdigit() else 1
+        return (t.number, 2, retro_num)
+    # Split letter
+    return (t.number, 1, ord(suffix.upper()[0]))
 
 
 def discover_tasks(tasks_dir: Path | str) -> list[Task]:
@@ -193,8 +252,11 @@ def discover_tasks(tasks_dir: Path | str) -> list[Task]:
         return []
 
     tasks: list[Task] = []
+    # Full grammar: T<digits>[R<digits>|<uppercase-letter>]_<name>.md
+    # The retro suffix (R<n>) and the split letter are mutually exclusive.
+    # Examples: T01_foo.md, T01A_split.md, T04R1_fix.md
     # re.IGNORECASE so T01_example.MD is discovered on case-preserving filesystems
-    pattern = re.compile(r"^[TR](\d+)_.+\.md$", re.IGNORECASE)
+    pattern = re.compile(r"^(T(\d+)(R\d+|[A-Z])?)_.+\.md$", re.IGNORECASE)
 
     for entry in tasks_dir.iterdir():
         if entry.name.startswith("architect_eval_"):
@@ -202,14 +264,13 @@ def discover_tasks(tasks_dir: Path | str) -> list[Task]:
         if entry.is_file() and entry.suffix.lower() == ".md":
             match = pattern.match(entry.name)
             if match:
-                number = int(match.group(1))
-                prefix_letter = entry.name[0]
-                prefix = f"{prefix_letter}{number:02d}"
+                prefix_raw = match.group(1).upper()
+                number = int(match.group(2))
                 title = _extract_title(entry.resolve(), entry.stem)
                 tasks.append(
                     Task(
                         name=entry.stem,
-                        prefix=prefix,
+                        prefix=prefix_raw,
                         number=number,
                         path=entry.resolve(),
                         status=TaskStatus.PENDING,
@@ -217,12 +278,89 @@ def discover_tasks(tasks_dir: Path | str) -> list[Task]:
                     )
                 )
 
-    # Sort by number first, then by prefix letter so that T-tasks always come
-    # before R-tasks with the same number ("R" < "T" alphabetically, so without
-    # an explicit map R-tasks would execute first — wrong).
-    _PREFIX_ORDER = {"T": 0, "R": 1}
-    tasks.sort(key=lambda t: (t.number, _PREFIX_ORDER.get(t.prefix[0], 2)))
+    tasks.sort(key=task_sort_key)
     return tasks
+
+
+# ---------------------------------------------------------------------------
+# Prefix classification helpers
+# ---------------------------------------------------------------------------
+
+#: Compiled pattern for the full task prefix grammar.
+_PREFIX_PATTERN = re.compile(r"^(T\d+)(R\d+|[A-Z])?$")
+
+
+def is_retro_task(prefix: str) -> bool:
+    """Return True when *prefix* is a retrospective fix task (e.g. ``T04R1``).
+
+    Retrospective tasks are identified by the ``R<digits>`` suffix after the
+    optional split letter.
+
+    Args:
+        prefix: A task prefix such as ``"T04R1"``, ``"T01"``, or ``"T01A"``.
+
+    Returns:
+        ``True`` for ``T04R1``, ``T04R2``, etc.; ``False`` for ``T01``, ``T01A``.
+
+    Examples:
+        >>> is_retro_task("T04R1")
+        True
+        >>> is_retro_task("T01A")
+        False
+        >>> is_retro_task("T01")
+        False
+    """
+    m = _PREFIX_PATTERN.match(prefix)
+    return bool(m and m.group(2) and m.group(2).startswith("R"))
+
+
+def is_split_task(prefix: str) -> bool:
+    """Return True when *prefix* is a split variant (e.g. ``T01A``, ``T01B``).
+
+    Split tasks are created by the reassessment agent when a planned task is
+    decomposed into sub-tasks.  They carry an uppercase letter suffix directly
+    after the task number and before any retro suffix.
+
+    Args:
+        prefix: A task prefix such as ``"T01A"``, ``"T04R1"``, or ``"T01"``.
+
+    Returns:
+        ``True`` for ``T01A``, ``T01B``, etc.; ``False`` for ``T01``, ``T04R1``.
+
+    Examples:
+        >>> is_split_task("T01A")
+        True
+        >>> is_split_task("T04R1")
+        False
+        >>> is_split_task("T01")
+        False
+    """
+    m = _PREFIX_PATTERN.match(prefix)
+    return bool(m and m.group(2) and not m.group(2).startswith("R"))
+
+
+def task_base_prefix(prefix: str) -> str:
+    """Return the plain ``TXX`` base of any prefix variant.
+
+    Strips split letters and retro suffixes so that ``T04R1``, ``T04A``,
+    and ``T04`` all return ``"T04"``.
+
+    Args:
+        prefix: A full task prefix such as ``"T04R1"`` or ``"T01A"``.
+
+    Returns:
+        The plain base prefix, e.g. ``"T04"``.
+
+    Examples:
+        >>> task_base_prefix("T04R1")
+        'T04'
+        >>> task_base_prefix("T01A")
+        'T01'
+        >>> task_base_prefix("T01")
+        'T01'
+    """
+    m = re.match(r"^(T\d+)", prefix)
+    return m.group(1) if m else prefix
 
 
 def duplicate_task_prefixes(tasks: Sequence[Task]) -> dict[str, list[str]]:

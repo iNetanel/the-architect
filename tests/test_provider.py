@@ -175,20 +175,11 @@ class TestOpenCodeProviderCommand:
         idx = cmd.index("--model")
         assert cmd[idx + 1] == "claude-sonnet-4"
 
-    def test_build_command_with_agent_broken_version(self) -> None:
-        """--agent is NOT emitted on OpenCode >= 1.15 where the flag is broken."""
+    def test_build_command_with_agent(self) -> None:
+        """--agent IS passed when agent_override is set."""
         provider = OpenCodeProvider()
         with patch("shutil.which", return_value="/usr/local/bin/opencode"):
-            with patch.object(provider, "_agent_flag_broken", return_value=True):
-                cmd = provider.build_command("task", agent_override="build")
-        assert "--agent" not in cmd
-
-    def test_build_command_with_agent_working_version(self) -> None:
-        """--agent IS emitted on OpenCode < 1.15 where the flag works correctly."""
-        provider = OpenCodeProvider()
-        with patch("shutil.which", return_value="/usr/local/bin/opencode"):
-            with patch.object(provider, "_agent_flag_broken", return_value=False):
-                cmd = provider.build_command("task", agent_override="build")
+            cmd = provider.build_command("task", agent_override="build")
         assert "--agent" in cmd
         assert cmd[cmd.index("--agent") + 1] == "build"
 
@@ -1029,6 +1020,31 @@ class TestDetectAvailableProviders:
 # ---------------------------------------------------------------------------
 # ArchitectProvider protocol compliance
 # ---------------------------------------------------------------------------
+
+
+class TestInstructionViaStdin:
+    """Tests for ArchitectProvider.instruction_via_stdin default behaviour."""
+
+    def test_opencode_instruction_via_stdin_false(self) -> None:
+        """OpenCode delivers instruction via CLI args, not stdin."""
+        assert OpenCodeProvider().instruction_via_stdin is False
+
+    def test_claude_code_instruction_via_stdin_true(self) -> None:
+        """Claude Code delivers instruction via stdin (--print with no positional arg)."""
+        assert ClaudeCodeProvider().instruction_via_stdin is True
+
+    def test_protocol_default_instruction_via_stdin_false(self) -> None:
+        """The Protocol's default instruction_via_stdin must return False.
+
+        Any provider that does not override this property inherits the
+        Protocol's default of False — meaning the instruction is passed
+        as a CLI argument rather than via stdin.
+        """
+        # Create a raw Protocol instance to test the default implementation
+        # directly.  All concrete providers override this property, so the
+        # Protocol's own return False (line 222) is only reachable this way.
+        obj = object.__new__(ArchitectProvider)
+        assert obj.instruction_via_stdin is False
 
 
 class TestProviderProtocolCompliance:

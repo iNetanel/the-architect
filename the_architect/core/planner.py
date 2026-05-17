@@ -444,16 +444,18 @@ def gather_project_context(
 
 
 def _next_task_number(tasks_dir: Path) -> int:
-    """Return the next available task number based on existing task files.
+    """Return the next available base task number based on existing task files.
 
-    Scans tasks_dir for files matching TXX_*.md and returns max(existing) + 1,
-    or 1 if no tasks exist yet.
+    Scans tasks_dir for files matching ``T<digits>*.md`` (plain, split, and
+    retro variants) and returns ``max(existing base number) + 1``, or ``1``
+    if no tasks exist yet.  Only the leading integer matters — ``T01A`` and
+    ``T04R1`` both contribute their base number (1 and 4).
 
     Args:
         tasks_dir: Directory containing task files.
 
     Returns:
-        The next task number to use (1-based).
+        The next base task number to use (1-based).
     """
     import re
 
@@ -632,6 +634,13 @@ def build_planning_instruction(request: PlanningRequest, context: str) -> str:
             "archive entries.",
             "Create exactly one task file per TXX prefix. Before finishing, verify no TXX "
             "prefix appears on more than one task file.",
+            "",
+            "TASK SPLITTING — if the goal or reassessment requires splitting a task into parts:",
+            "  Use letter suffixes: T01A, T01B, T01C… (never T01.1 or T01_part2)",
+            "  Split tasks execute in letter order: T01A → T01B → T01C → T02",
+            "  Split tasks count as one logical task — do NOT increment the base number.",
+            "  Example: T03 split into T03A_backend.md and T03B_frontend.md",
+            "",
             "Do NOT read, write, or modify AGENTS.md or CLAUDE.md — "
             "those files belong to the user.",
         ]
@@ -722,7 +731,8 @@ def _rescue_stray_tasks(project_dir: Path, tasks_dir: Path) -> int:
     import re
 
     skip_dirs = {".git", "node_modules", ".venv", "__pycache__", ".architect", ".pytest_cache"}
-    task_pattern = re.compile(r"^[TR]\d+_.+\.md$", re.IGNORECASE)
+    # Match plain tasks (T01), split tasks (T01A), retro tasks (T04R1)
+    task_pattern = re.compile(r"^T\d+[A-Z]?(?:R\d+)?_.+\.md$", re.IGNORECASE)
     rescued = 0
 
     tasks_dir.mkdir(parents=True, exist_ok=True)
@@ -1060,7 +1070,7 @@ def archive_previous_run(
     """
     import re as _re
 
-    task_pattern = _re.compile(r"^[TRt][0-9]", _re.IGNORECASE)
+    task_pattern = _re.compile(r"^T[0-9]", _re.IGNORECASE)
 
     if not tasks_dir.exists():
         return None

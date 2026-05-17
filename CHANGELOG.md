@@ -11,7 +11,68 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ## [Unreleased]
 
-*(nothing yet)*
+### Added
+
+- **New task prefix scheme: `T01A`/`T01B` splits and `T04R1`/`T04R2` retro tasks** — Tasks can
+  now be split into lettered sub-tasks (`T01A`, `T01B`) by reassessment, and retrospective
+  fix-ups are now tied to their failed task (`T04R1` instead of global `R01`). Sort order is
+  `T01 → T01A → T01B → T01R1 → T01R2 → T02`. The planner, reassessment agent, reviewer,
+  execution agent, all runtime regex parsers, PROGRESS.md patterns, TUI progress display, and
+  all prompt files are fully aligned to the new scheme. (build 10472)
+
+### Fixed
+
+- **Split/retro tasks now appear in TUI Progress tab immediately** — When reassessment
+  created split sub-tasks (`T04A`, `T04B`) or retro fix-tasks (`T04R1`) during execution,
+  they were invisible in the Progress tab because `plan.tasks` was never refreshed after
+  the initial discovery. After each reassessment, `_sync_plan_from_disk()` now re-discovers
+  tasks on disk, merges any new ones into `plan.tasks` in correct sort order
+  (`T04A → T04B → T04R1` before `T05`), and fires a TUI hook so the Progress tab updates
+  immediately. Also extracted `task_sort_key()` as a public function in
+  `the_architect.core.tasks` for stable cross-platform reuse. (build 10477)
+
+- **TUI mouse/tab interaction restored after sleep/wake** — The SIGCONT handler added for
+  sleep/wake recovery called `refresh(layout=True)` which injected Textual's mouse-tracking
+  enable escape codes (`\x1b[?1003h` etc.) directly into the terminal input stream at an
+  unpredictable moment. This caused raw mouse cursor position bytes to appear as literal
+  text in the goal TextArea and broke tab/mouse clicks until the terminal was reset.
+  Fixed by replacing `refresh(layout=True)` with a single `os.kill(os.getpid(), SIGWINCH)`
+  call — Textual's own `on_terminal_resize` handler then fires, measures the real terminal
+  size, and repaints through the normal event loop path with no escape code injection.
+  No-op on Windows where `SIGWINCH` is unavailable. (build 10478)
+
+- **Provider idle-timeout kills no longer burn retry slots** — When the provider subprocess
+  went silent and was killed by the idle-timeout watchdog, each kill was counting as a real
+  failure and exhausting `max_retries`. Idle-timeout attempts now get up to 5 bonus retries
+  (mirroring the existing sleep/wake gap logic), each preceded by a 3-minute cool-down pause
+  configurable via `ARCHITECT_IDLE_TIMEOUT_RETRY_PAUSE_SECONDS`. (build 10471)
+
+- **Infinite Loop continues after idle-timeout task failures** — The Infinite Loop driver now
+  resets tasks that failed only due to provider idle timeouts from `Failed` → `Pending` and
+  continues the loop, instead of exiting. This mirrors the existing sleep/wake gap reset path.
+  (build 10471)
+
+- **run_all no longer hard-stops when a pending R-task exists** — When a T-task exhausted its
+  retries, `run_all` would stop immediately, skipping any retrospective R-task that was already
+  queued for recovery. Now, if a pending R-task with the same task number exists, execution
+  continues to it instead of stopping. Only when there is no R-task (or it is already terminal)
+  does the run stop. (build 10471)
+
+### Fixed
+
+- **Integrity protocol placement rule strengthened** — The file integrity prompt now includes
+  an explicit placement rule with concrete examples making it clear that `architect_eval_*`
+  snapshots must be created in the exact same directory as the original file, never at the
+  project root unless the original is also at root. `tasks/`, `PROGRESS.md`, and `ARCHITECT.md`
+  are now explicitly exempt from snapshotting and excluded from the corruption-signal scan in
+  retrospective/reassessment. (build 10469)
+
+- **OpenCode `--agent` flag workaround reverted** — The `--agent` CLI flag regression
+  introduced in OpenCode 1.15.0 was fixed upstream in 1.15.2. The Architect now passes
+  `--agent` unconditionally again; the `_agent_flag_broken()` version gate, `default_agent`
+  in the planning config template, and the worker-var env stripping introduced in build 10459
+  have all been removed. Workaround entry [OC-1] moved to Resolved in `COMPATIBILITY.md`.
+  (build 10467)
 
 ---
 

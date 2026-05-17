@@ -86,6 +86,8 @@ from the_architect.core.tasks import (
     TaskStatus,
     discover_tasks,
     duplicate_task_prefixes,
+    is_retro_task,
+    task_sort_key,
 )
 from the_architect.core.token_ledger import (
     TokenLedger,
@@ -396,6 +398,58 @@ def _infinite_loop_reset_sleep_interrupted_tasks(project: Path, config: Architec
     return reset_count
 
 
+def _infinite_loop_reset_idle_timeout_tasks(project: Path, config: ArchitectConfig) -> int:
+    """Reset tasks that failed only due to provider idle timeouts back to Pending.
+
+    When the provider subprocess went silent and was killed by the idle-timeout
+    watchdog, the attempt is an environmental event — not a real agent failure.
+    The Infinite Loop driver calls this to rewrite those tasks' PROGRESS.md rows
+    from ``Failed`` → ``Pending`` so the next iteration picks them up normally.
+
+    Returns the number of tasks reset.  Returns 0 when there are no
+    idle-timeout tasks or PROGRESS.md can't be read.
+    """
+    from the_architect.core.runner import get_idle_timeout_tasks
+
+    idle_tasks = get_idle_timeout_tasks()
+    if not idle_tasks:
+        return 0
+
+    progress_file = config.progress_file
+    if not progress_file.exists():
+        return 0
+
+    try:
+        content = progress_file.read_text(encoding="utf-8")
+    except OSError:
+        return 0
+
+    import re
+
+    reset_count = 0
+    new_lines: list[str] = []
+    for line in content.splitlines(keepends=True):
+        m = re.match(r"^(\|\s*)(T\w+|R\w+)(\s*\|[^|]*\|)\s*Failed\s*(\|.*)$", line)
+        if m and m.group(2).strip() in idle_tasks:
+            line = f"{m.group(1)}{m.group(2)}{m.group(3)} Pending {m.group(4)}\n"
+            reset_count += 1
+            logger.info(
+                f"Infinite Loop: reset idle-timeout task {m.group(2).strip()} from Failed → Pending"
+            )
+        new_lines.append(line)
+
+    if reset_count > 0:
+        try:
+            progress_file.write_text("".join(new_lines), encoding="utf-8")
+        except OSError as exc:
+            logger.warning(
+                f"Infinite Loop: failed to write PROGRESS.md idle-timeout reset: {exc!r}"
+            )
+            return 0
+
+    return reset_count
+
+
 def _infinite_loop_success_after_clean_failure(
     *,
     success: bool,
@@ -502,13 +556,13 @@ def _validate_cycle(tasks_dir: Path, progress_file: Path) -> CycleValidationResu
     for task in discovered:
         status = task_status(progress_file, task.prefix)
         display = f"{task.prefix} {task.title or task.name} ({status or 'Missing'})"
-        if task.prefix.startswith("R") and status == "Done":
+        if is_retro_task(task.prefix) and status == "Done":
             done_recovery = True
         if status in (None, "Pending", "Running"):
             pending.append(display)
-        elif task.prefix.startswith("R") and status in ("Failed", "Blocked"):
+        elif is_retro_task(task.prefix) and status in ("Failed", "Blocked"):
             failed_recovery.append(display)
-        elif task.prefix.startswith("T") and status in ("Failed", "Blocked"):
+        elif not is_retro_task(task.prefix) and status in ("Failed", "Blocked"):
             failed_original.append(display)
 
     if pending:
@@ -633,10 +687,10 @@ _FORBIDDEN_RETROSPECTIVE_TASK_PATTERNS: tuple[str, ...] = (
 
 
 def _unsafe_retrospective_tasks(tasks: list[Task]) -> list[str]:
-    """Return R-task files that contain forbidden destructive recovery instructions."""
+    """Return retro task files that contain forbidden destructive recovery instructions."""
     unsafe: list[str] = []
     for task in tasks:
-        if not task.prefix.startswith("R"):
+        if not is_retro_task(task.prefix):
             continue
         try:
             content = task.path.read_text(encoding="utf-8")
@@ -2901,6 +2955,56 @@ async def _run_tasks_raw(
     # instead of spinning up a fresh WaitApp in a second thread.
     tui_overlay_app: dict[str, object | None] = {"app": None}
 
+    # Hook for refreshing the TUI Progress tab after reassessment creates
+    # new tasks on disk (split tasks T04A/T04B or retro tasks T04R1).
+    # Set to a callable once the TUI session is active; None otherwise.
+    # Using a dict so run_reassessment_if_needed (defined before the TUI
+    # session opens) can see the hook that is set later inside the session.
+    _tui_plan_refresh_hook: dict[str, Any] = {"fn": None}
+
+    def _sync_plan_from_disk() -> None:
+        """Re-discover tasks on disk and add any new ones to plan.tasks.
+
+        Called after reassessment so that split tasks (T04A, T04B) or retro
+        tasks (T04R1) written to disk during reassessment become visible in
+        the TUI Progress tab and in the execution loop's task list.
+
+        Also fires the TUI refresh hook when the TUI is active so the new
+        rows appear immediately without waiting for the next task start.
+        """
+        _tasks_dir = project / config.tasks_dir.name
+        try:
+            fresh_tasks = _filter_and_set_status(discover_tasks(_tasks_dir), config.progress_file)
+        except Exception as exc:
+            logger.warning(f"Post-reassessment task re-discovery failed (non-fatal): {exc!r}")
+            return
+
+        known_prefixes = {t.prefix for t in plan.tasks}
+        added: list[str] = []
+        for ft in fresh_tasks:
+            if ft.prefix not in known_prefixes:
+                plan.tasks.append(ft)
+                known_prefixes.add(ft.prefix)
+                added.append(ft.prefix)
+
+        if added:
+            # Re-sort so new tasks (T04A before T05, T04R1 after T04) land in
+            # the correct execution order.  The for-loop in _run_all_inner
+            # iterates plan.tasks by index and will pick up the newly-added
+            # tasks because Python list iteration sees appended items.
+            plan.tasks.sort(key=task_sort_key)
+            logger.info(
+                f"Post-reassessment: added {len(added)} new task(s) to plan: " + ", ".join(added)
+            )
+
+        # Fire TUI refresh (no-op when TUI is not active).
+        hook = _tui_plan_refresh_hook.get("fn")
+        if hook is not None:
+            try:
+                hook(added)
+            except Exception as exc:
+                logger.debug(f"TUI plan-refresh hook raised (non-fatal): {exc!r}")
+
     def run_reassessment_if_needed(result: TaskResult) -> None:
         """Run targeted reassessment when a task may affect remaining work."""
         force_reassessment = config.force_reassessment
@@ -2969,6 +3073,11 @@ async def _run_tasks_raw(
                 f"[yellow]↺ Reassessed after {result.prefix}[/yellow]  "
                 f"[dim]{reassessment.summary}[/dim]"
             )
+
+        # Always re-sync plan.tasks from disk so any new task files written
+        # by reassessment (split tasks T04A/T04B, retro tasks T04R1) are
+        # visible to the execution loop and to the TUI Progress tab.
+        _sync_plan_from_disk()
 
     def on_task_start(task: Task) -> None:
         remaining = sum(1 for t in plan.tasks if _task_needs_work(t))
@@ -3171,6 +3280,23 @@ async def _run_tasks_raw(
 
         def _tui_publish_progress() -> None:
             _tui_session.update_progress_tasks(_tui_progress_rows())
+
+        def _tui_on_plan_refresh(added_prefixes: list[str]) -> None:
+            """Called by _sync_plan_from_disk when new tasks appear on disk.
+
+            Seeds _tui_task_statuses for each new prefix and republishes the
+            full task list so the Progress tab shows split/retro tasks the
+            moment they are created.
+            """
+            for prefix in added_prefixes:
+                if prefix not in _tui_task_statuses:
+                    _tui_task_statuses[prefix] = "pending"
+            if added_prefixes:
+                _tui_publish_progress()
+
+        # Register the hook so _sync_plan_from_disk (defined before the TUI
+        # session) can call it once the TUI is ready.
+        _tui_plan_refresh_hook["fn"] = _tui_on_plan_refresh
 
         def _enabled(value: bool) -> str:
             return "enabled" if value else "disabled"
@@ -4416,10 +4542,17 @@ def main(
                             _sleep_reset = _infinite_loop_reset_sleep_interrupted_tasks(
                                 resolved_project, config
                             )
-                            if _sleep_reset > 0:
+                            # Same logic for provider idle timeouts — the provider
+                            # subprocess going silent is also an environmental event,
+                            # not a real agent failure.
+                            _idle_reset = _infinite_loop_reset_idle_timeout_tasks(
+                                resolved_project, config
+                            )
+                            _env_reset = _sleep_reset + _idle_reset
+                            if _env_reset > 0:
                                 logger.warning(
-                                    f"Infinite Loop driver: {_sleep_reset} task(s) failed "
-                                    "only due to sleep/wake gap(s); reset to Pending, "
+                                    f"Infinite Loop driver: {_sleep_reset} sleep + "
+                                    f"{_idle_reset} idle-timeout task(s) reset to Pending, "
                                     "continuing loop"
                                 )
                             else:

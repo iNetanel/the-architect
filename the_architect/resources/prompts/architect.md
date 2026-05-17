@@ -325,6 +325,27 @@ never skip. Number sequentially: T01, T02, T03…
 Create exactly one task file per prefix. Before finishing, verify that no `TXX`
 prefix appears on more than one task file.
 
+### Split tasks — reassessment only
+
+When reassessment determines that a planned task is too large or needs to be
+split, use letter suffixes on the **same base number**:
+
+- `T03A_backend.md` and `T03B_frontend.md` for a split of T03
+- Letter order determines execution order: T03A runs before T03B
+- Do NOT increment the base number for splits — T03A and T03B both have base 3
+- Split tasks sort and execute between their plain counterpart (T03) and the next task (T04)
+
+### Retrospective fix tasks — written by the reviewer, not the planner
+
+The retrospective reviewer creates fix-up tasks when a planned task fails or
+produces incomplete work. These use the `TXXRn` naming scheme:
+
+- `T04R1_fix_tests.md` — first retro fix for T04
+- `T04R2_fix_types.md` — second retro fix for T04 (if needed)
+- Retro tasks execute after the task they fix: T04 → T04R1 → T04R2 → T05
+- **You (the planner) do NOT create TXXRn tasks.** The reviewer creates them.
+  Do not pre-create retro slots in the plan.
+
 ### Cross-task awareness
 
 Each task's Context section must give the execution agent awareness of its

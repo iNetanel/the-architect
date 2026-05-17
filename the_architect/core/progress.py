@@ -383,9 +383,9 @@ def read_progress(progress_file: Path | str) -> ProgressState:
     if completed_match:
         tasks_completed = int(completed_match.group(1))
 
-    next_match = re.search(r"\*\*Next task to run:\*\*\s*([TR]\d+)", content)
+    next_match = re.search(r"\*\*Next task to run:\*\*\s*(T\d+(?:R\d+|[A-Z])?)", content)
     if not next_match:
-        next_match = re.search(r"\*\*Next session to run:\*\*\s*([TR]\d+)", content)
+        next_match = re.search(r"\*\*Next session to run:\*\*\s*(T\d+(?:R\d+|[A-Z])?)", content)
     if next_match:
         next_task = next_match.group(1)
 
@@ -393,7 +393,7 @@ def read_progress(progress_file: Path | str) -> ProgressState:
     # match only needs to be a prefix of the cell contents so annotated
     # terminals such as "Failed (3 attempts)" are recognised correctly.
     _row_pattern = re.compile(
-        r"^\|\s*([TR]\d+)\s+\|[^|]*\|\s*(Done|Failed|Blocked)\b[^|]*\|",
+        r"^\|\s*(T\d+(?:R\d+|[A-Z])?)\s+\|[^|]*\|\s*(Done|Failed|Blocked)\b[^|]*\|",
         re.MULTILINE,
     )
     for match in _row_pattern.finditer(content):
@@ -588,9 +588,9 @@ def get_next_task(progress_file: Path | str) -> str:
     except (OSError, UnicodeDecodeError):
         return "T00"
 
-    match = re.search(r"\*\*Next task to run:\*\*\s*([TR]\d+)", content)
+    match = re.search(r"\*\*Next task to run:\*\*\s*(T\d+(?:R\d+|[A-Z])?)", content)
     if not match:
-        match = re.search(r"\*\*Next session to run:\*\*\s*([TR]\d+)", content)
+        match = re.search(r"\*\*Next session to run:\*\*\s*(T\d+(?:R\d+|[A-Z])?)", content)
     if match:
         return match.group(1)
 

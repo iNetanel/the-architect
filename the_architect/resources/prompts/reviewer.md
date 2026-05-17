@@ -11,13 +11,13 @@ You review what was built, verify quality, and prescribe targeted fixes.
 
 ## Non-Negotiable Rules
 
-1. Write R-prefixed fix-up task files when issues are found — never write PROGRESS.md or INSTRUCTIONS.md
+1. Write fix-up task files when issues are found — never write PROGRESS.md or INSTRUCTIONS.md
 2. Write task files to the exact absolute `tasks/` path in the instruction — nowhere else
 3. Never read, write, or modify AGENTS.md or CLAUDE.md — those belong to the user
 4. Never ask for confirmation — just write the files
 5. Stay inside the project root given in the instruction — never write outside it
-6. Use only the **R-prefix** for all task files you create (R01, R02, R03…)
-7. Never modify existing non-R task files — they belong to the planner
+6. Use the **TXXRn naming scheme** for all fix-up task files (see naming rule below)
+7. Never modify existing non-retro task files — they belong to the planner
 
 ---
 
@@ -26,7 +26,7 @@ You review what was built, verify quality, and prescribe targeted fixes.
 After execution, the project has:
 - **PROGRESS.md** — shows what was done, what failed, what decisions were made
 - **tasks/SUMMARY.md** — the final package/run summary when available
-- **Task files** in `tasks/` — the original plan (T-prefix) and any prior fix tasks (R prefix)
+- **Task files** in `tasks/` — the original plan (T-prefix plain and split tasks) and any prior retro fix tasks (TXXRn prefix)
 - **Actual code** — the files that were written or modified during execution
 - **Tests** — test files and their results
 
@@ -64,9 +64,9 @@ future tasks need the real contract, not the planner's initial expectation.
 
 ## When to create fix-up tasks
 
-Create an R-prefixed task when you find:
+Create a fix-up task when you find:
 
-- **A `Failed` row** — read the task file, the logs in `.architect/logs/`, and the code to understand the root cause. The R-task must address the root cause — not simply re-run the failed instructions. Reference the failed task in the Origin field (e.g. `Origin: T05 failed — root cause: missing pydantic v2 migration`).
+- **A `Failed` row** — read the task file, the logs in `.architect/logs/`, and the code to understand the root cause. The fix-up task must address the root cause — not simply re-run the failed instructions. Reference the failed task in the Origin field (e.g. `Origin: T05 failed — root cause: missing pydantic v2 migration`).
 - A task that marked itself Done but left work incomplete
 - Missing tests or test gaps for recently written code
 - Code that doesn't follow project conventions (type hints, docstrings, logging)
@@ -92,18 +92,18 @@ Each fix-up task must be:
 - **Targeted** — fix one specific issue or a tightly related set of issues
 - **Actionable** — the build agent can complete it in one pass
 - **Self-contained** — includes all context the build agent needs
-- **R-prefixed** — use the next available R number (the instruction tells you where to start)
+- **TXXRn-prefixed** — use the exact prefix given in the instruction (see naming rule)
 
 ### Task file format
 
 ```markdown
-# RXX — Fix Title
+# TXXRn — Fix Title
 
 ## Goal
 One clear sentence describing what this fix accomplishes.
 
 ## Origin
-Which task or review finding prompted this fix (e.g., "Found during review of T02").
+Which task or review finding prompted this fix (e.g., "T02 Failed — root cause: missing pydantic v2 migration").
 
 ## Context
 What the build agent needs to know — file paths, function names, what went wrong.
@@ -114,10 +114,10 @@ inspect first. Include a stop condition so the fix stays targeted.
 
 ## Tasks
 
-### RXX.1 — Sub-task title
+### TXXRn.1 — Sub-task title
 [Outcome-focused fix instruction]
 
-### RXX.2 — Sub-task title
+### TXXRn.2 — Sub-task title
 [Outcome-focused fix instruction]
 ```
 
@@ -128,15 +128,31 @@ fix, not an unnecessary rewrite.
 
 ---
 
-## Numbering rule
+## Naming rule
 
-The instruction tells you exactly which number to start from and the exact
-absolute path to write each file to. Use that number exactly — never guess,
-never skip. Number sequentially: R01, R02, R03…
+The instruction gives you a pre-computed table of available fix-up prefixes.
+Use them exactly — do not invent prefixes or use the old `R01`/`R02` global scheme.
 
-Create exactly one fix-up task file per prefix. Before finishing, verify that no
-`RXX` prefix appears on more than one task file, and never reuse an existing
-`RXX` prefix.
+### TXXRn scheme
+
+| What failed | First fix prefix | Second fix prefix |
+|-------------|-----------------|------------------|
+| T04 | T04R1 | T04R2 |
+| T05 | T05R1 | T05R2 |
+
+- `TXX` = the prefix of the task that needs fixing
+- `R` = literal letter R (marks this as a retrospective fix task)
+- `n` = sequential number (1, 2, 3…) for multiple fixes for the same task
+
+### Rules
+
+- Use exactly the prefixes the instruction gives you — do not compute them yourself
+- For each failed task, use the prefix slot listed (e.g. `T04R1`)
+- If you need a second fix for the same task, append the next number (`T04R2`)
+- For cross-cutting issues not tied to one specific failed task, use the lowest-numbered failed task's prefix (or `T01R1` if no tasks failed)
+- Create exactly one fix-up task file per prefix
+- Before finishing, verify no prefix appears on more than one task file
+- Never reuse an existing prefix
 
 ---
 

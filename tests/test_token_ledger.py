@@ -266,3 +266,97 @@ class TestAppendRun:
         assert loaded.records[0].goal_summary == "persisted goal"
         assert loaded.records[0].total_tokens == 1_500
         assert loaded.records[0].model_breakdown[0].cost_estimate > 0
+
+
+class TestEstimateCostPartialMatch:
+    """Tests for partial model matching in estimate_cost and estimate_cost_detailed."""
+
+    def test_estimate_cost_partial_match_suffix(self) -> None:
+        """estimate_cost should find pricing via partial suffix match.
+
+        A model like 'some-provider/gpt-4o' is not in MODEL_PRICING directly,
+        but ends with 'gpt-4o' which is — the partial match loop should find it.
+        """
+        cost = estimate_cost(1_000_000, "some-provider/gpt-4o")
+        assert cost > 0
+
+    def test_estimate_cost_detailed_partial_match_suffix(self) -> None:
+        """estimate_cost_detailed should find pricing via partial suffix match."""
+        cost = estimate_cost_detailed(
+            input_tokens=500_000,
+            output_tokens=500_000,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+            model="some-provider/gpt-4o",
+        )
+        assert cost > 0
+
+    def test_estimate_cost_detailed_unknown_model_returns_zero(self) -> None:
+        """estimate_cost_detailed should return 0.0 for a truly unknown model.
+
+        A model that does not match any key (neither exact nor partial) should
+        fall through to the debug-log + return 0.0 path.
+        """
+        cost = estimate_cost_detailed(
+            input_tokens=100,
+            output_tokens=50,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+            model="totally-unknown-model-xyz-12345",
+        )
+        assert cost == 0.0
+
+
+class TestLoadLedgerOSError:
+    """Tests for OSError handling in load_ledger."""
+
+    def test_load_ledger_oserror_returns_empty(self, tmp_path: Path) -> None:
+        """load_ledger should return an empty ledger when reading raises OSError."""
+        from unittest.mock import patch
+
+        # Ensure the ledger file exists so FileNotFoundError is not triggered first
+        ledger_path = tmp_path / ".architect" / "token_ledger.json"
+        ledger_path.parent.mkdir()
+        ledger_path.write_text("[]", encoding="utf-8")
+
+        with patch.object(Path, "read_text", side_effect=OSError("permission denied")):
+            ledger = load_ledger(tmp_path)
+
+        assert isinstance(ledger, TokenLedger)
+        assert ledger.records == []
+
+
+class TestAppendRunSameModelAggregation:
+    """Tests for the same-model token aggregation path in append_run."""
+
+    def test_append_run_aggregates_same_model(self) -> None:
+        """append_run should sum tokens for results sharing the same model.
+
+        Two TaskResult objects with the same model should be aggregated into
+        a single ModelTokenRecord with summed token counts — exercising the
+        else-branch of the model_tokens dict update loop.
+        """
+        ledger = TokenLedger()
+        results = [
+            TaskResult(
+                prefix="T01",
+                status="done",
+                tokens=TokenUsage(input_tokens=100, output_tokens=200),
+                model="gpt-4o",
+            ),
+            TaskResult(
+                prefix="T02",
+                status="done",
+                tokens=TokenUsage(input_tokens=50, output_tokens=75),
+                model="gpt-4o",
+            ),
+        ]
+
+        append_run(ledger, results, "goal", 10.0)
+
+        record = ledger.records[0]
+        assert record.task_count == 2
+        assert record.total_tokens == 425
+        assert len(record.model_breakdown) == 1
+        assert record.model_breakdown[0].input_tokens == 150
+        assert record.model_breakdown[0].output_tokens == 275

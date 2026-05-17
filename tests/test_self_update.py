@@ -213,3 +213,26 @@ class TestIsNewerFallback:
             assert _is_newer("1.2.4alpha", "1.2.3") is False
             assert _is_newer("1.2.3alpha", "1.2.3") is False
             assert _is_newer("1.2.3", "1.2.3alpha") is True
+
+    def test_to_tuple_fallback_on_int_error(self) -> None:
+        """_to_tuple should return (0,) when int() conversion fails entirely.
+
+        The internal _to_tuple helper catches exceptions from the generator
+        expression and returns (0,) as a last resort.  This path is hard to
+        trigger with normal version strings because isdigit() filters
+        non-numeric segments, so int() only runs on valid segments.  We
+        mock builtins.int to force the except branch.
+        """
+        from the_architect.core.self_update import _is_newer
+
+        # Import _is_newer first (before patching builtins) to avoid
+        # breaking the module import machinery.
+        with patch.object(
+            __import__("packaging.version", fromlist=["Version"]),
+            "Version",
+            side_effect=ImportError("packaging not available"),
+        ):
+            with patch("builtins.int", side_effect=ValueError("mocked")):
+                # Both _to_tuple calls hit the except branch → (0,)
+                # (0,) > (0,) = False
+                assert _is_newer("1.0", "2.0") is False

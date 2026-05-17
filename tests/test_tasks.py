@@ -12,8 +12,12 @@ from the_architect.core.tasks import (
     _extract_title,
     discover_tasks,
     duplicate_task_prefixes,
+    is_retro_task,
+    is_split_task,
+    task_base_prefix,
     task_number,
     task_prefix,
+    task_sort_key,
 )
 
 
@@ -36,15 +40,28 @@ class TestTaskPrefix:
         """Should handle double digit numbers."""
         assert task_prefix("T99_foo") == "T99"
 
-    def test_task_prefix_r_prefix(self) -> None:
-        """Should extract an R-prefix (retrospective task)."""
-        assert task_prefix("R01_fix_bugs") == "R01"
-        assert task_prefix("R10") == "R10"
+    def test_task_prefix_r_prefix_old_style(self) -> None:
+        """Old-style R01 names are no longer generated but plain names still parse."""
+        # R-prefixed names are no longer generated but if encountered the prefix
+        # function returns the name unchanged (no T-prefix match).
+        assert task_prefix("not_a_task_name") == "not_a_task_name"
 
     def test_task_prefix_t_prefix(self) -> None:
         """Should extract a T-prefix (regular task)."""
         assert task_prefix("T09_implement_feature") == "T09"
         assert task_prefix("T01") == "T01"
+
+    def test_task_prefix_split_letter(self) -> None:
+        """Should include split letter in prefix."""
+        assert task_prefix("T01A_backend") == "T01A"
+        assert task_prefix("T01B_frontend") == "T01B"
+        assert task_prefix("T03C_extra") == "T03C"
+
+    def test_task_prefix_retro(self) -> None:
+        """Should include full retro suffix in prefix."""
+        assert task_prefix("T04R1_fix_tests") == "T04R1"
+        assert task_prefix("T04R2_fix_types") == "T04R2"
+        assert task_prefix("T01R1") == "T01R1"
 
     def test_task_prefix_no_match_returns_input(self) -> None:
         """An unrecognised name must be returned verbatim."""
@@ -69,6 +86,16 @@ class TestTaskNumber:
     def test_task_number_double_digit(self) -> None:
         """Should handle double digit numbers."""
         assert task_number("T42_baz") == 42
+
+    def test_task_number_split_returns_base(self) -> None:
+        """Split tasks T01A and T01B both return base number 1."""
+        assert task_number("T01A_backend") == 1
+        assert task_number("T01B_frontend") == 1
+
+    def test_task_number_retro_returns_base(self) -> None:
+        """Retro tasks T04R1 and T04R2 both return base number 4."""
+        assert task_number("T04R1_fix") == 4
+        assert task_number("T04R2_fix") == 4
 
     def test_task_number_not_found(self) -> None:
         """Should return 0 when no task number found."""
@@ -361,38 +388,37 @@ class TestDiscoverTasksWithTitle:
 
 
 class TestDiscoverTasksSortOrder:
-    """Tests for deterministic sort order across mixed T/R/S prefixes (T03 fix)."""
+    """Tests for deterministic sort order across plain/split/retro task prefixes."""
 
-    def test_sort_r_task_comes_after_t_task_same_number(self) -> None:
-        """T-tasks must execute before R-tasks that share the same number."""
+    def test_sort_retro_task_comes_after_plain_same_number(self) -> None:
+        """Plain tasks must execute before retro tasks that share the same base number."""
         with tempfile.TemporaryDirectory() as tmpdir:
             tasks_dir = Path(tmpdir)
             (tasks_dir / "T01_task.md").touch()
-            (tasks_dir / "R01_retro.md").touch()
+            (tasks_dir / "T01R1_retro.md").touch()
 
             tasks = discover_tasks(tasks_dir)
 
             assert len(tasks) == 2
             prefixes = [t.prefix for t in tasks]
-            # T01 must come before R01
-            assert prefixes.index("T01") < prefixes.index("R01")
+            assert prefixes.index("T01") < prefixes.index("T01R1")
 
     def test_sort_different_numbers_primary_by_number(self) -> None:
-        """Tasks with different numbers should be sorted by number first."""
+        """Tasks with different base numbers should be sorted by number first."""
         with tempfile.TemporaryDirectory() as tmpdir:
             tasks_dir = Path(tmpdir)
             (tasks_dir / "T02_second.md").touch()
-            (tasks_dir / "R01_first.md").touch()
+            (tasks_dir / "T01R1_first_retro.md").touch()
 
             tasks = discover_tasks(tasks_dir)
 
             assert tasks[0].number == 1
-            assert tasks[0].prefix == "R01"
+            assert tasks[0].prefix == "T01R1"
             assert tasks[1].number == 2
             assert tasks[1].prefix == "T02"
 
     def test_sort_stable_across_multiple_t_tasks(self) -> None:
-        """Multiple T-prefix tasks should be sorted numerically."""
+        """Multiple plain T-prefix tasks should be sorted numerically."""
         with tempfile.TemporaryDirectory() as tmpdir:
             tasks_dir = Path(tmpdir)
             (tasks_dir / "T03_third.md").touch()
@@ -475,3 +501,170 @@ class TestDiscoverTasksCaseInsensitive:
         assert len(tasks) == 2
         prefixes = {t.prefix for t in tasks}
         assert prefixes == {"T01", "T02"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# New prefix scheme — split tasks, retro tasks, sort order
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestNewPrefixScheme:
+    """Tests for split (T01A) and retro (T04R1) task discovery and sorting."""
+
+    def test_discover_split_tasks(self, tmp_path: Path) -> None:
+        """T01A and T01B are discovered with correct prefix and number."""
+        (tmp_path / "T01A_backend.md").write_text("# T01A", encoding="utf-8")
+        (tmp_path / "T01B_frontend.md").write_text("# T01B", encoding="utf-8")
+        tasks = discover_tasks(tmp_path)
+        assert len(tasks) == 2
+        assert tasks[0].prefix == "T01A"
+        assert tasks[0].number == 1
+        assert tasks[1].prefix == "T01B"
+        assert tasks[1].number == 1
+
+    def test_discover_retro_tasks(self, tmp_path: Path) -> None:
+        """T04R1 and T04R2 are discovered with correct prefix and number."""
+        (tmp_path / "T04R1_fix_tests.md").write_text("# T04R1", encoding="utf-8")
+        (tmp_path / "T04R2_fix_types.md").write_text("# T04R2", encoding="utf-8")
+        tasks = discover_tasks(tmp_path)
+        assert len(tasks) == 2
+        assert tasks[0].prefix == "T04R1"
+        assert tasks[0].number == 4
+        assert tasks[1].prefix == "T04R2"
+        assert tasks[1].number == 4
+
+    def test_sort_order_plain_split_retro(self, tmp_path: Path) -> None:
+        """Sort order must be: T01 → T01A → T01B → T01R1 → T01R2 → T02."""
+        (tmp_path / "T02_next.md").write_text("# T02", encoding="utf-8")
+        (tmp_path / "T01R1_fix.md").write_text("# T01R1", encoding="utf-8")
+        (tmp_path / "T01B_part_b.md").write_text("# T01B", encoding="utf-8")
+        (tmp_path / "T01_plain.md").write_text("# T01", encoding="utf-8")
+        (tmp_path / "T01A_part_a.md").write_text("# T01A", encoding="utf-8")
+        (tmp_path / "T01R2_fix2.md").write_text("# T01R2", encoding="utf-8")
+
+        tasks = discover_tasks(tmp_path)
+        prefixes = [t.prefix for t in tasks]
+        assert prefixes == ["T01", "T01A", "T01B", "T01R1", "T01R2", "T02"]
+
+    def test_plain_task_before_split_same_number(self, tmp_path: Path) -> None:
+        """T03 must execute before T03A."""
+        (tmp_path / "T03A_part.md").write_text("# T03A", encoding="utf-8")
+        (tmp_path / "T03_whole.md").write_text("# T03", encoding="utf-8")
+        tasks = discover_tasks(tmp_path)
+        assert tasks[0].prefix == "T03"
+        assert tasks[1].prefix == "T03A"
+
+    def test_retro_task_after_split_same_number(self, tmp_path: Path) -> None:
+        """T03A and T03B must execute before T03R1."""
+        (tmp_path / "T03R1_fix.md").write_text("# T03R1", encoding="utf-8")
+        (tmp_path / "T03A_part.md").write_text("# T03A", encoding="utf-8")
+        (tmp_path / "T03B_part.md").write_text("# T03B", encoding="utf-8")
+        tasks = discover_tasks(tmp_path)
+        prefixes = [t.prefix for t in tasks]
+        assert prefixes == ["T03A", "T03B", "T03R1"]
+
+
+class TestPrefixClassifiers:
+    """Tests for is_retro_task, is_split_task, task_base_prefix."""
+
+    def test_is_retro_task_true(self) -> None:
+        assert is_retro_task("T04R1") is True
+        assert is_retro_task("T04R2") is True
+        assert is_retro_task("T01R1") is True
+
+    def test_is_retro_task_false_plain(self) -> None:
+        assert is_retro_task("T01") is False
+        assert is_retro_task("T04") is False
+
+    def test_is_retro_task_false_split(self) -> None:
+        assert is_retro_task("T01A") is False
+        assert is_retro_task("T04B") is False
+
+    def test_is_split_task_true(self) -> None:
+        assert is_split_task("T01A") is True
+        assert is_split_task("T01B") is True
+        assert is_split_task("T03C") is True
+
+    def test_is_split_task_false_plain(self) -> None:
+        assert is_split_task("T01") is False
+
+    def test_is_split_task_false_retro(self) -> None:
+        assert is_split_task("T04R1") is False
+
+    def test_task_base_prefix(self) -> None:
+        assert task_base_prefix("T01") == "T01"
+        assert task_base_prefix("T01A") == "T01"
+        assert task_base_prefix("T04R1") == "T04"
+        assert task_base_prefix("T04R2") == "T04"
+
+
+def _make_task(prefix: str, number: int) -> Task:
+    """Build a minimal Task for sort-key tests."""
+    return Task(
+        name=f"{prefix}_test",
+        prefix=prefix,
+        number=number,
+        path=Path(f"/tmp/{prefix}_test.md"),
+        title="test",
+    )
+
+
+class TestTaskSortKey:
+    """Tests for task_sort_key — ensures correct cross-platform ordering."""
+
+    def test_plain_task_slot_zero(self) -> None:
+        assert task_sort_key(_make_task("T01", 1)) == (1, 0, 0)
+        assert task_sort_key(_make_task("T10", 10)) == (10, 0, 0)
+
+    def test_split_task_slot_one_ordered_by_letter(self) -> None:
+        key_a = task_sort_key(_make_task("T04A", 4))
+        key_b = task_sort_key(_make_task("T04B", 4))
+        assert key_a == (4, 1, ord("A"))
+        assert key_b == (4, 1, ord("B"))
+        assert key_a < key_b
+
+    def test_retro_task_slot_two_ordered_by_number(self) -> None:
+        key_r1 = task_sort_key(_make_task("T04R1", 4))
+        key_r2 = task_sort_key(_make_task("T04R2", 4))
+        assert key_r1 == (4, 2, 1)
+        assert key_r2 == (4, 2, 2)
+        assert key_r1 < key_r2
+
+    def test_ordering_plain_before_split_before_retro(self) -> None:
+        plain = _make_task("T04", 4)
+        split_a = _make_task("T04A", 4)
+        split_b = _make_task("T04B", 4)
+        retro = _make_task("T04R1", 4)
+        tasks = [retro, split_b, plain, split_a]
+        tasks.sort(key=task_sort_key)
+        assert [t.prefix for t in tasks] == ["T04", "T04A", "T04B", "T04R1"]
+
+    def test_different_base_numbers_ordered_numerically(self) -> None:
+        tasks = [
+            _make_task("T05", 5),
+            _make_task("T01A", 1),
+            _make_task("T03R1", 3),
+            _make_task("T02", 2),
+        ]
+        tasks.sort(key=task_sort_key)
+        assert [t.prefix for t in tasks] == ["T01A", "T02", "T03R1", "T05"]
+
+    def test_sort_key_matches_discover_tasks_ordering(self, tmp_path: Path) -> None:
+        """task_sort_key must produce the same order as discover_tasks."""
+        files = [
+            "T04R1_fix.md",
+            "T04B_part_b.md",
+            "T04A_part_a.md",
+            "T04_original.md",
+            "T05_next.md",
+            "T01_first.md",
+        ]
+        for f in files:
+            (tmp_path / f).write_text(f"# {f}\n", encoding="utf-8")
+
+        discovered = discover_tasks(tmp_path)
+        manually_sorted = sorted(
+            [_make_task(p, int(p[1:3])) for p in ["T01", "T04", "T04A", "T04B", "T04R1", "T05"]],
+            key=task_sort_key,
+        )
+        assert [t.prefix for t in discovered] == [t.prefix for t in manually_sorted]
