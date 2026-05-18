@@ -685,6 +685,64 @@ Some other text but no task prefixes.
         result = _filter_and_set_status([task], progress_file)
         assert result[0].status == TaskStatus.PENDING
 
+    def test_filter_and_set_status_preserves_depends_on(self, tmp_path: Path) -> None:
+        """Should preserve depends_on when reconstructing Done/Failed tasks."""
+        from the_architect.cli import _filter_and_set_status
+
+        progress_file = tmp_path / "PROGRESS.md"
+        progress_file.write_text(
+            """# The Architect — Progress Tracker
+
+## Overall Status
+
+**Tasks completed:** 1
+**Next task to run:** T02
+
+---
+
+## Task Log
+
+| Task | Title | Status | Completed |
+|------|-------|--------|-----------|
+| T01 | Task One | Done | |
+| T02 | Task Two | Pending | |
+
+---
+
+## Current State
+
+## Last Task Summary
+
+---
+
+""",
+            encoding="utf-8",
+        )
+
+        task1 = Task(
+            name="T01",
+            prefix="T01",
+            number=1,
+            path=tmp_path / "T01.md",
+            depends_on=["T03", "T04R1"],
+        )
+        task2 = Task(
+            name="T02",
+            prefix="T02",
+            number=2,
+            path=tmp_path / "T02.md",
+            depends_on=["T01"],
+        )
+
+        result = _filter_and_set_status([task1, task2], progress_file)
+
+        # T01 is Done — reconstructed Task must preserve depends_on
+        assert result[0].status == TaskStatus.DONE
+        assert result[0].depends_on == ["T03", "T04R1"]
+        # T02 is Pending — original task object returned unchanged
+        assert result[1].status == TaskStatus.PENDING
+        assert result[1].depends_on == ["T01"]
+
 
 class TestSetupLoguru:
     """Tests for _setup_loguru logging configuration."""
@@ -1531,13 +1589,13 @@ class TestMonitorCommandMore:
             result = runner.invoke(main, ["monitor", "-p", str(tmp_path)])
         assert result.exit_code == 1
 
-    def test_monitor_no_tui_flag_removed(self, tmp_path: Path) -> None:
-        """The --tui flag has been removed; monitor always uses TUI."""
-        with patch("the_architect.tui.screens.run_monitor_screen"):
-            runner = CliRunner()
-            result = runner.invoke(main, ["monitor", "--help"])
-        # --tui option should NOT appear in help
-        assert "--tui" not in result.output
+    def test_monitor_tui_and_json_flags_present(self, tmp_path: Path) -> None:
+        """The --tui and --json flags are available on monitor command."""
+        runner = CliRunner()
+        result = runner.invoke(main, ["monitor", "--help"])
+        # --tui and --json options should appear in help
+        assert "--tui" in result.output
+        assert "--json" in result.output
 
 
 class TestConfigCommandMore:

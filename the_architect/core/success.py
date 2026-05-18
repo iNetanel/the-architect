@@ -82,6 +82,18 @@ def _fmt_tokens(count: int) -> str:
     return str(count)
 
 
+def _fmt_cost(dollars: float) -> str:
+    """Format a USD cost value for display.
+
+    Args:
+        dollars: Cost amount in USD.
+
+    Returns:
+        Formatted string like ``"$0.00"`` or ``"$12.34"``.
+    """
+    return f"${dollars:.2f}"
+
+
 def _fmt_model(model: str) -> str:
     """Format model name for display — shorten long provider prefixes.
 
@@ -445,3 +457,53 @@ def print_success_summary(
         console.print(f"[dim]Summary written to {success_md_path}[/dim]")
 
     console.print()
+
+
+# ---------------------------------------------------------------------------
+# Notification hook — fires after run completion
+# ---------------------------------------------------------------------------
+
+
+def notify_run_completion(
+    notify_on_complete: bool,
+    notify_on_fail: bool,
+    results: list[TaskResult],
+    total_duration: float,
+) -> None:
+    """Send desktop notification and terminal bell after run completion.
+
+    Determines whether the run succeeded or failed, then fires the
+    appropriate notification if the corresponding config flag is True.
+    Both desktop notification and terminal bell are triggered together.
+
+    Errors from the notification layer are suppressed — a missing desktop
+    notification tool or unsupported terminal will not affect the run.
+
+    Args:
+        notify_on_complete: Whether to notify on successful completion.
+        notify_on_fail: Whether to notify on failed runs.
+        results: Per-task results from the run.
+        total_duration: Total wall-clock duration in seconds.
+    """
+    from the_architect.core.notifications import ring_terminal_bell, send_desktop_notification
+
+    done_count = sum(1 for r in results if r.status == "done")
+    failed_count = sum(1 for r in results if r.status == "failed")
+    total_count = len(results)
+    duration_str = _fmt_duration(total_duration)
+
+    if failed_count == 0:
+        # All tasks completed successfully
+        if not notify_on_complete:
+            return
+        title = "The Architect — Run Complete"
+        body = f"{done_count}/{total_count} tasks done in {duration_str}"
+    else:
+        # Some tasks failed
+        if not notify_on_fail:
+            return
+        title = "The Architect — Run Failed"
+        body = f"{done_count}/{total_count} done, {failed_count} failed. Duration: {duration_str}"
+
+    send_desktop_notification(title, body)
+    ring_terminal_bell()

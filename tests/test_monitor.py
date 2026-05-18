@@ -396,6 +396,96 @@ class TestMonitorCommand:
             result = cli_runner.invoke(main, ["monitor", "-p", str(tmp_path)])
         assert result.exit_code == 1
 
+    def test_monitor_json_valid_state(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        """architect monitor --json outputs valid JSON with current state."""
+        # Write a monitor state file
+        state = {
+            "project_name": "test-project",
+            "status": "RUNNING",
+            "current_task_id": "T02",
+            "current_task_title": "Build API",
+            "current_attempt": 1,
+            "total_tasks": 3,
+            "tasks_completed": 1,
+            "tasks": [
+                {"id": "T01", "title": "Setup", "status": "done"},
+                {"id": "T02", "title": "Build API", "status": "running"},
+                {"id": "T03", "title": "Test", "status": "pending"},
+            ],
+            "circuit_breaker": {"state": "CLOSED"},
+            "tokens": {"session_total": 5000},
+        }
+        write_monitor_state(tmp_path, state)
+
+        result = cli_runner.invoke(main, ["monitor", "-p", str(tmp_path), "--json"])
+        assert result.exit_code == 0
+        output = json.loads(result.output)
+        assert output["status"] == "RUNNING"
+        assert output["current_task_id"] == "T02"
+        assert output["current_task_title"] == "Build API"
+        assert len(output["tasks"]) == 3
+        assert output["tokens"]["session_total"] == 5000
+
+    def test_monitor_json_missing_state_file(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        """architect monitor --json outputs empty state when no state file exists."""
+        result = cli_runner.invoke(main, ["monitor", "-p", str(tmp_path), "--json"])
+        assert result.exit_code == 0
+        output = json.loads(result.output)
+        assert output["status"] == "NO_STATE"
+        assert output["current_task_id"] is None
+        assert output["current_task_title"] is None
+        assert output["tasks"] == []
+
+    def test_monitor_json_mutually_exclusive_tui(
+        self, cli_runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """architect monitor --json --tui exits with error."""
+        result = cli_runner.invoke(main, ["monitor", "-p", str(tmp_path), "--json", "--tui"])
+        assert result.exit_code == 1
+        assert "mutually exclusive" in result.output.lower()
+
+    def test_monitor_json_structure_has_required_keys(
+        self, cli_runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """architect monitor --json output contains all expected top-level keys."""
+        state = {
+            "project_name": "test-project",
+            "status": "DONE",
+            "current_task_id": None,
+            "current_task_title": None,
+            "total_tasks": 2,
+            "tasks_completed": 2,
+            "tasks": [],
+            "circuit_breaker": {"state": "CLOSED"},
+            "tokens": {"session_total": 10000},
+        }
+        write_monitor_state(tmp_path, state)
+
+        result = cli_runner.invoke(main, ["monitor", "-p", str(tmp_path), "--json"])
+        assert result.exit_code == 0
+        output = json.loads(result.output)
+        # Verify all expected keys are present
+        assert "status" in output
+        assert "current_task_id" in output
+        assert "current_task_title" in output
+        assert "tasks" in output
+        assert "circuit_breaker" in output
+        assert "tokens" in output
+
+    def test_monitor_json_invalid_json_state_file(
+        self, cli_runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """architect monitor --json handles corrupted state file gracefully."""
+        # Write invalid JSON to state file
+        state_path = tmp_path / MONITOR_STATE_FILE
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text("this is not valid json {{{{", encoding="utf-8")
+
+        result = cli_runner.invoke(main, ["monitor", "-p", str(tmp_path), "--json"])
+        assert result.exit_code == 0
+        output = json.loads(result.output)
+        assert output["status"] == "NO_STATE"
+
 
 # ---------------------------------------------------------------------------
 # Gap closure — uncovered lines
@@ -613,3 +703,279 @@ class TestMonitorStateGapClosure:
         assert state is not None
         assert state["cooldown"]["active"] is True
         assert state["cooldown"]["remaining_seconds"] is None
+
+
+# ---------------------------------------------------------------------------
+# CLI — architect monitor --watch mode
+# ---------------------------------------------------------------------------
+
+
+class TestMonitorWatchMode:
+    """Tests for `architect monitor --watch` continuous polling mode."""
+
+    def test_watch_in_help(self, cli_runner: CliRunner) -> None:
+        """--watch flag appears in monitor help text."""
+        result = cli_runner.invoke(main, ["monitor", "--help"])
+        assert result.exit_code == 0
+        assert "--watch" in result.output
+        assert "-w" in result.output
+
+    def test_watch_interval_in_help(self, cli_runner: CliRunner) -> None:
+        """--interval flag appears in monitor help text."""
+        result = cli_runner.invoke(main, ["monitor", "--help"])
+        assert result.exit_code == 0
+        assert "--interval" in result.output
+        assert "-i" in result.output
+
+    def test_watch_follow_in_help(self, cli_runner: CliRunner) -> None:
+        """--follow flag appears in monitor help text."""
+        result = cli_runner.invoke(main, ["monitor", "--help"])
+        assert result.exit_code == 0
+        assert "--follow" in result.output
+
+    def test_watch_outputs_ndjson(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        """--watch outputs one JSON object per line (NDJSON)."""
+        call_count = 0
+
+        def mock_read(_project_dir: Path) -> dict | None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return {
+                    "project_name": "test-project",
+                    "status": "RUNNING",
+                    "current_task_id": "T01",
+                    "current_task_title": "Setup",
+                    "total_tasks": 1,
+                    "tasks_completed": 0,
+                    "tasks": [],
+                }
+            if call_count == 2:
+                return {
+                    "project_name": "test-project",
+                    "status": "RUNNING",
+                    "current_task_id": "T01",
+                    "current_task_title": "Setup",
+                    "total_tasks": 1,
+                    "tasks_completed": 0,
+                    "tasks": [],
+                }
+            # Return DONE to exit the loop after 2 polls
+            return {"status": "DONE", "tasks": []}
+
+        with (
+            patch(
+                "the_architect.core.monitor_state.read_monitor_state",
+                side_effect=mock_read,
+            ),
+            patch("time.sleep", return_value=None),
+        ):
+            result = cli_runner.invoke(main, ["monitor", "-p", str(tmp_path), "--watch", "-i", "0"])
+
+        assert result.exit_code == 0
+        lines = [line for line in result.output.strip().split("\n") if line.strip()]
+        assert len(lines) == 3
+        for line in lines[:2]:
+            obj = json.loads(line)
+            assert obj["status"] == "RUNNING"
+        assert json.loads(lines[2])["status"] == "DONE"
+
+    def test_watch_implies_json(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        """--watch works without explicit --json flag."""
+        call_count = 0
+
+        def mock_read(_project_dir: Path) -> dict | None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return {
+                    "project_name": "test-project",
+                    "status": "RUNNING",
+                    "current_task_id": "T01",
+                    "tasks": [],
+                }
+            return {"status": "DONE", "tasks": []}
+
+        with (
+            patch(
+                "the_architect.core.monitor_state.read_monitor_state",
+                side_effect=mock_read,
+            ),
+            patch("time.sleep", return_value=None),
+        ):
+            result = cli_runner.invoke(main, ["monitor", "-p", str(tmp_path), "--watch", "-i", "0"])
+
+        assert result.exit_code == 0
+        lines = [line for line in result.output.strip().split("\n") if line.strip()]
+        assert len(lines) == 2
+        assert json.loads(lines[0])["status"] == "RUNNING"
+
+    def test_watch_exits_on_terminal_state(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        """--watch exits when status transitions to DONE."""
+        call_count = 0
+
+        def mock_read(_project_dir: Path) -> dict | None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return {"status": "RUNNING", "current_task_id": "T01", "tasks": []}
+            return {"status": "DONE", "current_task_id": None, "tasks": []}
+
+        with (
+            patch(
+                "the_architect.core.monitor_state.read_monitor_state",
+                side_effect=mock_read,
+            ),
+            patch("time.sleep", return_value=None),
+        ):
+            result = cli_runner.invoke(main, ["monitor", "-p", str(tmp_path), "--watch", "-i", "0"])
+
+        assert result.exit_code == 0
+        lines = [line for line in result.output.strip().split("\n") if line.strip()]
+        assert len(lines) == 2
+        assert json.loads(lines[0])["status"] == "RUNNING"
+        assert json.loads(lines[1])["status"] == "DONE"
+
+    def test_watch_exits_on_failed_state(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        """--watch exits when status transitions to FAILED."""
+        call_count = 0
+
+        def mock_read(_project_dir: Path) -> dict | None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return {"status": "RUNNING", "current_task_id": "T01", "tasks": []}
+            return {"status": "FAILED", "current_task_id": None, "tasks": []}
+
+        with (
+            patch(
+                "the_architect.core.monitor_state.read_monitor_state",
+                side_effect=mock_read,
+            ),
+            patch("time.sleep", return_value=None),
+        ):
+            result = cli_runner.invoke(main, ["monitor", "-p", str(tmp_path), "--watch", "-i", "0"])
+
+        assert result.exit_code == 0
+        lines = [line for line in result.output.strip().split("\n") if line.strip()]
+        assert len(lines) == 2
+        assert json.loads(lines[1])["status"] == "FAILED"
+
+    def test_watch_follow_keeps_watching_terminal(
+        self, cli_runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """--watch --follow continues past terminal states."""
+        call_count = 0
+
+        def mock_read(_project_dir: Path) -> dict | None:
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 3:
+                return {"status": "DONE", "current_task_id": None, "tasks": []}
+            raise KeyboardInterrupt  # stop after 3 polls
+
+        with (
+            patch(
+                "the_architect.core.monitor_state.read_monitor_state",
+                side_effect=mock_read,
+            ),
+            patch("time.sleep", return_value=None),
+        ):
+            result = cli_runner.invoke(
+                main,
+                ["monitor", "-p", str(tmp_path), "--watch", "--follow", "-i", "0"],
+            )
+
+        assert result.exit_code == 0
+        lines = [line for line in result.output.strip().split("\n") if line.strip()]
+        assert len(lines) == 3
+        for line in lines:
+            assert json.loads(line)["status"] == "DONE"
+
+    def test_watch_no_state_file_outputs_no_state(
+        self, cli_runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """--watch handles missing state file gracefully."""
+        call_count = 0
+
+        def mock_read(_project_dir: Path) -> dict | None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return None  # first poll: no state file
+            return {"status": "DONE", "tasks": []}  # second poll: exit
+
+        with (
+            patch(
+                "the_architect.core.monitor_state.read_monitor_state",
+                side_effect=mock_read,
+            ),
+            patch("time.sleep", return_value=None),
+        ):
+            result = cli_runner.invoke(main, ["monitor", "-p", str(tmp_path), "--watch", "-i", "0"])
+
+        assert result.exit_code == 0
+        lines = [line for line in result.output.strip().split("\n") if line.strip()]
+        assert len(lines) == 2
+        assert json.loads(lines[0])["status"] == "NO_STATE"
+        assert json.loads(lines[1])["status"] == "DONE"
+
+    def test_watch_interval_configured(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        """--watch uses the configured interval for polling."""
+        state = {"status": "RUNNING", "tasks": []}
+        write_monitor_state(tmp_path, state)
+
+        sleep_calls = []
+
+        def mock_sleep(seconds: float) -> None:
+            sleep_calls.append(seconds)
+            raise KeyboardInterrupt  # stop after first sleep
+
+        def mock_read(_project_dir: Path) -> dict | None:
+            return dict(state)
+
+        with (
+            patch(
+                "the_architect.core.monitor_state.read_monitor_state",
+                side_effect=mock_read,
+            ),
+            patch("time.sleep", side_effect=mock_sleep),
+        ):
+            result = cli_runner.invoke(
+                main, ["monitor", "-p", str(tmp_path), "--watch", "-i", "10"]
+            )
+
+        assert result.exit_code == 0
+        assert len(sleep_calls) >= 1
+        assert sleep_calls[0] == 10
+
+    def test_watch_sigint_clean_exit(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        """--watch exits cleanly on SIGINT (Ctrl+C)."""
+        call_count = 0
+
+        def mock_read(_project_dir: Path) -> dict | None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return {"status": "RUNNING", "tasks": []}
+            raise KeyboardInterrupt
+
+        with (
+            patch(
+                "the_architect.core.monitor_state.read_monitor_state",
+                side_effect=mock_read,
+            ),
+            patch("time.sleep", return_value=None),
+        ):
+            result = cli_runner.invoke(main, ["monitor", "-p", str(tmp_path), "--watch", "-i", "0"])
+
+        assert result.exit_code == 0
+        lines = [line for line in result.output.strip().split("\n") if line.strip()]
+        assert len(lines) == 1
+        assert json.loads(lines[0])["status"] == "RUNNING"
+
+    def test_watch_mutually_exclusive_tui(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        """--watch and --tui are mutually exclusive."""
+        result = cli_runner.invoke(main, ["monitor", "-p", str(tmp_path), "--watch", "--tui"])
+        assert result.exit_code == 1
+        assert "mutually exclusive" in result.output.lower()

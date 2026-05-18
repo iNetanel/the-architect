@@ -223,6 +223,12 @@ class ArchitectApp(App[None]):
         self._quit_event: threading.Event = threading.Event()
         # Previous SIGCONT handler, restored on unmount.
         self._prev_sigcont: Any = None
+        # Track active push_and_wait calls so begin_shutdown can unblock
+        # them. Each entry is (screen, done_event, result_dict). Protected
+        # by _push_waits_lock. A list (not set) because dict values are
+        # unhashable.
+        self._push_waits: list[tuple[Screen[Any], threading.Event, dict[str, Any]]] = []
+        self._push_waits_lock = threading.Lock()
 
     def on_mount(self) -> None:
         # Register and activate The Architect's branded theme before
@@ -289,30 +295,58 @@ class ArchitectApp(App[None]):
             pass
 
     def _sigcont_handler(self, signum: int, frame: Any) -> None:
-        """Handle SIGCONT (resume from sleep/suspend) by nudging Textual's resize path.
+        """Handle SIGCONT (resume from sleep/suspend) by recovering terminal state.
 
         When the machine wakes from sleep the terminal emulator may have reset
-        its geometry.  We send SIGWINCH to ourselves so Textual's own
-        ``on_terminal_resize`` handler fires — it measures the real terminal
-        size and posts a ``Resize`` event through the normal event loop path.
+        its geometry, alternate screen buffer, mouse tracking, and bracketed
+        paste modes.  We do two things from this signal handler:
 
-        This is intentionally minimal: we do NOT call ``refresh(layout=True)``
-        or write any escape sequences directly.  Doing so from a signal handler
-        injects raw bytes (mouse-tracking enable codes, alternate-screen codes)
-        into the terminal's input stream at an unpredictable moment, which
-        causes the mouse cursor position numbers to appear as literal text in
-        whatever input widget is active (the goal TextArea, tab bar, etc.) and
-        breaks tab/mouse interaction until the terminal is reset.
+        1. Send SIGWINCH to ourselves so Textual's ``on_terminal_resize`` fires
+           and re-measures the real terminal size.
+
+        2. Schedule a terminal re-setup on the event loop that writes the
+           alternate-screen-enter, mouse-tracking-enable, and bracketed-paste
+           sequences.  This must happen on the event loop thread (not in the
+           signal handler) to avoid injecting raw bytes into the terminal's
+           input stream at an unpredictable moment.
 
         SIGWINCH is POSIX-only — guarded by ``hasattr`` so this is a safe
         no-op on Windows where Textual uses a different resize mechanism.
         """
-        logger.debug("SIGCONT received — nudging Textual resize via SIGWINCH")
+        logger.debug("SIGCONT received — recovering terminal state after sleep")
         try:
             if hasattr(signal, "SIGWINCH"):
                 import os as _os
 
                 _os.kill(_os.getpid(), signal.SIGWINCH)
+        except Exception:
+            pass
+        # Schedule terminal re-setup on the event loop.  This re-enables
+        # mouse tracking, alternate screen, and bracketed paste which may
+        # have been reset by the terminal emulator during suspend.
+        try:
+            self.call_from_thread(self._resetup_terminal_after_sleep)
+        except Exception:
+            # App not running or not on main thread — safe to skip.
+            pass
+
+    def _resetup_terminal_after_sleep(self) -> None:
+        """Re-establish terminal modes on the event loop thread after sleep.
+
+        This is scheduled by :meth:`_sigcont_handler` via ``call_from_thread``
+        so the escape sequences are written at a safe point in the event
+        loop (between frames) rather than from a signal handler.
+        """
+        try:
+            from the_architect.tui.terminal import resetup_terminal_after_sleep
+
+            resetup_terminal_after_sleep()
+        except Exception:
+            pass
+        # Also trigger a full layout refresh so every widget repaints
+        # with the correct terminal size.
+        try:
+            self.refresh(layout=True)
         except Exception:
             pass
 
@@ -340,11 +374,22 @@ class ArchitectApp(App[None]):
         provider subprocesses are killed on a background thread. Only
         after cleanup and a short minimum display window do we close the
         alternate screen, avoiding a blank terminal during teardown.
+
+        Also unblocks any worker threads stuck in :meth:`push_and_wait`
+        so the process can exit cleanly instead of hanging.
         """
         if self._shutdown_started:
             return
         self._shutdown_started = True
         self._quit_event.set()
+
+        # Unblock any worker threads stuck in push_and_wait.
+        # They will detect _quit_event.is_set() and return None.
+        with self._push_waits_lock:
+            for _screen, done, _result in self._push_waits:
+                done.set()
+            self._push_waits.clear()
+
         started_at = time.monotonic()
 
         try:
@@ -450,6 +495,11 @@ class ArchitectApp(App[None]):
         *replaced* rather than popped back to the splash. Use this
         method for overlays that should stack on top of the current
         content (wait overlays during execution).
+
+        When the app is shutting down (``_quit_event`` is set), this
+        method unblocks immediately by returning ``None``. The screen
+        may still be on the stack but the worker thread will proceed
+        to cleanup rather than hanging indefinitely.
         """
         result: dict[str, Any] = {"value": None}
         done = threading.Event()
@@ -457,6 +507,15 @@ class ArchitectApp(App[None]):
         def _on_dismiss(value: Any) -> None:
             result["value"] = value
             done.set()
+            # Remove from tracking list so shutdown doesn't double-signal.
+            try:
+                with self._push_waits_lock:
+                    try:
+                        self._push_waits.remove((screen, done, result))
+                    except ValueError:
+                        pass
+            except Exception:
+                pass
 
         def _push() -> None:
             self._log_screen_transition("push_and_wait.before", screen=type(screen).__name__)
@@ -484,8 +543,24 @@ class ArchitectApp(App[None]):
                 self._quit_event.wait(timeout=remaining)
             self._splash_shown_at = 0.0  # only gate the first push
 
-        self.call_from_thread(_push)
-        done.wait()
+        # Track this wait so begin_shutdown can unblock it.
+        wait_entry = (screen, done, result)
+        with self._push_waits_lock:
+            self._push_waits.append(wait_entry)
+        try:
+            self.call_from_thread(_push)
+            # Wait with polling so shutdown can unblock this thread.
+            # The quit event is set by begin_shutdown() so the worker
+            # does not hang indefinitely when the user quits mid-flow.
+            while not done.wait(timeout=0.1):
+                if self._quit_event.is_set():
+                    break
+        finally:
+            with self._push_waits_lock:
+                try:
+                    self._push_waits.remove(wait_entry)
+                except ValueError:
+                    pass
         return result["value"]  # type: ignore[no-any-return]
 
     def switch_and_wait(self, screen: Screen[T]) -> T | None:
@@ -643,6 +718,18 @@ class ArchitectApp(App[None]):
     def _update_costs_sync(self, costs: dict[str, object]) -> None:
         screen = self._ensure_execution_screen()
         screen.update_costs(costs)
+
+    def update_feedback(self, message: str | None) -> None:
+        """Set or clear the pending feedback banner in the execution footer.
+
+        Args:
+            message: Feedback text to display, or ``None`` to clear.
+        """
+        self._thread_safe_call(self._update_feedback_sync, message)
+
+    def _update_feedback_sync(self, message: str | None) -> None:
+        screen = self._ensure_execution_screen()
+        screen.update_feedback(message)
 
     # ── Wait screen overlay (planning / retrospective / reassessment) ──
 
@@ -816,6 +903,7 @@ class ArchitectApp(App[None]):
         total_tokens: Any,
         success_md_path: str | None = None,
         retrospective_rounds: list[Any] | None = None,
+        token_budget_per_run: int = 0,
     ) -> None:
         """Push the run-complete :class:`~the_architect.tui.screens.success.SuccessScreen`.
 
@@ -848,6 +936,7 @@ class ArchitectApp(App[None]):
             success_md_path=success_md_path,
             retrospective_rounds=retrospective_rounds,
             session_cost_usd=session_cost,
+            token_budget_per_run=token_budget_per_run,
         )
         # push_and_wait blocks the worker thread until the user exits the screen.
         self.push_and_wait(screen)

@@ -17,6 +17,7 @@ from the_architect.core.runner import (
     HourlyTokenBudget,
     ManagedExecutionRenderer,
     OutputAnalysis,
+    RunTokenBudget,
     StreamResult,
     TaskResult,
     TokenUsage,
@@ -1874,48 +1875,87 @@ class TestRunAll:
 
         with patch("the_architect.core.runner.run_task", side_effect=mock_run_task):
             result = await _run_all_inner(plan, config)
-            assert result is False
+        assert result is False
 
-    @pytest.mark.asyncio
-    async def test_token_budget_in_run_all(self, config, tmp_path):
-        from the_architect.core.runner import _run_all_inner
 
-        config.token_budget_per_hour = 100
-        tasks_dir = tmp_path / "tasks"
-        t1_path = tasks_dir / "T01_first.md"
-        t1_path.parent.mkdir(parents=True, exist_ok=True)
-        t1_path.write_text("# T01\n", encoding="utf-8")
-        tasks = [
-            Task(name="T01_first", prefix="T01", number=1, path=t1_path, status=TaskStatus.PENDING)
-        ]
-        plan = TaskPlan(tasks=tasks)
+class TestBuildInstructionBudgetContext:
+    """Tests for budget context injection in build_instruction (T01 Cycle 9)."""
 
-        mock_result = TaskResult(
-            prefix="T01",
-            title="first",
-            status="done",
-            duration_seconds=1.0,
-            attempts=1,
-            tokens=TokenUsage(input_tokens=200, output_tokens=50),
-            model="",
-        )
+    def test_budget_context_appears_when_per_run_budget_set(self, task, config):
+        """Budget context section appears when token_budget_per_run > 0."""
+        config.token_budget_per_run = 10000
+        result = build_instruction(task, attempt=1, config=config, run_tokens_used_so_far=3000)
+        assert "=== TOKEN BUDGET CONTEXT ===" in result
+        assert "Per-run budget: 10,000 tokens" in result
+        assert "Tokens used by previous tasks: 3,000" in result
+        assert "Remaining capacity: 7,000 tokens" in result
 
-        async def mock_run_task(**kwargs):
-            config.progress_file.write_text(
-                "**Tasks completed:** 1\n**Next task to run:** T02\n"
-                "| T01 | Test | Done | 2026-04-12 |\n",
-                encoding="utf-8",
-            )
-            return mock_result
+    def test_budget_context_absent_when_both_limits_zero(self, task, config):
+        """Budget context is NOT injected when both budget limits are 0."""
+        config.token_budget_per_run = 0
+        config.token_budget_per_hour = 0
+        result = build_instruction(task, attempt=1, config=config)
+        assert "=== TOKEN BUDGET CONTEXT ===" not in result
 
-        with (
-            patch("the_architect.core.runner.run_task", side_effect=mock_run_task),
-            patch(
-                "the_architect.core.runner.HourlyTokenBudget.wait_for_reset", new_callable=AsyncMock
-            ),
-        ):
-            result = await _run_all_inner(plan, config)
-            assert result is True
+    def test_remaining_capacity_calculation_correct(self, task, config):
+        """Remaining capacity = max(0, budget - used_so_far)."""
+        config.token_budget_per_run = 5000
+        # used_so_far exceeds budget
+        result = build_instruction(task, attempt=1, config=config, run_tokens_used_so_far=7000)
+        assert "Remaining capacity: 0 tokens" in result
+
+    def test_remaining_capacity_exact(self, task, config):
+        """Remaining capacity is exact when under budget."""
+        config.token_budget_per_run = 10000
+        result = build_instruction(task, attempt=1, config=config, run_tokens_used_so_far=1000)
+        assert "Remaining capacity: 9,000 tokens" in result
+
+    def test_hourly_budget_info_appears(self, task, config):
+        """Hourly budget info appears when token_budget_per_hour > 0."""
+        config.token_budget_per_hour = 5000
+        result = build_instruction(task, attempt=1, config=config)
+        assert "=== TOKEN BUDGET CONTEXT ===" in result
+        assert "Hourly budget: 5,000 tokens/hour" in result
+
+    def test_both_budget_limits_shown(self, task, config):
+        """Both per-run and hourly budget appear when both configured."""
+        config.token_budget_per_run = 10000
+        config.token_budget_per_hour = 5000
+        result = build_instruction(task, attempt=1, config=config, run_tokens_used_so_far=2000)
+        assert "Per-run budget: 10,000 tokens" in result
+        assert "Hourly budget: 5,000 tokens/hour" in result
+
+    def test_budget_context_format_has_separator(self, task, config):
+        """Budget context section uses --- separator."""
+        config.token_budget_per_run = 10000
+        result = build_instruction(task, attempt=1, config=config, run_tokens_used_so_far=0)
+        assert "=== TOKEN BUDGET CONTEXT ===" in result
+        lines = result.split("\n")
+        # The section should be bounded by --- separators
+        budget_idx = lines.index("=== TOKEN BUDGET CONTEXT ===")
+        # Find the closing --- after the budget section
+        found_closing = False
+        for i in range(budget_idx + 1, len(lines)):
+            if lines[i].strip() == "---":
+                found_closing = True
+                break
+        assert found_closing, "Budget section should have a closing --- separator"
+
+    def test_budget_context_zero_usage(self, task, config):
+        """Budget context shows 0 tokens used when no previous tasks."""
+        config.token_budget_per_run = 10000
+        result = build_instruction(task, attempt=1, config=config, run_tokens_used_so_far=0)
+        assert "Tokens used by previous tasks: 0" in result
+        assert "Remaining capacity: 10,000 tokens" in result
+
+    def test_hourly_only_no_per_run(self, task, config):
+        """Hourly budget alone (no per-run) still shows budget context."""
+        config.token_budget_per_run = 0
+        config.token_budget_per_hour = 5000
+        result = build_instruction(task, attempt=1, config=config)
+        assert "=== TOKEN BUDGET CONTEXT ===" in result
+        assert "Hourly budget: 5,000 tokens/hour" in result
+        assert "Per-run budget" not in result
 
     @pytest.mark.asyncio
     async def test_token_budget_exceeded_wait_cancelled(self, config, tmp_path):
@@ -2088,6 +2128,50 @@ class TestRunAll:
             result = await run_all(plan, config)
             # Should still work without circuit breaker
             assert result is True
+
+
+class TestBuildInstructionFeedback:
+    """Tests for user feedback injection in build_instruction (T02 Cycle 11)."""
+
+    def test_feedback_section_appears_when_provided(self, task, config):
+        """USER FEEDBACK section appears when user_feedback is provided."""
+        result = build_instruction(
+            task, attempt=1, config=config, user_feedback="Please focus on edge cases."
+        )
+        assert "=== USER FEEDBACK ===" in result
+        assert "Please focus on edge cases." in result
+        assert "The user provided this feedback between tasks." in result
+
+    def test_feedback_section_absent_when_none(self, task, config):
+        """USER FEEDBACK section is NOT injected when user_feedback is None."""
+        result = build_instruction(task, attempt=1, config=config)
+        assert "=== USER FEEDBACK ===" not in result
+
+    def test_feedback_section_absent_when_empty_string(self, task, config):
+        """USER FEEDBACK section is NOT injected when user_feedback is empty string."""
+        result = build_instruction(task, attempt=1, config=config, user_feedback="")
+        assert "=== USER FEEDBACK ===" not in result
+
+    def test_feedback_section_placement_after_budget_before_architect(self, task, config):
+        """USER FEEDBACK appears after budget context and before ARCHITECT.md content."""
+        config.token_budget_per_run = 10000
+        result = build_instruction(
+            task,
+            attempt=1,
+            config=config,
+            run_tokens_used_so_far=1000,
+            user_feedback="Fix the memory leak.",
+            architect_md_content="# Project Knowledge\n- Use ruff for linting",
+        )
+        lines = result.split("\n")
+        budget_idx = lines.index("=== TOKEN BUDGET CONTEXT ===")
+        feedback_idx = lines.index("=== USER FEEDBACK ===")
+        # ARCHITECT.md header includes extra text; find by prefix match
+        architect_idx = next(
+            i for i, line in enumerate(lines) if line.startswith("=== ARCHITECT.md")
+        )
+        assert budget_idx < feedback_idx, "Feedback must appear after budget context"
+        assert feedback_idx < architect_idx, "Feedback must appear before ARCHITECT.md"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -4334,13 +4418,12 @@ class TestReconcileProgressAfterAttempt:
         content = p.read_text(encoding="utf-8")
         assert "3 attempts" in content
 
-    def test_skipped_verdict_does_not_touch_row(self, tmp_path: Path) -> None:
-        """A skipped TaskResult (e.g. circuit breaker) must leave the row Pending."""
+    def test_skipped_verdict_writes_skipped_status(self, tmp_path: Path) -> None:
+        """A skipped TaskResult (dependency unmet) writes Skipped to PROGRESS.md."""
         from the_architect.core.progress import task_status
         from the_architect.core.runner import _reconcile_progress_after_attempt
 
         p = self._seed_progress(tmp_path)
-        before = p.read_text(encoding="utf-8")
         result = TaskResult(
             prefix="T01",
             title="First",
@@ -4349,10 +4432,13 @@ class TestReconcileProgressAfterAttempt:
             attempts=0,
             tokens=TokenUsage(),
             model="",
+            skip_reason="T02",
         )
         _reconcile_progress_after_attempt(p, result, max_retries=3)
-        assert p.read_text(encoding="utf-8") == before
-        assert task_status(p, "T01") == "Pending"
+        assert task_status(p, "T01") == "Skipped"
+        content = p.read_text(encoding="utf-8")
+        assert "Skipped" in content
+        assert "dependency T02 failed" in content
 
     def test_missing_progress_file_does_not_raise(self, tmp_path: Path) -> None:
         """Reconciliation must never propagate errors up the run loop."""
@@ -5544,6 +5630,13 @@ class TestPlainStreamRenderer:
         r.set_footer("text")  # no crash, no-op
         r.clear_footer()  # no crash, no-op
 
+    def test_set_feedback_is_noop(self):
+        from the_architect.core.runner import PlainStreamRenderer
+
+        r = PlainStreamRenderer()
+        r.set_feedback("msg")  # no crash, no-op
+        r.set_feedback(None)  # no crash, no-op
+
     def test_close_is_noop(self):
         from the_architect.core.runner import PlainStreamRenderer
 
@@ -6625,8 +6718,13 @@ class TestRunAllRTaskContinuation:
         assert "T04R1" in attempted, "T04R1 must be attempted even though T04 failed"
 
     @pytest.mark.asyncio
-    async def test_failed_task_stops_when_no_r_task(self, tmp_path: Path, config):
-        """When T04 fails and there is no R-task, run_all must stop."""
+    async def test_failed_task_continues_for_downstream_tasks(self, tmp_path: Path, config):
+        """When T04 fails and there is no R-task, run continues for downstream tasks.
+
+        With dependency awareness, the run no longer stops on a failed task.
+        Instead, it continues so downstream tasks can be properly skipped via
+        dependency checks or run independently if they have no unmet dependencies.
+        """
         tasks_dir = tmp_path / "tasks"
         t4_path = tasks_dir / "T04_tui.md"
         t4_path.write_text("# T04\n", encoding="utf-8")
@@ -6659,8 +6757,10 @@ class TestRunAllRTaskContinuation:
         with patch("the_architect.core.runner.run_task", side_effect=mock_run_task):
             result = await _run_all_inner(plan, config)
 
+        # Both tasks run because T05 has no explicit dependency on T04
         assert "T04" in attempted
-        assert "T05" not in attempted, "T05 must not run after T04 fails with no R-task"
+        assert "T05" in attempted, "T05 should run since it has no dependency on T04"
+        # Run returns False because tasks failed
         assert result is False
 
 
@@ -7220,3 +7320,215 @@ class TestRunTaskErrorPaths:
         # _mark_idle_timeout is called on every idle_timeout interruption
         with runner_mod._IDLE_TIMEOUT_TASKS_LOCK:
             assert task.prefix in runner_mod._IDLE_TIMEOUT_TASKS
+
+
+# ---------------------------------------------------------------------------
+# RunTokenBudget — per-run token budget cap
+# ---------------------------------------------------------------------------
+
+
+class TestRunTokenBudget:
+    """Tests for the RunTokenBudget class — per-run cumulative token tracking."""
+
+    def test_disabled_by_default(self):
+        """Budget of 0 means disabled."""
+        budget = RunTokenBudget(budget=0)
+        assert budget.enabled is False
+        assert budget.used == 0
+        assert budget.exceeded() is False
+
+    def test_enabled_when_positive(self):
+        """Any positive budget enables tracking."""
+        budget = RunTokenBudget(budget=100)
+        assert budget.enabled is True
+        assert budget.used == 0
+        assert budget.exceeded() is False
+
+    def test_add_accumulates_tokens(self):
+        """add() accumulates tokens cumulatively."""
+        budget = RunTokenBudget(budget=1000)
+        budget.add(100)
+        assert budget.used == 100
+        budget.add(200)
+        assert budget.used == 300
+        budget.add(50)
+        assert budget.used == 350
+
+    def test_exceeded_at_exact_threshold(self):
+        """Budget is exceeded when usage equals the budget (>=)."""
+        budget = RunTokenBudget(budget=1000)
+        budget.add(1000)
+        assert budget.exceeded() is True
+
+    def test_exceeded_above_threshold(self):
+        """Budget is exceeded when usage exceeds the budget."""
+        budget = RunTokenBudget(budget=1000)
+        budget.add(1100)
+        assert budget.exceeded() is True
+
+    def test_not_exceeded_below_threshold(self):
+        """Budget is not exceeded when usage is below the budget."""
+        budget = RunTokenBudget(budget=1000)
+        budget.add(999)
+        assert budget.exceeded() is False
+
+    def test_disabled_add_is_noop(self):
+        """add() is a no-op when budget is disabled."""
+        budget = RunTokenBudget(budget=0)
+        budget.add(500)
+        assert budget.used == 0
+
+    def test_disabled_exceeded_always_false(self):
+        """exceeded() is always False when disabled."""
+        budget = RunTokenBudget(budget=0)
+        budget.add(999999)
+        assert budget.exceeded() is False
+
+    def test_add_zero_tokens_noop(self):
+        """Adding zero tokens does not change the total."""
+        budget = RunTokenBudget(budget=1000)
+        budget.add(500)
+        budget.add(0)
+        assert budget.used == 500
+
+    def test_add_negative_tokens_noop(self):
+        """Adding negative tokens does not change the total."""
+        budget = RunTokenBudget(budget=1000)
+        budget.add(500)
+        budget.add(-10)
+        assert budget.used == 500
+
+    def test_used_starts_at_zero(self):
+        """used property starts at 0 for a new budget."""
+        budget = RunTokenBudget(budget=50000)
+        assert budget.used == 0
+
+    def test_large_budget(self):
+        """Works with large budget values."""
+        budget = RunTokenBudget(budget=10_000_000)
+        budget.add(5_000_000)
+        assert budget.used == 5_000_000
+        assert budget.exceeded() is False
+        budget.add(5_000_001)
+        assert budget.exceeded() is True
+
+
+class TestRunTokenBudgetRunnerEnforcement:
+    """Tests for per-run token budget enforcement in _run_all_inner."""
+
+    @pytest.mark.asyncio
+    async def test_budget_exceeded_stops_run_cleanly(self, config, tmp_path):
+        """When per-run budget is exceeded, run stops cleanly (returns True)."""
+        from the_architect.core.runner import _run_all_inner
+
+        config.token_budget_per_run = 1000
+        tasks_dir = tmp_path / "tasks"
+        t1_path = tasks_dir / "T01_first.md"
+        t1_path.parent.mkdir(parents=True, exist_ok=True)
+        t1_path.write_text("# T01\n", encoding="utf-8")
+        t2_path = tasks_dir / "T02_second.md"
+        t2_path.write_text("# T02\n", encoding="utf-8")
+        tasks = [
+            Task(name="T01_first", prefix="T01", number=1, path=t1_path, status=TaskStatus.PENDING),
+            Task(
+                name="T02_second", prefix="T02", number=2, path=t2_path, status=TaskStatus.PENDING
+            ),
+        ]
+        plan = TaskPlan(tasks=tasks)
+
+        # First task uses 600 tokens, second task would push over the limit
+        call_count = 0
+
+        async def mock_run_task(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            config.progress_file.write_text(
+                "**Tasks completed:** 1\n**Next task to run:** T02\n"
+                "| T01 | Test | Done | 2026-04-12 |\n",
+                encoding="utf-8",
+            )
+            return TaskResult(
+                prefix="T01",
+                title="first",
+                status="done",
+                duration_seconds=1.0,
+                attempts=1,
+                tokens=TokenUsage(input_tokens=600, output_tokens=500),
+                model="",
+            )
+
+        with patch("the_architect.core.runner.run_task", side_effect=mock_run_task):
+            result = await _run_all_inner(plan, config)
+        # Run should stop cleanly (True) after budget exceeded, not continue to T02
+        assert result is True
+        assert call_count == 1  # Only one task ran before budget exceeded
+
+    @pytest.mark.asyncio
+    async def test_budget_not_exceeded_continues(self, config, tmp_path):
+        """When per-run budget is not exceeded, run continues normally."""
+        from the_architect.core.runner import _run_all_inner
+
+        config.token_budget_per_run = 10000
+        tasks_dir = tmp_path / "tasks"
+        t1_path = tasks_dir / "T01_first.md"
+        t1_path.parent.mkdir(parents=True, exist_ok=True)
+        t1_path.write_text("# T01\n", encoding="utf-8")
+        tasks = [
+            Task(name="T01_first", prefix="T01", number=1, path=t1_path, status=TaskStatus.PENDING),
+        ]
+        plan = TaskPlan(tasks=tasks)
+
+        async def mock_run_task(**kwargs):
+            config.progress_file.write_text(
+                "**Tasks completed:** 1\n**Next task to run:** T02\n"
+                "| T01 | Test | Done | 2026-04-12 |\n",
+                encoding="utf-8",
+            )
+            return TaskResult(
+                prefix="T01",
+                title="first",
+                status="done",
+                duration_seconds=1.0,
+                attempts=1,
+                tokens=TokenUsage(input_tokens=100, output_tokens=200),
+                model="",
+            )
+
+        with patch("the_architect.core.runner.run_task", side_effect=mock_run_task):
+            result = await _run_all_inner(plan, config)
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_budget_disabled_does_not_stop(self, config, tmp_path):
+        """When per-run budget is 0 (disabled), run is unaffected."""
+        from the_architect.core.runner import _run_all_inner
+
+        config.token_budget_per_run = 0  # disabled
+        tasks_dir = tmp_path / "tasks"
+        t1_path = tasks_dir / "T01_first.md"
+        t1_path.parent.mkdir(parents=True, exist_ok=True)
+        t1_path.write_text("# T01\n", encoding="utf-8")
+        tasks = [
+            Task(name="T01_first", prefix="T01", number=1, path=t1_path, status=TaskStatus.PENDING),
+        ]
+        plan = TaskPlan(tasks=tasks)
+
+        async def mock_run_task(**kwargs):
+            config.progress_file.write_text(
+                "**Tasks completed:** 1\n**Next task to run:** T02\n"
+                "| T01 | Test | Done | 2026-04-12 |\n",
+                encoding="utf-8",
+            )
+            return TaskResult(
+                prefix="T01",
+                title="first",
+                status="done",
+                duration_seconds=1.0,
+                attempts=1,
+                tokens=TokenUsage(input_tokens=999999, output_tokens=999999),
+                model="",
+            )
+
+        with patch("the_architect.core.runner.run_task", side_effect=mock_run_task):
+            result = await _run_all_inner(plan, config)
+        assert result is True

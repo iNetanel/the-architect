@@ -1,8 +1,8 @@
 """Textual read-only task list screen.
 
 Mirrors ``architect list`` output — one row per task with prefix,
-title, and status (Done / Failed / Blocked / Pending). Data is
-collected once on mount; press ``r`` to refresh.
+title, dependencies, and status (Done / Failed / Blocked / Pending).
+Data is collected once on mount; press ``r`` to refresh.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from the_architect.core.tasks import discover_tasks
 
 
 class ListApp(App[None]):
-    """Task list screen — one row per task with status."""
+    """Task list screen — one row per task with status and dependencies."""
 
     CSS = """
     Screen { background: $surface; }
@@ -48,7 +48,7 @@ class ListApp(App[None]):
             yield Static("", id="list_summary")
             with VerticalScroll():
                 table: DataTable[str] = DataTable(zebra_stripes=True)
-                table.add_columns("Task", "Title", "Status")
+                table.add_columns("Task", "Title", "Deps", "Status")
                 yield table
         yield Footer()
 
@@ -83,7 +83,14 @@ class ListApp(App[None]):
             status = task_status(progress_file, task.prefix) or "Pending"
             if status == "Done":
                 done += 1
-            table.add_row(task.prefix, task.title or task.name, status)
+
+            # Format dependency display
+            if task.depends_on:
+                deps_display = "-> " + ", ".join(task.depends_on)
+            else:
+                deps_display = "-"
+
+            table.add_row(task.prefix, task.title or task.name, deps_display, status)
 
         self.query_one("#list_summary", Static).update(f"{done}/{len(tasks)} tasks complete")
 

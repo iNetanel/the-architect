@@ -372,3 +372,83 @@ class TestPhaseAConfigFields:
         resolved = config.resolve(Path("/project/root"))
         assert resolved.architect_model == "test-model"
         assert resolved.last_scope == "simple"
+
+    def test_token_budget_per_run_default(self) -> None:
+        """token_budget_per_run should default to 0 (disabled)."""
+        config = ArchitectConfig()
+        assert config.token_budget_per_run == 0
+
+    def test_token_budget_per_run_positive(self) -> None:
+        """token_budget_per_run accepts positive values."""
+        config = ArchitectConfig(token_budget_per_run=1_000_000)
+        assert config.token_budget_per_run == 1_000_000
+
+    def test_token_budget_per_run_rejects_negative(self) -> None:
+        """token_budget_per_run rejects negative values (ge=0)."""
+        with pytest.raises(Exception):  # Pydantic ValidationError
+            ArchitectConfig(token_budget_per_run=-1)
+
+    def test_token_budget_per_run_persisted(self, tmp_path: Path) -> None:
+        """token_budget_per_run round-trips through write_config/load_config."""
+        write_config(tmp_path, {"token_budget_per_run": 500_000})
+        config = load_config(tmp_path)
+        assert config.token_budget_per_run == 500_000
+
+    def test_token_budget_per_run_in_resolve(self) -> None:
+        """resolve() preserves token_budget_per_run."""
+        config = ArchitectConfig(token_budget_per_run=250_000)
+        resolved = config.resolve(Path("/project/root"))
+        assert resolved.token_budget_per_run == 250_000
+
+
+# ---------------------------------------------------------------------------
+# Notification config fields
+# ---------------------------------------------------------------------------
+
+
+class TestNotificationConfigFields:
+    """Tests for notify_on_complete and notify_on_fail config fields."""
+
+    def test_notify_on_complete_default_true(self) -> None:
+        """notify_on_complete should default to True."""
+        config = ArchitectConfig()
+        assert config.notify_on_complete is True
+
+    def test_notify_on_fail_default_true(self) -> None:
+        """notify_on_fail should default to True."""
+        config = ArchitectConfig()
+        assert config.notify_on_fail is True
+
+    def test_notify_on_complete_can_be_false(self) -> None:
+        """notify_on_complete should accept False."""
+        config = ArchitectConfig(notify_on_complete=False)
+        assert config.notify_on_complete is False
+
+    def test_notify_on_fail_can_be_false(self) -> None:
+        """notify_on_fail should accept False."""
+        config = ArchitectConfig(notify_on_fail=False)
+        assert config.notify_on_fail is False
+
+    def test_notify_fields_survive_resolve(self) -> None:
+        """notify_on_complete and notify_on_fail should survive resolve()."""
+        config = ArchitectConfig(notify_on_complete=False, notify_on_fail=False)
+        resolved = config.resolve(Path("/project/root"))
+        assert resolved.notify_on_complete is False
+        assert resolved.notify_on_fail is False
+
+    def test_notify_fields_load_from_toml(self, tmp_path: Path) -> None:
+        """Should load notify flags from architect.toml."""
+        (tmp_path / "architect.toml").write_text(
+            "[architect]\nnotify_on_complete = false\nnotify_on_fail = false\n",
+            encoding="utf-8",
+        )
+        config = load_config(tmp_path)
+        assert config.notify_on_complete is False
+        assert config.notify_on_fail is False
+
+    def test_notify_fields_round_trip(self, tmp_path: Path) -> None:
+        """notify_on_complete and notify_on_fail round-trip through write/load."""
+        write_config(tmp_path, {"notify_on_complete": False, "notify_on_fail": False})
+        config = load_config(tmp_path)
+        assert config.notify_on_complete is False
+        assert config.notify_on_fail is False

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from the_architect.tui.screens.circuit_screen import CircuitApp, run_circuit_screen
 from the_architect.tui.screens.config import ConfigApp, run_config_screen
+from the_architect.tui.screens.diff_screen import DiffApp, run_diff_screen
 from the_architect.tui.screens.execution import ExecutionScreen
+from the_architect.tui.screens.history_screen import HistoryApp, run_history_screen
 from the_architect.tui.screens.list_screen import ListApp, run_list_screen
 from the_architect.tui.screens.logs_screen import LogsApp, run_logs_screen
 from the_architect.tui.screens.mode_selection import ModeSelectionApp, run_mode_selection
@@ -17,7 +19,9 @@ from the_architect.tui.screens.wait import WaitApp
 __all__ = [
     "CircuitApp",
     "ConfigApp",
+    "DiffApp",
     "ExecutionScreen",
+    "HistoryApp",
     "ListApp",
     "LogsApp",
     "ModeSelectionApp",
@@ -29,6 +33,8 @@ __all__ = [
     "WaitApp",
     "run_circuit_screen",
     "run_config_screen",
+    "run_diff_screen",
+    "run_history_screen",
     "run_list_screen",
     "run_logs_screen",
     "run_mode_selection",

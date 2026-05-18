@@ -195,6 +195,37 @@ class ModelTokenRecord(BaseModel):
     cost_estimate: float = Field(default=0.0, description="Estimated cost in USD")
 
 
+class LedgerTaskRecord(BaseModel):
+    """Per-task cost and token record within a single run record.
+
+    One entry per task in the run, capturing the task's individual token
+    usage, model, estimated cost, and outcome.
+
+    Attributes:
+        task_id: Task prefix identifier (e.g. ``"T01"``).
+        title: Human-readable task title.
+        status: Task outcome — ``"done"``, ``"failed"``, or ``"skipped"``.
+        input_tokens: Prompt / input tokens consumed by this task.
+        output_tokens: Completion / output tokens consumed by this task.
+        cache_read_tokens: Tokens read from provider cache by this task.
+        cache_write_tokens: Tokens written to provider cache by this task.
+        model: Model identifier string used by this task.
+        cost_estimate: Estimated cost for this task in USD.
+        duration_seconds: Wall-clock duration of the task.
+    """
+
+    task_id: str = Field(description="Task prefix identifier (e.g. T01)")
+    title: str = Field(default="", description="Human-readable task title")
+    status: str = Field(description="Task outcome: done, failed, or skipped")
+    input_tokens: int = Field(default=0, description="Prompt / input tokens")
+    output_tokens: int = Field(default=0, description="Completion / output tokens")
+    cache_read_tokens: int = Field(default=0, description="Tokens read from cache")
+    cache_write_tokens: int = Field(default=0, description="Tokens written to cache")
+    model: str = Field(default="", description="Model identifier string")
+    cost_estimate: float = Field(default=0.0, description="Estimated cost in USD")
+    duration_seconds: float = Field(default=0.0, description="Wall-clock duration in seconds")
+
+
 class LedgerRunRecord(BaseModel):
     """A single run-level record in the cross-run token ledger.
 
@@ -208,6 +239,7 @@ class LedgerRunRecord(BaseModel):
         total_tokens: Sum of all task tokens across the run.
         total_cost_estimate: Estimated total cost in USD.
         model_breakdown: Per-model token and cost breakdown.
+        task_breakdown: Per-task token, cost, and outcome breakdown.
         task_count: Number of tasks executed in this run.
         outcome: ``"success"`` or ``"failure"``.
         duration_seconds: Wall-clock duration of the run.
@@ -226,6 +258,9 @@ class LedgerRunRecord(BaseModel):
     total_cost_estimate: float = Field(default=0.0, description="Estimated cost in USD")
     model_breakdown: list[ModelTokenRecord] = Field(
         default_factory=list, description="Per-model token and cost breakdown"
+    )
+    task_breakdown: list[LedgerTaskRecord] = Field(
+        default_factory=list, description="Per-task token, cost, and outcome breakdown"
     )
     task_count: int = Field(default=0, description="Number of tasks in the run")
     outcome: str = Field(default="failure", description="Run outcome: success or failure")
@@ -299,6 +334,32 @@ class TokenLedger(BaseModel):
             r
             for r in self.records
             if (start is None or r.timestamp >= start) and (end is None or r.timestamp < end)
+        ]
+        return TokenLedger(records=filtered)
+
+    def filter_by_model(
+        self,
+        model: str,
+    ) -> TokenLedger:
+        """Return a new ledger containing only records that used *model*.
+
+        The *model* argument is normalised (lower-cased, stripped) before
+        comparison.  A record matches when any entry in its
+        ``model_breakdown`` has a model name that equals the normalised
+        target after the same normalisation.
+
+        Args:
+            model: Model identifier to filter by (e.g. ``"gpt-4o"`` or
+                ``"openai/gpt-4o"``).
+
+        Returns:
+            A new :class:`TokenLedger` with matching records.
+        """
+        normalised = _normalise_model(model)
+        filtered = [
+            r
+            for r in self.records
+            if any(_normalise_model(mb.model) == normalised for mb in r.model_breakdown)
         ]
         return TokenLedger(records=filtered)
 
@@ -427,11 +488,37 @@ def append_run(
 
     total_tokens = sum(r.tokens.total for r in results)
 
+    # Build per-task breakdown
+    task_breakdown: list[LedgerTaskRecord] = []
+    for r in results:
+        task_cost = estimate_cost_detailed(
+            input_tokens=r.tokens.input_tokens,
+            output_tokens=r.tokens.output_tokens,
+            cache_read_tokens=r.tokens.cache_read_tokens,
+            cache_write_tokens=r.tokens.cache_write_tokens,
+            model=r.model or "unknown",
+        )
+        task_breakdown.append(
+            LedgerTaskRecord(
+                task_id=r.prefix,
+                title=r.title,
+                status=r.status,
+                input_tokens=r.tokens.input_tokens,
+                output_tokens=r.tokens.output_tokens,
+                cache_read_tokens=r.tokens.cache_read_tokens,
+                cache_write_tokens=r.tokens.cache_write_tokens,
+                model=r.model or "",
+                cost_estimate=task_cost,
+                duration_seconds=r.duration_seconds,
+            )
+        )
+
     record = LedgerRunRecord(
         goal_summary=goal_summary[:200],
         total_tokens=total_tokens,
         total_cost_estimate=round(total_cost, 6),
         model_breakdown=breakdown,
+        task_breakdown=task_breakdown,
         task_count=len(results),
         outcome=outcome,
         duration_seconds=duration_seconds,

@@ -8,7 +8,7 @@ the same data that :func:`~the_architect.core.success.print_success_summary`
 prints on a plain terminal.
 
 The screen auto-exits when the user presses any of the advertised keys
-(``q``, ``Enter``, ``Escape``), passing ``True`` back to the caller so
+(``q``, ``Escape``), passing ``True`` back to the caller so
 :meth:`ArchitectApp.push_and_wait` knows a clean exit was requested.
 """
 
@@ -68,11 +68,13 @@ class SuccessScreen(Screen[bool]):
         total_tokens: Accumulated :class:`~the_architect.core.runner.TokenUsage`.
         success_md_path: Path to the written SUMMARY.md, or ``None``.
         retrospective_rounds: Optional list of retrospective summaries.
+        session_cost_usd: Estimated session cost in USD.
+        token_budget_per_run: Per-run token budget cap (0 = unlimited). When total
+            tokens exceed this value, the headline shows a budget-exceeded warning.
     """
 
     BINDINGS = [
         Binding("q", "exit_screen", "Exit", show=True),
-        Binding("enter", "exit_screen", "Exit", show=True),
         Binding("escape", "exit_screen", "Exit", show=True),
     ]
 
@@ -140,6 +142,7 @@ class SuccessScreen(Screen[bool]):
         success_md_path: str | None = None,
         retrospective_rounds: list[RetrospectiveRound] | None = None,
         session_cost_usd: float = 0.0,
+        token_budget_per_run: int = 0,
     ) -> None:
         super().__init__()
         self._results = results
@@ -150,6 +153,7 @@ class SuccessScreen(Screen[bool]):
         self._frame_index = 0
         self._current_frame = next_matrix_frame(self._frame_index)
         self._session_cost_usd = session_cost_usd
+        self._token_budget_per_run = token_budget_per_run
         # If cost was not supplied, try to compute it from results
         if session_cost_usd == 0.0 and results:
             try:
@@ -187,7 +191,7 @@ class SuccessScreen(Screen[bool]):
                     f"[dim]Summary written to {self._success_md_path}[/dim]",
                     id="success_file",
                 )
-            yield Static("[dim]Press Enter or Q to exit[/dim]", id="success_hint")
+            yield Static("[dim]Press Q or Esc to exit[/dim]", id="success_hint")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -218,6 +222,14 @@ class SuccessScreen(Screen[bool]):
         done = sum(1 for r in self._results if r.status == "done")
         failed = sum(1 for r in self._results if r.status == "failed")
         total = len(self._results)
+        # Check if run budget was exceeded
+        if (
+            self._token_budget_per_run > 0
+            and self._total_tokens.total >= self._token_budget_per_run
+        ):
+            return (
+                f"[bold $warning]⚠  Run budget exceeded — {done} task(s) completed[/bold $warning]"
+            )
         if failed == 0:
             return f"[bold $accent]✓  All {done} task(s) completed[/bold $accent]"
         return f"[bold red]✗  {failed} task(s) failed[/bold red]  [dim]{done}/{total} done[/dim]"

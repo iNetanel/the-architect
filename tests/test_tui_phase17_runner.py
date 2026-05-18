@@ -93,6 +93,49 @@ class TestArchitectAppRunner:
         if sys.platform != "win32":
             assert tty.getvalue() == output
 
+    def test_resetup_terminal_after_sleep_reenables_modes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """resetup_terminal_after_sleep re-enables alternate screen and mouse tracking."""
+        from the_architect.tui.terminal import resetup_terminal_after_sleep
+
+        stdout = _TtyStringIO()
+        tty = io.StringIO()
+        monkeypatch.setattr("sys.stdout", stdout)
+        monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+
+        real_open = builtins.open
+
+        def _open(path: str, *args: object, **kwargs: object) -> object:
+            if path == "/dev/tty":
+                return _StringIOContext(tty)
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", _open)
+
+        resetup_terminal_after_sleep()
+
+        output = stdout.getvalue()
+        # Re-setup sequence should include alternate screen enter and mouse tracking
+        assert "\033[?1049h" in output  # alternate screen enter
+        assert "\033[?1003h" in output  # any-event mouse tracking
+        assert "\033[?2004h" in output  # bracketed paste
+        assert "\033[?1006h" in output  # SGR mouse mode
+        # /dev/tty should also receive the sequence
+        if sys.platform != "win32":
+            assert "\033[?1049h" in tty.getvalue()
+
+    def test_resetup_terminal_after_sleep_noop_in_pytest(self) -> None:
+        """resetup_terminal_after_sleep is a no-op when PYTEST_CURRENT_TEST is set."""
+        import os
+
+        from the_architect.tui.terminal import resetup_terminal_after_sleep
+
+        # PYTEST_CURRENT_TEST is set by pytest — function should be no-op
+        assert "PYTEST_CURRENT_TEST" in os.environ
+        # Should not raise or write anything
+        resetup_terminal_after_sleep()
+
     def test_unexpected_app_exit_before_worker_does_not_hang(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

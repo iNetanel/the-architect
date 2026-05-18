@@ -319,3 +319,145 @@ def test_success_screen_computes_cost_when_not_supplied() -> None:
     assert screen._session_cost_usd > 0
     rendered = screen._render_totals()
     assert "$" in rendered
+
+
+# ---------------------------------------------------------------------------
+# T02.3 — Budget display in Costs tab
+# ---------------------------------------------------------------------------
+
+
+def test_costs_tab_shows_budget_section() -> None:
+    """Budget section renders when budget keys are present in costs dict."""
+    from the_architect.tui.screens.execution import ExecutionScreen
+
+    screen = ExecutionScreen()
+    screen.update_costs(
+        {
+            "session_cost_usd": 0.25,
+            "session_tokens": 50000,
+            "budget_per_run": 200_000,
+            "budget_per_run_used": 50_000,
+            "budget_per_run_remaining": 150_000,
+            "budget_per_run_pct": 25.0,
+        }
+    )
+    rendered = screen._render_costs()
+    assert "Token Budget" in rendered
+    assert "200.0K" in rendered  # limit
+    assert "50.0K" in rendered  # used
+    assert "150.0K" in rendered  # remaining
+    assert "25%" in rendered  # percentage
+
+
+def test_costs_tab_budget_hidden_without_keys() -> None:
+    """Budget section is hidden when no budget keys in costs dict."""
+    from the_architect.tui.screens.execution import ExecutionScreen
+
+    screen = ExecutionScreen()
+    screen.update_costs(
+        {
+            "session_cost_usd": 0.25,
+            "session_tokens": 50000,
+        }
+    )
+    rendered = screen._render_costs()
+    assert "Token Budget" not in rendered
+
+
+def test_costs_tab_budget_color_green() -> None:
+    """Budget section uses green when >50% remaining (used < 50%)."""
+    from the_architect.tui.screens.execution import ExecutionScreen
+
+    screen = ExecutionScreen()
+    screen.update_costs(
+        {
+            "session_tokens": 50000,
+            "budget_per_run": 200_000,
+            "budget_per_run_used": 50_000,
+            "budget_per_run_remaining": 150_000,
+            "budget_per_run_pct": 25.0,
+        }
+    )
+    rendered = screen._render_costs()
+    # 25% used = 75% remaining > 50% → green
+    assert "[green]" in rendered
+
+
+def test_costs_tab_budget_color_yellow() -> None:
+    """Budget section uses yellow when 20-50% remaining."""
+    from the_architect.tui.screens.execution import ExecutionScreen
+
+    screen = ExecutionScreen()
+    screen.update_costs(
+        {
+            "session_tokens": 150000,
+            "budget_per_run": 200_000,
+            "budget_per_run_used": 150_000,
+            "budget_per_run_remaining": 50_000,
+            "budget_per_run_pct": 75.0,
+        }
+    )
+    rendered = screen._render_costs()
+    # 75% used = 25% remaining (20-50%) → yellow
+    assert "[yellow]" in rendered
+
+
+def test_costs_tab_budget_color_red() -> None:
+    """Budget section uses red when <20% remaining."""
+    from the_architect.tui.screens.execution import ExecutionScreen
+
+    screen = ExecutionScreen()
+    screen.update_costs(
+        {
+            "session_tokens": 190000,
+            "budget_per_run": 200_000,
+            "budget_per_run_used": 190_000,
+            "budget_per_run_remaining": 10_000,
+            "budget_per_run_pct": 95.0,
+        }
+    )
+    rendered = screen._render_costs()
+    # 95% used = 5% remaining < 20% → red
+    assert "[red]" in rendered
+
+
+def test_costs_tab_budget_remaining_zero_when_exceeded() -> None:
+    """Budget remaining shows 0 when usage exceeds limit."""
+    from the_architect.tui.screens.execution import ExecutionScreen
+
+    screen = ExecutionScreen()
+    screen.update_costs(
+        {
+            "session_tokens": 250000,
+            "budget_per_run": 200_000,
+            "budget_per_run_used": 250_000,
+            "budget_per_run_remaining": 0,
+            "budget_per_run_pct": 100.0,
+        }
+    )
+    rendered = screen._render_costs()
+    assert "Token Budget" in rendered
+    assert "0 tokens" in rendered  # remaining shows 0
+    # 100% used = 0% remaining < 20% → red
+    assert "[red]" in rendered
+
+
+def test_costs_tab_budget_progress_bar_rendered() -> None:
+    """Budget section includes a visual progress bar."""
+    from the_architect.tui.screens.execution import ExecutionScreen
+
+    screen = ExecutionScreen()
+    screen.update_costs(
+        {
+            "session_tokens": 100000,
+            "budget_per_run": 200_000,
+            "budget_per_run_used": 100_000,
+            "budget_per_run_remaining": 100_000,
+            "budget_per_run_pct": 50.0,
+        }
+    )
+    rendered = screen._render_costs()
+    # Progress bar uses █ and ░ characters
+    assert "█" in rendered
+    assert "░" in rendered
+    assert "50%" in rendered

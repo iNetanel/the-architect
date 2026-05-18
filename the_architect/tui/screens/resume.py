@@ -164,6 +164,23 @@ class ResumeScreen(Screen[dict[str, bool | int | str]]):
                 else ""
             )
             yield Input(placeholder="0", id="inp_budget", value=starting_budget)
+            yield Label("Token budget/run (0 = unlimited):")
+            starting_budget_run = (
+                str(self._config.token_budget_per_run)
+                if self._config.token_budget_per_run > 0
+                else ""
+            )
+            yield Input(placeholder="0", id="inp_budget_run", value=starting_budget_run)
+            yield BlankOffCheckbox(
+                "Notify on complete  (desktop alert)",
+                id="chk_notify_complete",
+                value=bool(self._config.notify_on_complete),
+            )
+            yield BlankOffCheckbox(
+                "Notify on fail  (desktop alert)",
+                id="chk_notify_fail",
+                value=bool(self._config.notify_on_fail),
+            )
 
             yield Static("")
             yield Static(
@@ -245,12 +262,24 @@ class ResumeScreen(Screen[dict[str, bool | int | str]]):
         except ValueError:
             budget = 0
 
+        raw_budget_run = self.query_one("#inp_budget_run", Input).value or "0"
+        try:
+            budget_run = int(raw_budget_run.strip() or "0")
+        except ValueError:
+            budget_run = 0
+
+        notify_complete = bool(self.query_one("#chk_notify_complete", Checkbox).value)
+        notify_fail = bool(self.query_one("#chk_notify_fail", Checkbox).value)
+
         self.dismiss(
             {
                 "free": free,
                 "persistent": persistent,
                 "integrity": integrity,
                 "token_budget_per_hour": max(budget, 0),
+                "token_budget_per_run": max(budget_run, 0),
+                "notify_on_complete": notify_complete,
+                "notify_on_fail": notify_fail,
                 "action": action,
             }
         )

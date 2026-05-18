@@ -487,8 +487,8 @@ class TestSuccessScreenExit:
             assert not isinstance(app.screen, SuccessScreen)
 
     @pytest.mark.asyncio
-    async def test_key_enter_exits_screen(self) -> None:
-        """Pressing Enter triggers the exit action."""
+    async def test_key_enter_does_not_exit_screen(self) -> None:
+        """Pressing Enter does NOT exit — only Q and Esc are exit keys."""
         results = [_make_task_result()]
         tokens = _make_token_usage()
         screen = SuccessScreen(
@@ -503,7 +503,7 @@ class TestSuccessScreenExit:
             await pilot.pause(0.05)
             await pilot.press("enter")
             await pilot.pause(0.05)
-            assert not isinstance(app.screen, SuccessScreen)
+            assert isinstance(app.screen, SuccessScreen)
 
     @pytest.mark.asyncio
     async def test_key_escape_exits_screen(self) -> None:

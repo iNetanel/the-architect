@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 #: Statuses that mark a task as terminal — the main loop will skip tasks
 #: whose PROGRESS.md row shows any of these.  Anything NOT in this set is
 #: treated as "still needs work" (Pending, or a malformed/missing row).
-TERMINAL_STATUSES: tuple[str, ...] = ("Done", "Failed", "Blocked")
+TERMINAL_STATUSES: tuple[str, ...] = ("Done", "Failed", "Blocked", "Skipped")
 
 
 def _task_status_pattern(prefix: str, status: str) -> re.Pattern[str]:
@@ -301,20 +301,29 @@ class ProgressState(BaseModel):
         default_factory=list,
         description="List of task prefixes marked ``Blocked`` (terminal, resource-limited)",
     )
+    skipped_tasks: list[str] = Field(
+        default_factory=list,
+        description="List of task prefixes marked ``Skipped`` (terminal, dependency unmet)",
+    )
     raw_content: str = Field(default="", description="Raw file content")
 
     model_config = {"frozen": False}
 
     @property
     def resolved_tasks(self) -> list[str]:
-        """All terminal task prefixes — Done, Failed, or Blocked.
+        """All terminal task prefixes — Done, Failed, Blocked, or Skipped.
 
         Use this when deciding whether a task should be re-attempted: if a
         prefix appears here, the main execution loop should skip it.
         """
         resolved: list[str] = []
         seen: set[str] = set()
-        for collection in (self.done_tasks, self.failed_tasks, self.blocked_tasks):
+        for collection in (
+            self.done_tasks,
+            self.failed_tasks,
+            self.blocked_tasks,
+            self.skipped_tasks,
+        ):
             for prefix in collection:
                 if prefix not in seen:
                     seen.add(prefix)
@@ -375,6 +384,7 @@ def read_progress(progress_file: Path | str) -> ProgressState:
     done_tasks: list[str] = []
     failed_tasks: list[str] = []
     blocked_tasks: list[str] = []
+    skipped_tasks: list[str] = []
 
     # Support both new (Tasks) and legacy (Sessions) format
     completed_match = re.search(r"\*\*Tasks completed:\*\*\s*(\d+)", content)
@@ -391,9 +401,10 @@ def read_progress(progress_file: Path | str) -> ProgressState:
 
     # Scan rows once and bucket prefixes by terminal status.  The status
     # match only needs to be a prefix of the cell contents so annotated
-    # terminals such as "Failed (3 attempts)" are recognised correctly.
+    # terminals such as "Failed (3 attempts)" or "Skipped (dependency T01 failed)"
+    # are recognised correctly.
     _row_pattern = re.compile(
-        r"^\|\s*(T\d+(?:R\d+|[A-Z])?)\s+\|[^|]*\|\s*(Done|Failed|Blocked)\b[^|]*\|",
+        r"^\|\s*(T\d+(?:R\d+|[A-Z])?)\s+\|[^|]*\|\s*(Done|Failed|Blocked|Skipped)\b[^|]*\|",
         re.MULTILINE,
     )
     for match in _row_pattern.finditer(content):
@@ -405,6 +416,8 @@ def read_progress(progress_file: Path | str) -> ProgressState:
             failed_tasks.append(task_prefix)
         elif status == "Blocked" and task_prefix not in blocked_tasks:
             blocked_tasks.append(task_prefix)
+        elif status == "Skipped" and task_prefix not in skipped_tasks:
+            skipped_tasks.append(task_prefix)
 
     return ProgressState(
         tasks_completed=tasks_completed,
@@ -412,6 +425,7 @@ def read_progress(progress_file: Path | str) -> ProgressState:
         done_tasks=done_tasks,
         failed_tasks=failed_tasks,
         blocked_tasks=blocked_tasks,
+        skipped_tasks=skipped_tasks,
         raw_content=content,
     )
 

@@ -25,7 +25,14 @@ from the_architect.core.progress import (
     task_is_done,
     task_is_resolved,
 )
-from the_architect.core.tasks import Task, TaskPlan, discover_tasks, is_retro_task
+from the_architect.core.tasks import (
+    Task,
+    TaskPlan,
+    detect_dependency_cycles,
+    detect_missing_dependencies,
+    discover_tasks,
+    is_retro_task,
+)
 
 _STREAM_LEFT_PAD = "  "
 _PROVIDER_IDLE_TIMEOUT_SECONDS = 900.0
@@ -55,6 +62,13 @@ class StreamRenderer:
     def clear_footer(self) -> None:
         """Clear footer/status text if supported."""
 
+    def set_feedback(self, message: str | None) -> None:
+        """Set or clear the pending feedback banner in the TUI footer.
+
+        Args:
+            message: Feedback text to display, or ``None`` to clear.
+        """
+
     def close(self) -> None:
         """Release renderer resources."""
 
@@ -69,6 +83,9 @@ class PlainStreamRenderer(StreamRenderer):
         return
 
     def clear_footer(self) -> None:
+        return
+
+    def set_feedback(self, message: str | None) -> None:
         return
 
     def close(self) -> None:
@@ -94,6 +111,9 @@ class ManagedExecutionRenderer(StreamRenderer):
         return
 
     def clear_footer(self) -> None:
+        return
+
+    def set_feedback(self, message: str | None) -> None:
         return
 
     def close(self) -> None:
@@ -202,6 +222,10 @@ class TaskResult(BaseModel):
     interruption_reason: str = Field(
         default="",
         description="Human-readable reason for an interrupted provider attempt.",
+    )
+    skip_reason: str = Field(
+        default="",
+        description="Reason the task was skipped (e.g. dependency unmet). Empty when not skipped.",
     )
 
 
@@ -2030,6 +2054,8 @@ def build_instruction(
     config: ArchitectConfig,
     previous_summary: str = "",
     architect_md_content: str = "",
+    run_tokens_used_so_far: int = 0,
+    user_feedback: str | None = None,
 ) -> str:
     """Build the instruction string for opencode run.
 
@@ -2042,6 +2068,13 @@ def build_instruction(
     run — so the agent can pick up where it left off without re-discovering
     the problem from scratch (IMP-05).
 
+    When budget limits are configured, injects a budget context section so the
+    agent knows how many tokens previous tasks consumed and how much capacity
+    remains for this and future tasks.
+
+    When user feedback is provided, injects a USER FEEDBACK section so the
+    agent receives guidance between tasks.
+
     Args:
         task: The task to build instructions for.
         attempt: The current attempt number (1-based).
@@ -2051,6 +2084,11 @@ def build_instruction(
         architect_md_content: Optional ARCHITECT.md content to inject into
             the instruction so the build agent can read accumulated project
             knowledge.
+        run_tokens_used_so_far: Cumulative tokens consumed by previous tasks
+            in this run. Used to inform the agent of remaining budget.
+        user_feedback: Optional user feedback message to inject into the
+            instruction. Loaded from ``.architect/feedback.json`` by the runner
+            and cleared after one-time consumption.
 
     Returns:
         A complete instruction string for opencode.
@@ -2074,6 +2112,40 @@ def build_instruction(
     lines.append("")
     lines.append("---")
     lines.append("")
+
+    # --- Budget context — inform agent of token spend limits ---
+    if config.token_budget_per_run > 0 or config.token_budget_per_hour > 0:
+        lines.append("=== TOKEN BUDGET CONTEXT ===")
+        lines.append("The Architect is running with token budget limits. Use this information to")
+        lines.append(
+            " self-regulate effort — complex tasks should be scoped to fit within remaining budget."
+        )
+        lines.append("")
+        if config.token_budget_per_run > 0:
+            remaining = max(0, config.token_budget_per_run - run_tokens_used_so_far)
+            lines.append(f"- Per-run budget: {config.token_budget_per_run:,} tokens")
+            lines.append(f"- Tokens used by previous tasks: {run_tokens_used_so_far:,}")
+            lines.append(f"- Remaining capacity: {remaining:,} tokens")
+        if config.token_budget_per_hour > 0:
+            if config.token_budget_per_run > 0:
+                lines.append("")
+            lines.append(f"- Hourly budget: {config.token_budget_per_hour:,} tokens/hour")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+    # --- User feedback — injected by runner from .architect/feedback.json ---
+    if user_feedback:
+        lines.append("=== USER FEEDBACK ===")
+        lines.append(
+            "The user provided this feedback between tasks. Follow this guidance "
+            "when completing the current task."
+        )
+        lines.append("")
+        lines.append(user_feedback)
+        lines.append("")
+        lines.append("---")
+        lines.append("")
 
     # --- ARCHITECT.md — persistent project intelligence ---
     if architect_md_content:
@@ -2367,6 +2439,8 @@ async def run_task_once(
     provider: ArchitectProvider | None = None,
     on_first_output: Callable[[], None] | None = None,
     renderer: StreamRenderer | None = None,
+    run_tokens_used_so_far: int = 0,
+    user_feedback: str | None = None,
 ) -> TaskResult:
     """Run one attempt of a task.
 
@@ -2381,6 +2455,10 @@ async def run_task_once(
         architect_md_content: Optional ARCHITECT.md content to inject.
         provider: The AI CLI provider to use.  Defaults to OpenCode when
             not specified (backward-compatible behaviour).
+        run_tokens_used_so_far: Cumulative tokens consumed by previous tasks
+            in this run, passed to build_instruction for budget context.
+        user_feedback: Optional user feedback message to inject into the
+            instruction, loaded from ``.architect/feedback.json``.
 
     Returns:
         TaskResult with status, duration, tokens, and model info.
@@ -2416,6 +2494,8 @@ async def run_task_once(
         config,
         previous_summary=previous_summary,
         architect_md_content=architect_md_content,
+        run_tokens_used_so_far=run_tokens_used_so_far,
+        user_feedback=user_feedback,
     )
     model = select_model(attempt, config, model_override)
 
@@ -2663,6 +2743,7 @@ async def run_task(
     provider: ArchitectProvider | None = None,
     on_first_output: Callable[[], None] | None = None,
     renderer: StreamRenderer | None = None,
+    run_tokens_used_so_far: int = 0,
 ) -> TaskResult:
     """Run a task with automatic retries, model fallbacks, and circuit breaking.
 
@@ -2735,6 +2816,25 @@ async def run_task(
     except Exception:
         pass  # Non-fatal — execution proceeds without ARCHITECT.md context
 
+    # ── Load user feedback for injection into execution instructions ────
+    user_feedback: str | None = None
+    try:
+        from the_architect.core.feedback import load_feedback
+
+        feedback_state = load_feedback(config.project_root)
+        if feedback_state is not None:
+            user_feedback = feedback_state.message
+            logger.info(
+                f"Task {task.prefix}: loaded user feedback "
+                f"(target={feedback_state.target_task or 'next task'}, "
+                f"written={feedback_state.written_at})"
+            )
+            # Push feedback to the TUI footer for visibility
+            if renderer is not None:
+                renderer.set_feedback(user_feedback)
+    except Exception:
+        pass  # Non-fatal — execution proceeds without feedback
+
     # ── Pre-run circuit check ───────────────────────────────────────────
     if cb is not None:
         allowed, reason = cb.can_run(task.prefix)
@@ -2752,6 +2852,16 @@ async def run_task(
                     logger.error(f"Circuit cooldown resume failed for {task.prefix}: {cw_exc!r}")
             else:
                 logger.warning(f"Task {task.prefix} skipped by circuit breaker: {reason}")
+                # Clear feedback so it doesn't carry to the next task
+                if user_feedback is not None:
+                    try:
+                        from the_architect.core.feedback import clear_feedback
+
+                        clear_feedback(config.project_root)
+                    except Exception:
+                        pass
+                    if renderer is not None:
+                        renderer.set_feedback(None)
                 return TaskResult(
                     prefix=task.prefix,
                     title=task.title or task.name,
@@ -2837,6 +2947,8 @@ async def run_task(
                 provider=provider,
                 on_first_output=on_first_output,
                 renderer=renderer,
+                run_tokens_used_so_far=run_tokens_used_so_far,
+                user_feedback=user_feedback,
             )
         except Exception as exc:
             # run_task_once should never raise (it has its own catch-all),
@@ -3029,6 +3141,18 @@ async def run_task(
             _clear_sleep_interrupted(task.prefix)
             _clear_idle_timeout(task.prefix)
 
+            # Clear user feedback after successful consumption (one-time use)
+            if user_feedback is not None:
+                try:
+                    from the_architect.core.feedback import clear_feedback
+
+                    clear_feedback(config.project_root)
+                    logger.info(f"Task {task.prefix}: cleared user feedback after successful task")
+                except Exception:
+                    pass  # Non-fatal — feedback will be cleared on next task anyway
+                if renderer is not None:
+                    renderer.set_feedback(None)
+
             # Update the result with accumulated tokens and total attempts.
             # outcome_summary must be forwarded so downstream reassessment
             # can check "Downstream impact: possible" on the returned result.
@@ -3220,6 +3344,17 @@ async def run_task(
                 break
 
     logger.error(f"Task {task.prefix} failed after {config.max_retries} attempts")
+    # Clear feedback after task failure so it doesn't carry to the next task
+    if user_feedback is not None:
+        try:
+            from the_architect.core.feedback import clear_feedback
+
+            clear_feedback(config.project_root)
+            logger.info(f"Task {task.prefix}: cleared user feedback after failed task")
+        except Exception:
+            pass  # Non-fatal — feedback will be cleared on next task anyway
+        if renderer is not None:
+            renderer.set_feedback(None)
     # Return failed result with accumulated tokens and the outcome summary from
     # the last attempt so _record_task_outcome / tasks/SUMMARY.md have useful context.
     _last_reason = last_result.interruption_reason if last_result else ""
@@ -3386,9 +3521,104 @@ class HourlyTokenBudget:
         self._tokens_this_hour = 0
 
 
+class RunTokenBudget:
+    """Tracks cumulative token usage against a per-run budget cap.
+
+    When ``budget`` is 0 the tracker is disabled — all checks are no-ops.
+
+    Unlike :class:`HourlyTokenBudget`, this tracker has no rolling window:
+    tokens accumulate for the entire run and never reset.  When the budget
+    is exceeded, the run stops cleanly with a clear message rather than
+    pausing to wait for a window reset.
+
+    Usage::
+
+        budget = RunTokenBudget(config.token_budget_per_run)
+        budget.add(task_result.tokens.total)
+        if budget.exceeded():
+            # stop the run — budget is exhausted
+
+    Args:
+        budget: Maximum tokens for the entire run.  0 = disabled.
+    """
+
+    def __init__(self, budget: int) -> None:
+        self._budget = budget
+        self._tokens_total: int = 0
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    @property
+    def enabled(self) -> bool:
+        """True when a non-zero budget is configured."""
+        return self._budget > 0
+
+    @property
+    def used(self) -> int:
+        """Total tokens recorded so far this run."""
+        return self._tokens_total
+
+    def add(self, tokens: int) -> None:
+        """Record ``tokens`` used by the most recently completed task.
+
+        Args:
+            tokens: Number of tokens to add (input + output).
+        """
+        if not self.enabled or tokens <= 0:
+            return
+
+        self._tokens_total += tokens
+        logger.debug(
+            f"Run token budget: +{tokens:,} → {self._tokens_total:,} / {self._budget:,} total"
+        )
+
+    def exceeded(self) -> bool:
+        """True when the per-run budget has been exceeded.
+
+        Always False when the budget is disabled.
+
+        Returns:
+            True if total tokens used exceed the configured budget.
+        """
+        if not self.enabled:
+            return False
+        return self._tokens_total >= self._budget
+
+
 # ---------------------------------------------------------------------------
 # Full run loop
 # ---------------------------------------------------------------------------
+
+
+def _check_task_dependencies(
+    task: Task,
+    completed_prefixes: set[str],
+) -> tuple[bool, str]:
+    """Check whether all dependencies for a task are satisfied.
+
+    A dependency is satisfied when its prefix appears in *completed_prefixes*
+    (which includes Done, Failed, and Skipped prefixes — any terminal state).
+    If a dependency is not satisfied, the task must be skipped.
+
+    Args:
+        task: The task to check.
+        completed_prefixes: Set of task prefixes that have reached a terminal
+            state (Done, Failed, Skipped, or Blocked).
+
+    Returns:
+        Tuple of (deps_satisfied, skip_reason). If satisfied, skip_reason is
+        an empty string. If not satisfied, skip_reason explains which
+        dependency caused the skip.
+    """
+    if not task.depends_on:
+        return True, ""
+
+    unmet = [dep for dep in task.depends_on if dep not in completed_prefixes]
+    if unmet:
+        return False, ", ".join(sorted(unmet))
+    return True, ""
 
 
 def _reconcile_progress_after_attempt(
@@ -3410,9 +3640,8 @@ def _reconcile_progress_after_attempt(
 
     - ``done``       → write ``Done`` and today's date.
     - ``failed``     → write ``Failed`` and an attempt-count annotation.
-    - ``skipped``    → leave the row untouched (the task was bypassed by
-                       the circuit breaker or a similar policy and is
-                       expected to be retried on the next run).
+    - ``skipped``    → write ``Skipped (dependency T01 failed)`` with the
+                       reason from ``task_result.skip_reason``.
     - anything else  → no-op.
 
     Missing or unreadable PROGRESS.md files are logged but never raise —
@@ -3464,6 +3693,43 @@ def _reconcile_progress_after_attempt(
             else:
                 logger.info(
                     f"Persisted Failed status for {task_result.prefix} "
+                    f"({annotation}) in PROGRESS.md"
+                )
+        elif status == "skipped":
+            # Task was skipped due to unmet dependencies — record in PROGRESS.md
+            skip_note = task_result.skip_reason or ""
+            if skip_note:
+                annotation = f"dependency {skip_note} failed"
+            else:
+                annotation = "dependency unmet"
+            if not reconcile_task_status(
+                progress_file,
+                task_result.prefix,
+                "Skipped",
+                completed=annotation,
+            ):
+                tasks_dir = progress_file.parent
+                repaired = reconcile_progress_with_task_files(
+                    progress_file, discover_tasks(tasks_dir)
+                )
+                if repaired and reconcile_task_status(
+                    progress_file,
+                    task_result.prefix,
+                    "Skipped",
+                    completed=annotation,
+                ):
+                    logger.info(
+                        f"Repaired missing PROGRESS.md row and persisted Skipped status for "
+                        f"{task_result.prefix} ({annotation})"
+                    )
+                else:
+                    logger.warning(
+                        f"PROGRESS.md has no row for {task_result.prefix} — "
+                        "cannot persist Skipped status"
+                    )
+            else:
+                logger.info(
+                    f"Persisted Skipped status for {task_result.prefix} "
                     f"({annotation}) in PROGRESS.md"
                 )
     except Exception as exc:
@@ -3578,15 +3844,33 @@ async def _run_all_inner(
     on_first_output: Callable[[], None] | None = None,
     renderer: StreamRenderer | None = None,
 ) -> bool:
-    """Inner run_all implementation (after lock acquisition)."""
-    # Track which tasks we actually attempted (skipping already-done ones).
-    # Only these tasks are checked in the final "all ok" verdict — old
-    # tasks from previous plans that still exist in tasks/ but aren't in
-    # the current PROGRESS.md must NOT cause a false failure.
-    attempted: list[Task] = []
+    """Inner run_all implementation (after lock acquisition).
+
+    Uses the parallel scheduler to determine which tasks can run concurrently
+    based on their dependency graph.  When ``max_parallel_tasks == 1`` (default),
+    the scheduler returns at most one task per batch — behaviour is identical to
+    the original sequential loop.
+
+    When ``max_parallel_tasks > 1``, independent tasks (tasks whose dependencies
+    are all satisfied) are launched concurrently via ``asyncio.gather``.
+    Token budgets, PROGRESS.md reconciliation, and circuit breaker state are
+    coordinated with ``asyncio.Lock`` to handle concurrent updates.
+    """
+    from the_architect.core.circuit import CircuitBreaker
+    from the_architect.core.parallel_scheduler import ParallelScheduler
+
+    # Track task result statuses by prefix for the final verdict check.
+    _task_result_statuses: dict[str, str] = {}
 
     # Hourly token budget — disabled when token_budget_per_hour == 0
     token_budget = HourlyTokenBudget(config.token_budget_per_hour)
+
+    # Per-run token budget — disabled when token_budget_per_run == 0
+    run_token_budget = RunTokenBudget(config.token_budget_per_run)
+
+    # Cumulative tokens used across completed tasks — passed to each new task
+    # so the agent knows how much budget capacity remains.
+    _run_tokens_so_far = 0
 
     # Build a lookup from task number → retro-task prefixes so that when a
     # plain or split T-task fails we can decide whether to continue (a retro
@@ -3596,26 +3880,160 @@ async def _run_all_inner(
         if is_retro_task(_t.prefix):
             _r_tasks_by_number.setdefault(_t.number, []).append(_t.prefix)
 
-    for task in plan.tasks:
+    # ── Dependency graph validation ──────────────────────────────────────
+    cycles = detect_dependency_cycles(plan.tasks)
+    if cycles:
+        cycle_strs = [" → ".join(c) for c in cycles]
+        logger.error(f"Dependency cycle(s) detected — aborting run: {'; '.join(cycle_strs)}")
+        return False
+
+    missing_deps = detect_missing_dependencies(plan.tasks)
+    if missing_deps:
+        for prefix, missing in missing_deps.items():
+            logger.warning(
+                f"Task {prefix} declares dependencies on non-existent tasks: "
+                f"{', '.join(missing)} — treating as unmet dependencies"
+            )
+
+    # ── Parallel scheduler ──────────────────────────────────────────────
+    max_parallel = config.max_parallel_tasks
+    scheduler = ParallelScheduler(plan, max_concurrency=max_parallel)
+
+    # Pre-populate scheduler with already-resolved tasks from PROGRESS.md.
+    # Done tasks are marked as completed; Failed/Blocked tasks are marked
+    # as failed.  This allows downstream dependents to proceed.
+    # Track which prefixes were already terminal before this run started
+    # so they are excluded from the final verdict check.
+    from the_architect.core.progress import task_is_done
+
+    _pre_existing_terminal: set[str] = set()
+    for _t in plan.tasks:
+        if _t.status.value == "done" or task_is_resolved(config.progress_file, _t.prefix):
+            _pre_existing_terminal.add(_t.prefix)
+            if task_is_done(config.progress_file, _t.prefix):
+                scheduler.complete_task(_t.prefix)
+                _task_result_statuses[_t.prefix] = "done"
+            else:
+                # Failed, Blocked, or Skipped — mark as failed in scheduler
+                # so downstream dependents can be skipped properly
+                scheduler.fail_task(_t.prefix)
+                _task_result_statuses[_t.prefix] = "failed"
+
+    logger.info(
+        f"Runner: {len(plan.tasks)} tasks, max_parallel={max_parallel}, "
+        f"{len(_task_result_statuses)} already resolved"
+    )
+
+    # ── Concurrency locks for parallel execution ────────────────────────
+    # Protects token budget updates and PROGRESS.md writes from concurrent
+    # task completions.  When max_parallel=1 these locks are still acquired
+    # but contention is zero (single-task execution).
+    _budget_lock = asyncio.Lock()
+    _progress_lock = asyncio.Lock()
+
+    # Per-task circuit breaker cache — during parallel execution each task
+    # gets its own CircuitBreaker instance.  When max_parallel=1 the shared
+    # circuit_breaker from the caller is used for backward compatibility.
+    _per_task_cb: dict[str, CircuitBreaker] = {}
+
+    # ── Single-task execution coroutine ─────────────────────────────────
+    async def _execute_one(
+        task: Task,
+    ) -> tuple[Task, TaskResult]:
+        """Run a single task through run_task and return the result.
+
+        This coroutine is submitted to asyncio.gather for concurrent
+        execution.  It handles:
+        - Already-resolved skip (PROGRESS.md terminal state)
+        - Dependency failure skip (upstream task failed)
+        - Per-task circuit breaker creation (parallel mode) or shared CB
+        - run_task invocation with retries, circuit breaking, model fallback
+        - PROGRESS.md reconciliation under lock
+        - Token budget updates under lock
+        - Callback firing (on_task_start, on_task_done, on_task_failed)
+        - Retro task continuation check
+        """
+        prefix = task.prefix
+
         # A task is skipped when its PROGRESS.md row is in any terminal
-        # state (Done, Failed, or Blocked) — not just Done.  This closes
-        # the "repeat after retrospective" loop: once the runner has
-        # persisted Failed for a task that exhausted its retries, the
-        # next run iteration will not silently re-pick it.  A human (or
-        # a reviewer-created R-task) must flip the row back to Pending
-        # to resume work.
+        # state (Done, Failed, or Blocked) — not just Done.
         if task.status.value == "done" or task_is_resolved(config.progress_file, task.prefix):
-            logger.debug(f"Skipping already-resolved task {task.prefix}")
-            continue
+            logger.debug(f"Skipping already-resolved task {prefix}")
+            return (
+                task,
+                TaskResult(
+                    prefix=prefix,
+                    title=task.title or task.name,
+                    status="done",
+                    duration_seconds=0.0,
+                    attempts=0,
+                    tokens=TokenUsage(),
+                    model="",
+                ),
+            )
 
-        attempted.append(task)
+        # ── Dependency failure check ─────────────────────────────────────
+        # The scheduler marks failed deps as terminal (so downstream tasks
+        # become ready), but we must skip tasks whose dependencies actually
+        # failed.  This matches the original runner's behaviour where
+        # _check_task_dependencies() would skip tasks with unmet deps.
+        if task.depends_on:
+            # Check if any dependency is in the scheduler's failed set
+            # by inspecting scheduler state via completed/failed counts.
+            # We track this via _task_result_statuses.
+            failed_deps = [
+                dep for dep in task.depends_on if _task_result_statuses.get(dep) == "failed"
+            ]
+            if failed_deps:
+                skip_reason = ", ".join(sorted(failed_deps))
+                logger.warning(f"Task {prefix} skipped — dependency failed: {skip_reason}")
+                task_result = TaskResult(
+                    prefix=prefix,
+                    title=task.title or task.name,
+                    status="skipped",
+                    duration_seconds=0.0,
+                    attempts=0,
+                    tokens=TokenUsage(),
+                    model="",
+                    skip_reason=skip_reason,
+                )
+                async with _progress_lock:
+                    _reconcile_progress_after_attempt(
+                        config.progress_file, task_result, config.max_retries
+                    )
+                _task_result_statuses[prefix] = task_result.status
+                if on_task_failed:
+                    try:
+                        on_task_failed(task_result)
+                    except Exception:
+                        pass
+                return task, task_result
 
+        # Fire on_task_start callback
         if on_task_start:
             try:
                 on_task_start(task)
             except Exception:
-                pass  # Callback failure must not stop the run
+                pass
 
+        # Per-task circuit breaker for parallel execution.
+        # When max_parallel=1, use the shared circuit_breaker for
+        # backward compatibility.
+        task_cb: object | None = None
+        if max_parallel > 1:
+            if prefix not in _per_task_cb:
+                _per_task_cb[prefix] = CircuitBreaker(
+                    config=config,
+                    project_root=config.project_root,
+                    free_rotator=free_rotator,
+                    provider=provider,
+                )
+                _per_task_cb[prefix].load()
+            task_cb = _per_task_cb[prefix]
+        else:
+            task_cb = circuit_breaker
+
+        # Run the task with retries, circuit breaking, model fallback
         try:
             task_result = await run_task(
                 task=task,
@@ -3624,18 +4042,17 @@ async def _run_all_inner(
                 on_attempt_done=on_attempt_done,
                 free_rotator=free_rotator,
                 on_model_switched=on_model_switched,
-                circuit_breaker=circuit_breaker,
+                circuit_breaker=task_cb,
                 on_circuit_event=on_circuit_event,
                 provider=provider,
                 on_first_output=on_first_output,
                 renderer=renderer,
+                run_tokens_used_so_far=_run_tokens_so_far,
             )
         except Exception as exc:
-            # run_task should never raise (it has its own catch-all), but if
-            # it does, synthesize a failed result and continue.
-            logger.error(f"Task {task.prefix} raised unexpectedly during run_task: {exc!r}")
+            logger.error(f"Task {prefix} raised unexpectedly during run_task: {exc!r}")
             task_result = TaskResult(
-                prefix=task.prefix,
+                prefix=prefix,
                 title=task.title or task.name,
                 status="failed",
                 duration_seconds=0.0,
@@ -3644,31 +4061,30 @@ async def _run_all_inner(
                 model="",
             )
 
-        # ── Reconcile PROGRESS.md with the runner's authoritative verdict ──
-        # This is the single point that persists "the runner saw this task
-        # complete" (or "the runner exhausted retries") into PROGRESS.md,
-        # regardless of whether the agent remembered to update the file
-        # itself.  Call it for every task before branching on success or
-        # failure so the file is always consistent with reality.
-        _reconcile_progress_after_attempt(config.progress_file, task_result, config.max_retries)
+        # ── Reconcile PROGRESS.md under lock ─────────────────────────────
+        async with _progress_lock:
+            _reconcile_progress_after_attempt(config.progress_file, task_result, config.max_retries)
 
+        # Record status for final verdict check
+        _task_result_statuses[prefix] = task_result.status
+
+        # Fire on_task_done or on_task_failed callbacks
         if task_result.status == "done":
             if on_task_done:
                 try:
                     on_task_done(task_result)
                 except Exception:
-                    pass  # Callback failure must not stop the run
+                    pass
         else:
             if on_task_failed:
                 try:
                     on_task_failed(task_result)
                 except Exception:
-                    pass  # Callback failure must not stop the run
+                    pass
 
-            # ── Check for a pending retro task before stopping ───────────
+            # ── Retro task continuation check ────────────────────────────
             # If a retro task (TXXRn) for this same task number exists and
-            # is not yet resolved, continue the loop so it can attempt
-            # recovery rather than stopping the entire run.
+            # is not yet resolved, the run can continue for recovery.
             pending_r_tasks = [
                 r_prefix
                 for r_prefix in _r_tasks_by_number.get(task.number, [])
@@ -3676,47 +4092,131 @@ async def _run_all_inner(
             ]
             if pending_r_tasks:
                 logger.warning(
-                    f"Task {task.prefix} failed after {config.max_retries} attempts — "
-                    f"pending retro task(s) {pending_r_tasks} found; continuing run for recovery."
+                    f"Task {prefix} failed after {config.max_retries} attempts — "
+                    f"pending retro task(s) {pending_r_tasks} found; "
+                    f"continuing run for recovery."
                 )
             else:
                 logger.error(
-                    f"Task {task.prefix} failed after {config.max_retries} attempts — "
-                    "stopping (subsequent tasks depend on this one).  PROGRESS.md has "
-                    "been updated to Failed so the next run will not silently re-pick it."
+                    f"Task {prefix} failed after {config.max_retries} attempts — "
+                    "continuing so downstream tasks can be skipped via dependency "
+                    "checks. PROGRESS.md has been updated to Failed so the next "
+                    "run will not silently re-pick it."
                 )
-                return False
 
-        # ── Hourly token budget check ────────────────────────────────────
-        # Add this task's tokens to the rolling hour window.  If the budget
-        # is now exceeded, pause for the remainder of the hour before
-        # continuing to the next task.  This never consumes retry slots and
-        # never changes circuit state — it is purely a spend throttle.
-        if token_budget.enabled:
-            token_budget.add(task_result.tokens.total)
-            if token_budget.exceeded():
-                remaining = token_budget.seconds_until_reset()
-                logger.info(
-                    f"Token budget: {config.token_budget_per_hour:,} tokens/hour exceeded "
-                    f"after task {task.prefix} — waiting {int(remaining)}s for hour reset"
-                )
-                try:
-                    await token_budget.wait_for_reset()
-                except asyncio.CancelledError:
-                    logger.warning("Token budget wait cancelled — stopping run")
-                    break
+        # ── Token budget updates under lock ──────────────────────────────
+        async with _budget_lock:
+            # Hourly token budget check
+            if token_budget.enabled:
+                token_budget.add(task_result.tokens.total)
 
-        # ── Inter-task pause ─────────────────────────────────────────────
-        if task != plan.tasks[-1]:
-            logger.debug(f"Pausing {config.pause_between_tasks}s between tasks")
+            # Per-run token budget check
+            if run_token_budget.enabled:
+                run_token_budget.add(task_result.tokens.total)
+
+        return task, task_result
+
+    # ── Scheduler-driven execution loop ─────────────────────────────────
+    # The loop continues while the scheduler has remaining work (pending or
+    # running tasks).  Each iteration:
+    # 1. Get the next batch of ready tasks from the scheduler
+    # 2. Launch them concurrently via asyncio.gather
+    # 3. Update scheduler state with completion results
+    # 4. Check token budgets and inter-task pause
+    # 5. Repeat until all tasks are terminal
+    while scheduler.has_remaining_work():
+        # Get next batch of ready tasks (dependencies satisfied)
+        batch = scheduler.get_next_batch()
+        if not batch:
+            # No tasks ready — but scheduler says work remains.
+            # This means all remaining pending tasks have unmet
+            # dependencies that are still pending (shouldn't happen if
+            # failed deps are terminal) or we have a genuine deadlock.
+            # Mark remaining pending tasks as failed to unblock.
+            logger.warning(
+                "Scheduler: no ready tasks but work remains — "
+                "marking remaining pending tasks as failed"
+            )
+            # Fail all remaining pending tasks to break the deadlock
+            for task in plan.tasks:
+                state = scheduler.get_state(task.prefix)
+                if state is not None and state.value == "pending":
+                    scheduler.fail_task(task.prefix)
+                    _task_result_statuses[task.prefix] = "failed"
+                    tr = TaskResult(
+                        prefix=task.prefix,
+                        title=task.title or task.name,
+                        status="failed",
+                        duration_seconds=0.0,
+                        attempts=0,
+                        tokens=TokenUsage(),
+                        model="",
+                        skip_reason="blocked by unmet dependencies",
+                    )
+                    async with _progress_lock:
+                        _reconcile_progress_after_attempt(
+                            config.progress_file, tr, config.max_retries
+                        )
+            break
+
+        # Transition tasks to running state in scheduler
+        started = scheduler.start_tasks(batch)
+        if not started:
+            logger.debug("No tasks started — all already in running state")
+            await asyncio.sleep(0.1)
+            continue
+
+        logger.info(
+            f"Launching batch: {[t.prefix for t in started]} "
+            f"({len(started)}/{max_parallel} parallel slots)"
+        )
+
+        # Execute tasks concurrently
+        coros = [_execute_one(task) for task in started]
+        results = await asyncio.gather(*coros)
+
+        # Update scheduler state with results
+        for task, task_result in results:
+            if task_result.status == "done":
+                scheduler.complete_task(task.prefix)
+            else:
+                # failed and skipped are both terminal — mark as failed
+                # so downstream dependents become ready
+                scheduler.fail_task(task.prefix)
+
+        # ── Batch-level token budget check ───────────────────────────────
+        # After a batch completes, check if budgets are exceeded.
+        if token_budget.enabled and token_budget.exceeded():
+            remaining = token_budget.seconds_until_reset()
+            logger.info(
+                f"Token budget: {config.token_budget_per_hour:,} tokens/hour "
+                f"exceeded — waiting {int(remaining)}s for hour reset"
+            )
+            try:
+                await token_budget.wait_for_reset()
+            except asyncio.CancelledError:
+                logger.warning("Token budget wait cancelled — stopping run")
+                break
+
+        if run_token_budget.enabled and run_token_budget.exceeded():
+            logger.info(
+                f"Run token budget: {config.token_budget_per_run:,} tokens "
+                f"exceeded ({run_token_budget.used:,} used) — stopping run cleanly"
+            )
+            return True
+
+        # Update cumulative token counter
+        for _, task_result in results:
+            _run_tokens_so_far += task_result.tokens.total
+
+        # ── Inter-task pause (between batches) ──────────────────────────
+        if scheduler.has_remaining_work():
+            logger.debug(f"Pausing {config.pause_between_tasks}s between batches")
             if on_task_pause:
-                # The callback (e.g. _countdown in cli.py) performs the full
-                # blocking sleep internally — do NOT also await asyncio.sleep,
-                # as that would double the pause duration.
                 try:
                     on_task_pause(config.pause_between_tasks)
                 except Exception:
-                    pass  # Callback failure must not stop the run
+                    pass
             else:
                 try:
                     await asyncio.sleep(config.pause_between_tasks)
@@ -3724,7 +4224,14 @@ async def _run_all_inner(
                     logger.warning("Inter-task pause cancelled")
                     break
 
-    # Only check tasks we actually attempted — not old tasks from previous
-    # plans that may still exist in tasks/ but aren't in PROGRESS.md.
-    all_ok = all(task_is_done(config.progress_file, task.prefix) for task in attempted)
-    return all_ok
+    # ── Final verdict ───────────────────────────────────────────────────
+    # Failed tasks cause the run to return False.  Skipped tasks (dependency
+    # unmet) and Done tasks are ok.  Tasks that were already terminal before
+    # this run started (pre-existing Failed/Blocked from previous runs) are
+    # excluded from the verdict — only failures during THIS run matter.
+    any_failed = any(
+        _task_result_statuses.get(prefix) == "failed"
+        for prefix in _task_result_statuses
+        if prefix not in _pre_existing_terminal
+    )
+    return not any_failed

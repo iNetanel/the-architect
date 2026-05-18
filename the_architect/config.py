@@ -243,12 +243,55 @@ class ArchitectConfig(BaseModel):
         ),
     )
 
+    token_budget_per_run: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Maximum tokens to spend across the entire run.  0 (default) means "
+            "no limit — the run continues regardless of total token usage.  When "
+            "the budget is exceeded, The Architect stops the run cleanly with a "
+            "clear message.  The current task is marked Done and the run ends "
+            "normally (not as a failure).  Use this alongside token_budget_per_hour "
+            "to cap both the rate of spend and the total spend."
+        ),
+    )
+
     token_ledger: bool = Field(
         default=True,
         description=(
             "When True, The Architect records each run's token usage and "
             "estimated cost to .architect/token_ledger.json after completion. "
             "Set to False to disable cross-run token ledger recording."
+        ),
+    )
+
+    notify_on_complete: bool = Field(
+        default=True,
+        description=(
+            "When True, The Architect sends a desktop notification and rings "
+            "the terminal bell when a run completes successfully. "
+            "Set to False to suppress success notifications."
+        ),
+    )
+
+    notify_on_fail: bool = Field(
+        default=True,
+        description=(
+            "When True, The Architect sends a desktop notification and rings "
+            "the terminal bell when a run fails. "
+            "Set to False to suppress failure notifications."
+        ),
+    )
+
+    max_parallel_tasks: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "Maximum number of independent tasks to run concurrently. "
+            "Set to 1 (default) for sequential execution. "
+            "Set to 2 or higher to run independent tasks in parallel, "
+            "reducing wall-clock time for autonomous runs. "
+            "Tasks with dependency relationships always execute in order."
         ),
     )
 
@@ -310,8 +353,12 @@ class ArchitectConfig(BaseModel):
             circuit_enable_replan=self.circuit_enable_replan,
             cooldown_detection=self.cooldown_detection,
             token_budget_per_hour=self.token_budget_per_hour,
+            token_budget_per_run=self.token_budget_per_run,
             workspace_baseline=self.workspace_baseline,
             token_ledger=self.token_ledger,
+            notify_on_complete=self.notify_on_complete,
+            notify_on_fail=self.notify_on_fail,
+            max_parallel_tasks=self.max_parallel_tasks,
         )
 
 

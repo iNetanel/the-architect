@@ -41,3 +41,30 @@ class TestTextualStreamRenderer:
         renderer = TextualStreamRenderer(app=app)
         # Should swallow and fall back without raising.
         renderer.write_line("still works")
+
+
+class TestTextualStreamRendererFeedback:
+    """Test set_feedback forwarding."""
+
+    def test_set_feedback_forwards_to_app(self) -> None:
+        app = MagicMock()
+        renderer = TextualStreamRenderer(app=app)
+        renderer.set_feedback("fix the login bug")
+        app.update_feedback.assert_called_once_with("fix the login bug")
+
+    def test_set_feedback_clear_forwards_to_app(self) -> None:
+        app = MagicMock()
+        renderer = TextualStreamRenderer(app=app)
+        renderer.set_feedback(None)
+        app.update_feedback.assert_called_once_with(None)
+
+    def test_set_feedback_without_app_is_noop(self) -> None:
+        renderer = TextualStreamRenderer()
+        renderer.set_feedback("msg")  # must not raise
+        renderer.set_feedback(None)  # must not raise
+
+    def test_set_feedback_app_exception_swallowed(self) -> None:
+        app = MagicMock()
+        app.update_feedback.side_effect = RuntimeError("broken")
+        renderer = TextualStreamRenderer(app=app)
+        renderer.set_feedback("msg")  # must not raise

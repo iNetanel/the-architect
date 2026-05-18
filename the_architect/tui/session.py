@@ -107,6 +107,19 @@ class TuiSession:
         except Exception:
             pass
 
+    def update_feedback(self, message: str | None) -> None:
+        """Set or clear the pending feedback banner (no-op when disabled).
+
+        Args:
+            message: Feedback text to display, or ``None`` to clear.
+        """
+        if self.app is None:
+            return
+        try:
+            self.app.update_feedback(message)
+        except Exception:
+            pass
+
 
 @contextmanager
 def tui_execution_session(enabled: bool) -> Iterator[TuiSession]:

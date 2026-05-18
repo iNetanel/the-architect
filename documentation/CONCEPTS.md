@@ -152,6 +152,68 @@ The only requirement is at least one supported AI coding CLI installed and confi
 
 ---
 
+## Parallel Execution — Independent Tasks Run Together
+
+Sequential execution is safe but slow. When tasks have no dependency chain, The Architect can run them concurrently. The `max_parallel_tasks` config option controls the concurrency limit. Each parallel task gets its own circuit breaker, and token budgets are shared safely via `asyncio.Lock`.
+
+This is not a "run everything at once" mode — it respects the dependency graph. If T03 depends on T01, T03 waits until T01 finishes. Only truly independent tasks run together. The TUI shows a live DataTable of all concurrent tasks with per-task status, token count, and circuit state.
+
+---
+
+## Task Dependencies — Explicit Ordering
+
+Tasks can declare what they depend on. This gives the runner three superpowers:
+
+1. **Cycle detection** — If T01 depends on T02 and T02 depends on T01, the run aborts before wasting tokens
+2. **Smart skipping** — If T01 fails, T03 (which depends on T01) is automatically skipped instead of running and failing for unrelated reasons
+3. **Parallel scheduling** — The scheduler knows which tasks can run together and which must wait
+
+Dependencies are declared in the task file as a `## Dependencies` section. The runner parses them, validates the graph, and respects ordering during both sequential and parallel execution.
+
+---
+
+## Dry-Run Mode — Plan Without Committing
+
+Before spending tokens on execution, you can plan and review with `--dry-run`. The planner runs normally (task files are created), then a summary shows the task list, estimated cost, and dependency validation results. The process exits without executing.
+
+This is the "check the map before driving" feature. It catches planning errors, gives you a cost estimate, and lets you review the plan before committing. The `--json` flag makes it automation-friendly for CI pipelines and monitoring scripts.
+
+---
+
+## Goal Templates — Reusable Goals with Variables
+
+Instead of typing the same goal structure every time, save it as a template with `{variable}` placeholders. Then run `architect template run "my-template" --var name=value` and The Architect substitutes the variables, prompts for any remaining ones, and launches.
+
+Templates are how you productize your development patterns: "scaffold a new API service", "add authentication to {service}", "write tests for {module}". Each template can also store config overrides so the right settings come along for the ride.
+
+---
+
+## Rollback — Undo a Run
+
+Every run captures a workspace baseline before execution. If the run produces unwanted changes, `architect rollback` restores files to their pre-run state. The TUI shows you exactly what will be restored or deleted, with file sizes and actions, before you approve.
+
+This is the safety net for autonomous development. The AI made changes you don't want? Roll back to before the run started. No git magic, no manual diffing — just restore the baseline.
+
+---
+
+## Cost Ledger — Know What You Spend
+
+The Architect records every run's token usage and estimated cost to a ledger file. Over time, you can see spending patterns: which models cost what, how many tasks each run produces, and how costs trend across sessions.
+
+`architect estimate` predicts the cost of a future run using historical data. `architect history` shows past runs with cost columns. `architect token-report` breaks down spending by model and date range. The per-task cost breakdown tells you which tasks were expensive and which were cheap.
+
+This turns token usage from a mystery into data. You can set budgets, track spending, and make informed decisions about which models to use for which tasks.
+
+---
+
+## Configuration Presets — Save and Recall Settings
+
+Save a configuration profile once, apply it anywhere. Presets let you create named sets of config overrides ("sprint", "deep-review", "quick-fix") and apply them with a single command. They are stored per-project in `.architect/presets.json`.
+
+Team presets standardize settings across developers. Environment presets adapt to CI vs local. Project presets tune for specific modules.
+
+---
+
 ## GitHub Shows Every Build, PyPI Shows Only Releases
 
 Every green build on `main` automatically creates a GitHub release with the wheel and source distribution attached. Same-version builds are marked as pre-release.

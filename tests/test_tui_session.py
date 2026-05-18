@@ -42,6 +42,33 @@ class TestTuiSessionNoopMethods:
         session = TuiSession(renderer=PlainStreamRenderer(), app=None, thread=None)
         session.update_footer("hello")  # must not raise
 
+    def test_update_feedback_with_no_app_is_noop(self) -> None:
+        session = TuiSession(renderer=PlainStreamRenderer(), app=None, thread=None)
+        session.update_feedback("msg")  # must not raise
+        session.update_feedback(None)  # must not raise
+
+
+class TestTuiSessionFeedbackForwarding:
+    """Test that update_feedback forwards to the app."""
+
+    def test_update_feedback_forwards_to_app(self) -> None:
+        app = MagicMock()
+        session = TuiSession(renderer=PlainStreamRenderer(), app=app, thread=None)
+        session.update_feedback("fix the bug")
+        app.update_feedback.assert_called_once_with("fix the bug")
+
+    def test_update_feedback_clear_forwards_to_app(self) -> None:
+        app = MagicMock()
+        session = TuiSession(renderer=PlainStreamRenderer(), app=app, thread=None)
+        session.update_feedback(None)
+        app.update_feedback.assert_called_once_with(None)
+
+    def test_update_feedback_app_exception_swallowed(self) -> None:
+        app = MagicMock()
+        app.update_feedback.side_effect = RuntimeError("broken")
+        session = TuiSession(renderer=PlainStreamRenderer(), app=app, thread=None)
+        session.update_feedback("msg")  # must not raise
+
 
 class TestTuiExecutionSessionReusesActiveRunner:
     """Regression for issue 1: execution session must reuse the runner's

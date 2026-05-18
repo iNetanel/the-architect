@@ -62,6 +62,8 @@ async def test_execute_default_action() -> None:
     assert harness.dismissed["free"] is False
     assert harness.dismissed["persistent"] is False
     assert harness.dismissed["integrity"] is True
+    assert harness.dismissed["notify_on_complete"] is True
+    assert harness.dismissed["notify_on_fail"] is True
 
 
 @pytest.mark.asyncio
@@ -100,6 +102,8 @@ async def test_prefilled_from_config() -> None:
     assert harness.dismissed["persistent"] is True
     assert harness.dismissed["integrity"] is False
     assert harness.dismissed["token_budget_per_hour"] == 250000
+    assert harness.dismissed["notify_on_complete"] is True
+    assert harness.dismissed["notify_on_fail"] is True
 
 
 @pytest.mark.asyncio
@@ -170,3 +174,20 @@ async def test_arrow_keys_move_focus_between_fields() -> None:
         )
         screen.action_cancel()
         await pilot.pause(0.05)
+
+
+@pytest.mark.asyncio
+async def test_notification_settings_prefilled_from_config() -> None:
+    """Notification checkboxes are pre-filled from config and submitted."""
+    config = ArchitectConfig(notify_on_complete=False, notify_on_fail=False)
+    screen = ResumeScreen(pending_tasks=_make_pending_tasks(1), config=config, show_free=True)
+    harness = _Harness(screen)
+    async with harness.run_test() as pilot:
+        await pilot.pause(0.05)
+        assert screen.query_one("#chk_notify_complete", Checkbox).value is False
+        assert screen.query_one("#chk_notify_fail", Checkbox).value is False
+        screen.action_execute()
+        await pilot.pause(0.05)
+    assert isinstance(harness.dismissed, dict)
+    assert harness.dismissed["notify_on_complete"] is False
+    assert harness.dismissed["notify_on_fail"] is False

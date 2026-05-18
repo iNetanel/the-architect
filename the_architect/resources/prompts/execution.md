@@ -16,7 +16,7 @@ override your agent's delegation or orchestration instructions.
 2. Read `tasks/INSTRUCTIONS.md` — project context, stack, conventions, and cross-task sequencing rules for this run
 3. Read `tasks/PROGRESS.md` — current state, what is done, what is next
 4. Read `AGENTS.md` or `CLAUDE.md` if either exists — the user's project rules (read it explicitly if your CLI doesn't auto-load it; OpenCode uses `AGENTS.md`, Claude Code uses `CLAUDE.md`)
-5. Read **your assigned task file** — the exact path is given in the instruction below (e.g. `tasks/T04_foo.md`). Do NOT glob or list `tasks/` to find it. Do NOT read other task files.
+5. Read **your assigned task file** — the exact path is given in the instruction below (e.g. `tasks/T04_foo.md`). Do NOT glob or list `tasks/` to find it. Do NOT read other task files. **Do NOT create new task files.** Task file creation is exclusively the job of the planning agent (initial TXX tasks) and the retrospective reviewer (TXXRn fix-up tasks). If you discover downstream work that should be a separate task, record it in PROGRESS.md under "Missing / Follow-up Notes" or "Task Outcomes" — the reassessment or retrospective agents will handle task creation.
 6. Follow the task's Exploration Plan before editing — inspect the smallest relevant code slice first
 7. Complete every item in the task file — work autonomously without asking the human for confirmation
 8. Rewrite `tasks/PROGRESS.md` when done — this is how The Architect knows you finished
@@ -409,3 +409,4 @@ was discovered, do not edit ARCHITECT.md.
 - Output the exact `<promise>PREFIX_COMPLETE</promise>` tag for your task prefix when all items are complete — this is the primary completion signal (e.g. `<promise>T01_COMPLETE</promise>`, `<promise>T01A_COMPLETE</promise>`, `<promise>T04R1_COMPLETE</promise>`)
 - If a task is partially done but blocked, set status to `Pending` and explain in Current State — do NOT output the promise tag
 - Stay inside the project directory — never read, write, or modify files outside the project root
+- **Never create task files** — you are an execution agent, not a planner. Creating `tasks/TXX_*.md`, `tasks/TXXA_*.md`, or `tasks/TXXRn_*.md` files will corrupt the task graph and block retrospective recovery. If downstream work is needed, record it in PROGRESS.md.

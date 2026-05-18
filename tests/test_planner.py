@@ -1959,3 +1959,189 @@ class TestPlannerCoverageGaps:
         logger.remove(handler_id)
         # Should succeed despite read failure — architect_instructions falls back to None
         assert "T01_test" in result.tasks_created
+
+
+class TestBuildPlanningInstructionWorkspaceContext:
+    """Tests for workspace context injection in build_planning_instruction()."""
+
+    def test_workspace_state_injected_for_git_repo(self, tmp_path: Path) -> None:
+        """WORKSPACE STATE section appears when workspace_context is a git repo."""
+        from the_architect.core.workspace_context import WorkspaceContext
+
+        request = PlanningRequest(
+            goal="Add a feature",
+            scope=TaskScope.STANDARD,
+            project_dir=tmp_path,
+        )
+
+        ws_ctx = WorkspaceContext(
+            is_git=True,
+            branch="feature/auth",
+            uncommitted_count=3,
+            staged_count=1,
+            recent_commits=[
+                {"hash": "abc1234", "message": "Add login page"},
+                {"hash": "def5678", "message": "Fix auth middleware"},
+            ],
+        )
+
+        instruction = build_planning_instruction(
+            request, "project context", workspace_context=ws_ctx
+        )
+
+        assert "=== WORKSPACE STATE ===" in instruction
+        assert "Current branch: feature/auth" in instruction
+        assert "Uncommitted changes: 3 file(s)" in instruction
+        assert "Staged changes: 1 file(s)" in instruction
+        assert "Recent commits:" in instruction
+        assert "abc1234: Add login page" in instruction
+
+    def test_workspace_state_omitted_for_non_git_repo(self, tmp_path: Path) -> None:
+        """WORKSPACE STATE section is omitted for non-git repos."""
+        from the_architect.core.workspace_context import WorkspaceContext
+
+        request = PlanningRequest(
+            goal="Add a feature",
+            scope=TaskScope.STANDARD,
+            project_dir=tmp_path,
+        )
+
+        ws_ctx = WorkspaceContext(is_git=False)
+
+        instruction = build_planning_instruction(
+            request, "project context", workspace_context=ws_ctx
+        )
+
+        assert "=== WORKSPACE STATE ===" not in instruction
+
+    def test_workspace_state_omitted_when_none(self, tmp_path: Path) -> None:
+        """WORKSPACE STATE section is omitted when workspace_context is None."""
+        request = PlanningRequest(
+            goal="Add a feature",
+            scope=TaskScope.STANDARD,
+            project_dir=tmp_path,
+        )
+
+        instruction = build_planning_instruction(request, "project context")
+
+        assert "=== WORKSPACE STATE ===" not in instruction
+
+    def test_workspace_state_after_project_context(self, tmp_path: Path) -> None:
+        """WORKSPACE STATE appears after PROJECT CONTEXT in the instruction."""
+        from the_architect.core.workspace_context import WorkspaceContext
+
+        request = PlanningRequest(
+            goal="Add a feature",
+            scope=TaskScope.STANDARD,
+            project_dir=tmp_path,
+        )
+
+        ws_ctx = WorkspaceContext(
+            is_git=True,
+            branch="main",
+            uncommitted_count=0,
+            staged_count=0,
+            recent_commits=[],
+        )
+
+        instruction = build_planning_instruction(
+            request, "project context", workspace_context=ws_ctx
+        )
+
+        # WORKSPACE STATE should come after PROJECT CONTEXT
+        project_ctx_pos = instruction.index("=== PROJECT CONTEXT ===")
+        workspace_pos = instruction.index("=== WORKSPACE STATE ===")
+        assert project_ctx_pos < workspace_pos
+
+    def test_workspace_state_before_user_request(self, tmp_path: Path) -> None:
+        """WORKSPACE STATE appears before USER REQUEST in the instruction."""
+        from the_architect.core.workspace_context import WorkspaceContext
+
+        request = PlanningRequest(
+            goal="Add a feature",
+            scope=TaskScope.STANDARD,
+            project_dir=tmp_path,
+        )
+
+        ws_ctx = WorkspaceContext(
+            is_git=True,
+            branch="main",
+            uncommitted_count=0,
+            staged_count=0,
+            recent_commits=[],
+        )
+
+        instruction = build_planning_instruction(
+            request, "project context", workspace_context=ws_ctx
+        )
+
+        workspace_pos = instruction.index("=== WORKSPACE STATE ===")
+        user_req_pos = instruction.index("=== USER REQUEST ===")
+        assert workspace_pos < user_req_pos
+
+    def test_workspace_state_minimal_git_repo(self, tmp_path: Path) -> None:
+        """Minimal git repo (branch only, no changes) produces compact output."""
+        from the_architect.core.workspace_context import WorkspaceContext
+
+        request = PlanningRequest(
+            goal="Add a feature",
+            scope=TaskScope.STANDARD,
+            project_dir=tmp_path,
+        )
+
+        ws_ctx = WorkspaceContext(
+            is_git=True,
+            branch="main",
+            uncommitted_count=0,
+            staged_count=0,
+            recent_commits=[],
+        )
+
+        instruction = build_planning_instruction(
+            request, "project context", workspace_context=ws_ctx
+        )
+
+        assert "=== WORKSPACE STATE ===" in instruction
+        assert "Current branch: main" in instruction
+        # No uncommitted/staged/commits lines since all are zero
+        assert "Uncommitted changes" not in instruction
+        assert "Staged changes" not in instruction
+        assert "Recent commits" not in instruction
+
+    def test_workspace_state_instruction_format_is_valid(self, tmp_path: Path) -> None:
+        """The full instruction with workspace context has expected structure."""
+        from the_architect.core.workspace_context import WorkspaceContext
+
+        request = PlanningRequest(
+            goal="Build auth system",
+            scope=TaskScope.STANDARD,
+            project_dir=tmp_path,
+        )
+
+        ws_ctx = WorkspaceContext(
+            is_git=True,
+            branch="feature/auth",
+            uncommitted_count=2,
+            staged_count=1,
+            recent_commits=[
+                {"hash": "aaa1111", "message": "Initial commit"},
+            ],
+        )
+
+        instruction = build_planning_instruction(
+            request, "project context", workspace_context=ws_ctx
+        )
+
+        # Verify instruction contains all expected sections in order
+        sections = [
+            "PROJECT ROOT:",
+            "=== PROJECT CONTEXT ===",
+            "=== WORKSPACE STATE ===",
+            "=== USER REQUEST ===",
+            "=== INSTRUCTIONS ===",
+        ]
+        last_pos = -1
+        for section in sections:
+            pos = instruction.index(section)
+            assert pos > last_pos, f"{section} should appear after previous section"
+            last_pos = pos

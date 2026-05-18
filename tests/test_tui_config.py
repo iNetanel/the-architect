@@ -18,7 +18,7 @@ async def test_config_screen_shows_all_rows() -> None:
     async with app.run_test() as pilot:
         await pilot.pause(0.05)
         table = app.query_one(DataTable)
-        assert table.row_count == 20  # known row count; update when adding new fields
+        assert table.row_count == 23  # known row count; update when adding new fields
 
 
 @pytest.mark.asyncio
@@ -35,6 +35,22 @@ async def test_config_screen_renders_integrity_field() -> None:
         ]
         row_map = dict(rows)
         assert row_map["integrity"] == "False"
+
+
+@pytest.mark.asyncio
+async def test_config_screen_renders_notification_fields() -> None:
+    config = ArchitectConfig(notify_on_complete=False, notify_on_fail=True)
+    app = ConfigApp(config=config, toml_path=Path("/tmp/architect.toml"), has_toml=True)
+    async with app.run_test() as pilot:
+        await pilot.pause(0.05)
+        table = app.query_one(DataTable)
+        rows = [
+            (str(table.get_cell_at((i, 0))), str(table.get_cell_at((i, 1))))
+            for i in range(table.row_count)
+        ]
+        row_map = dict(rows)
+        assert row_map["notify_on_complete"] == "False"
+        assert row_map["notify_on_fail"] == "True"
 
 
 @pytest.mark.asyncio

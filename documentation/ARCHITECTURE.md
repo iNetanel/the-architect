@@ -17,32 +17,47 @@ It is published to PyPI as `the-architect` and works on any project regardless o
 5. [Project Structure Detection](#5-project-structure-detection)
 6. [Planning Phase](#6-planning-phase)
 7. [Execution Phase](#7-execution-phase)
-8. [Completion Detection — Signals and Methods](#8-completion-detection--signals-and-methods)
-9. [Stuck Detection — How The Architect Knows the Agent Is Blocked](#9-stuck-detection--how-the-architect-knows-the-agent-is-blocked)
-10. [Retry Logic](#10-retry-logic)
-11. [Circuit Breaker](#11-circuit-breaker)
-12. [Rate Limit Detection — Provider Cooldowns and Free Mode](#12-rate-limit-detection--provider-cooldowns-and-free-mode)
-13. [Free Mode — Zero-Cost OpenRouter Rotation](#13-free-mode--zero-cost-openrouter-rotation)
-14. [Persistent Mode](#14-persistent-mode)
-15. [Headless Mode — CI/Automated Execution](#15-headless-mode--ciautomated-execution)
-16. [Interactive Screens and TUI](#16-interactive-screens-and-tui)
-17. [Token Budget](#17-token-budget)
-18. [Retrospective Review](#18-retrospective-review)
-19. [Inter-Task Reassessment](#19-inter-task-reassessment)
-20. [File Integrity Defense](#20-file-integrity-defense)
-21. [Standalone Mode](#21-standalone-mode)
-22. [Self-Update](#22-self-update)
-23. [Premature Exit Guard](#23-premature-exit-guard)
-24. [Lock File — Preventing Concurrent Runs](#24-lock-file--preventing-concurrent-runs)
-25. [Configuration](#25-configuration)
-26. [Task Files](#26-task-files)
-27. [PROGRESS.md](#27-progressmd)
-28. [tasks/SUMMARY.md — Run Summary](#28-taskssummarymd--run-summary)
-29. [ARCHITECT.md — Durable Project Intelligence](#29-architectmd--durable-project-intelligence)
-30. [Monitor Screen — Live Monitoring](#30-monitor-screen--live-monitoring)
-31. [Error Handling](#31-error-handling)
-32. [Project Structure — What The Architect Creates](#32-project-structure--what-the-architect-creates)
-33. [Dependencies](#33-dependencies)
+8. [Parallel Task Execution](#8-parallel-task-execution)
+9. [Task Dependencies](#9-task-dependencies)
+10. [Dry-Run Mode](#10-dry-run-mode)
+11. [Completion Detection — Signals and Methods](#11-completion-detection--signals-and-methods)
+12. [Stuck Detection — How The Architect Knows the Agent Is Blocked](#12-stuck-detection--how-the-architect-knows-the-agent-is-blocked)
+13. [Retry Logic](#13-retry-logic)
+14. [Circuit Breaker](#14-circuit-breaker)
+15. [Rate Limit Detection — Provider Cooldowns and Free Mode](#15-rate-limit-detection--provider-cooldowns-and-free-mode)
+16. [Free Mode — Zero-Cost OpenRouter Rotation](#16-free-mode--zero-cost-openrouter-rotation)
+17. [Persistent Mode](#17-persistent-mode)
+18. [Headless Mode — CI/Automated Execution](#18-headless-mode--ciautomated-execution)
+19. [Interactive Screens and TUI](#19-interactive-screens-and-tui)
+20. [Token Budget](#20-token-budget)
+21. [Retrospective Review](#21-retrospective-review)
+22. [Inter-Task Reassessment](#22-inter-task-reassessment)
+23. [File Integrity Defense](#23-file-integrity-defense)
+24. [Standalone Mode](#24-standalone-mode)
+25. [Self-Update](#25-self-update)
+26. [Premature Exit Guard](#26-premature-exit-guard)
+27. [Lock File — Preventing Concurrent Runs](#27-lock-file--preventing-concurrent-runs)
+28. [Goal Templates](#28-goal-templates)
+29. [Configuration Presets](#29-configuration-presets)
+30. [Notifications](#30-notifications)
+31. [Workspace Context — Context-Aware Planning](#31-workspace-context--context-aware-planning)
+32. [Cost Estimation and Token Ledger](#32-cost-estimation-and-token-ledger)
+33. [Run History](#33-run-history)
+34. [Run Report](#34-run-report)
+35. [Diff — Workspace Change Tracking](#35-diff--workspace-change-tracking)
+36. [Rollback — Restore Pre-Run State](#36-rollback--restore-pre-run-state)
+37. [Doctor — Health Diagnostics](#37-doctor--health-diagnostics)
+38. [User Feedback Injection](#38-user-feedback-injection)
+39. [Monitor — JSON and Watch Modes](#39-monitor--json-and-watch-modes)
+40. [Configuration](#40-configuration)
+41. [Task Files](#41-task-files)
+42. [PROGRESS.md](#42-progressmd)
+43. [tasks/SUMMARY.md — Run Summary](#43-taskssummarymd--run-summary)
+44. [ARCHITECT.md — Durable Project Intelligence](#44-architectmd--durable-project-intelligence)
+45. [Monitor Screen — Live Monitoring](#45-monitor-screen--live-monitoring)
+46. [Error Handling](#46-error-handling)
+47. [Project Structure — What The Architect Creates](#47-project-structure--what-the-architect-creates)
+48. [Dependencies](#48-dependencies)
 
 ---
 
@@ -51,14 +66,25 @@ It is published to PyPI as `the-architect` and works on any project regardless o
 The Architect automates the entire development lifecycle:
 
 - **Planning** — Decomposes your goal into numbered task files (T01, T02, …) using an AI architect agent. You can describe the goal in plain English, or point to a PRD, SPEC.md, design doc, or any file or directory via `--context`
+- **Goal Templates** — Save reusable goal descriptions with `{variable}` placeholders, then launch with `architect template run` for variable substitution
+- **Dry-Run Mode** — Plan and review task lists, cost estimates, and dependency validation before executing with `--dry-run`
 - **Project Intelligence** — Automatically detects your repo type (monorepo, multi-repo, single repo), languages, frameworks, components, dependency graph, project descriptions, key dependencies, test/lint commands, docs, CI, and sub-components. A pre-planning intelligence pass repairs `ARCHITECT.md` before the planner runs
+- **Context-Aware Planning** — Injects git workspace state (branch, uncommitted changes, recent commits) into the planning prompt for continuity
 - **Execution** — Runs each task via the active AI CLI provider, streaming output live to the terminal
+- **Parallel Execution** — Run independent tasks concurrently via `max_parallel_tasks` config for faster wall-clock time
+- **Task Dependencies** — Declare `depends_on` relationships between tasks; the runner validates the graph, detects cycles, and skips tasks with unmet dependencies
 - **Smart Retry** — Automatically retries failed tasks with model fallbacks, previous-attempt context injection, and circuit breaker protection
 - **Stuck Detection** — Monitors agent output for "I'm stuck", "can't proceed", and similar patterns; the circuit breaker reacts to no-progress, repeated errors, and token decline signals
 - **Cooldown Handling** — Detects provider rate limits (HTTP 429, "rate limit" in output) and pauses automatically without consuming retry slots
-- **Retrospective Review** — After execution, runs a reviewer agent that examines completed work, runs tests, and creates fix-up tasks (R01, R02, …) if quality issues are found
+- **Retrospective Review** — After execution, runs a reviewer agent that examines completed work, runs tests, and creates fix-up tasks (T03R1, T03R2, …) if quality issues are found
 - **Persistent Memory** — Maintains `tasks/PROGRESS.md`, `tasks/SUMMARY.md`, and `ARCHITECT.md`; ARCHITECT.md stores durable project intelligence while run history stays with each task package
-- **Token Budget** — Optional hourly spend cap prevents runaway API costs
+- **Token Budget** — Optional per-hour and per-run spend caps prevent runaway API costs
+- **Cost Tracking** — Cross-run token ledger records costs per run and per task; `architect estimate` predicts cost before running; `architect history` and `architect token-report` analyze spending
+- **Diff and Rollback** — Capture workspace baselines before runs; compare changes with `architect diff`; restore pre-run state with `architect rollback`
+- **Notifications** — Desktop notifications and terminal bell on run completion or failure
+- **Configuration Presets** — Save and recall named configuration profiles with `architect preset`
+- **Health Diagnostics** — Pre-flight checks with `architect doctor` including static checks, project health, and live provider probes
+- **User Feedback** — Inject mid-run feedback into execution prompts for course correction
 - **Premature Exit Guard** — When all tasks are already done, refuses to re-enter planning mode without explicit `--plan`, preventing accidental re-Archictecting of an already-complete project
 
 Your involvement is minimal: describe a goal (or just point to a doc), answer a few questions, then walk away. Come back to results.
@@ -611,7 +637,144 @@ The Architect sets `OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS=900000` (15 mi
 
 ---
 
-## 8. Completion Detection — Signals and Methods
+## 8. Parallel Task Execution
+
+By default, The Architect executes tasks sequentially (T01, then T02, then T03). When `max_parallel_tasks > 1` is configured, independent tasks are launched concurrently via `asyncio.gather`.
+
+### Configuration
+
+```toml
+[architect]
+max_parallel_tasks = 1   # default: 1 (sequential). Set to 2, 3, 4, etc. for parallel execution.
+```
+
+### How It Works
+
+1. **Dependency graph analysis** — The `ParallelScheduler` determines which tasks can run concurrently based on their `depends_on` relationships. Tasks with unmet dependencies wait.
+2. **Concurrent launch** — Up to `max_parallel_tasks` independent tasks are launched simultaneously via `asyncio.gather`.
+3. **Per-task circuit breaker** — Each parallel task gets its own `CircuitBreaker` instance.
+4. **Token budget coordination** — Token budgets use `asyncio.Lock` for safe concurrent updates. When the budget is exceeded mid-batch, remaining tasks are cancelled cleanly.
+5. **PROGRESS.md protection** — Writes to PROGRESS.md are protected by a lock to prevent concurrent write corruption.
+6. **Out-of-order completion** — Tasks can complete in any order. The runner tracks each task independently.
+
+### Backward Compatibility
+
+Setting `max_parallel_tasks = 1` (the default) produces identical behaviour to the original sequential execution. No changes to existing configs or task files are needed.
+
+### TUI Display
+
+When parallel execution is active, the Execution screen shows a "Tasks" tab with a DataTable listing all concurrent tasks. Each row displays:
+- **Task ID** — T01, T02, etc.
+- **Title** — Task description
+- **Status** — Running, Done, Failed, Pending
+- **Tokens** — Per-task token count
+- **Model** — Active model for that task
+- **Circuit** — Circuit breaker state (CLOSED/OPEN/HALF_OPEN)
+
+The DataTable updates live as tasks start, progress, and complete via runner callbacks.
+
+### When to Use Parallel Execution
+
+Parallel execution is valuable when:
+- Tasks are independent (no dependency chain)
+- The provider supports concurrent API calls (most do)
+- You want faster wall-clock time and accept higher concurrent token usage
+
+It is NOT recommended when:
+- Tasks have heavy dependency chains (most tasks must wait)
+- You have a tight per-run token budget and want predictable consumption
+- The provider has strict rate limits that would be hit by concurrent calls
+
+---
+
+## 9. Task Dependencies
+
+Tasks can declare dependencies on other tasks using a `## Dependencies` section in the task file. The runner validates the dependency graph before execution and respects dependency ordering during both sequential and parallel execution.
+
+### Task File Format
+
+```markdown
+# T03 — Build API Layer
+
+## Dependencies
+- T01
+- T02
+
+## Goal
+Build the API layer that depends on the database schema (T01) and auth service (T02).
+```
+
+### Dependency Detection
+
+The runner parses `## Dependencies` sections from task files and populates the `depends_on` field on each `Task` model. Two validation checks run before execution:
+
+1. **Cycle detection** — `detect_dependency_cycles()` finds circular dependencies (e.g., T01 → T02 → T01). If a cycle is found, the run aborts with a clear error.
+2. **Missing dependency detection** — `detect_missing_dependencies()` finds references to non-existent tasks (e.g., T03 depends on T05, but T05 doesn't exist). Missing dependencies log a warning but do not abort the run.
+
+### Runner Dependency Awareness
+
+During execution:
+- Tasks with unmet dependencies are **skipped** and marked as `Skipped (dependency TXX failed)` in PROGRESS.md
+- If a task fails or is skipped, downstream tasks depending on it are **automatically skipped**
+- Tasks without unmet dependencies **continue running** even after a prior task fails
+- The `Skipped` status is a new terminal status alongside Done, Failed, and Blocked
+
+### CLI Display
+
+**`architect list`** — Shows a "Deps" column with dependency prefixes (e.g., `→ T01, T02` or `—` for no dependencies). The `--json` flag outputs structured JSON with `depends_on` arrays per task.
+
+**`architect deps`** — Displays the full task dependency graph with columns: Task, Title, Depends On, Depended By, and Status. The `--json` flag outputs structured JSON with `depends_on` and `depended_by` arrays per task.
+
+**TUI Task List** — The `architect list --tui` screen shows a "Deps" column alongside Task, Title, and Status.
+
+---
+
+## 10. Dry-Run Mode
+
+The `--dry-run` flag lets you plan a goal and review the resulting task plan without executing any tasks. This is useful for estimating cost, validating dependencies, and reviewing the plan before committing to execution.
+
+### Usage
+
+```bash
+# Dry run with plan display
+architect --dry-run --goal "add authentication"
+
+# Dry run with JSON output for automation
+architect --dry-run --goal "add authentication" --json
+```
+
+### What Happens
+
+1. The planner runs normally — task files are created in `tasks/`
+2. A plan summary is displayed showing:
+   - Task list with IDs, titles, and dependencies
+   - Estimated cost (using historical ledger data or pricing table)
+   - Dependency validation results (cycles, missing deps)
+3. The process exits cleanly without executing any tasks
+4. Task files remain on disk for user review
+
+### JSON Output
+
+The `--json` flag produces structured JSON with four sections:
+
+```json
+{
+  "tasks": [{"task_id": "T01", "title": "...", "depends_on": []}],
+  "estimate": {"model": "...", "task_count": 4, "cost_low": 0.12, "cost_high": 0.48, "cost_avg": 0.30, "historical_runs": 10, "confidence": "high"},
+  "validation": {"cycles": [], "missing_deps": []},
+  "config": {"model": "...", "scope": "standard", "provider": "opencode", "max_retries": 3}
+}
+```
+
+### Constraints
+
+- `--dry-run` is mutually exclusive with `--from`, `--only`, and `--persistent`
+- `--json` without `--dry-run` is silently ignored (JSON output is only meaningful for dry runs)
+- This is a CLI-only feature — the TUI already has planning visibility
+
+---
+
+## 11. Completion Detection — Signals and Methods
 
 The Architect uses **multiple corroborating signals** to determine whether a task is complete. No single signal is trusted in isolation.
 
@@ -664,7 +827,7 @@ If the agent says "task is complete" but also says "I'm stuck", The Architect cl
 
 ---
 
-## 9. Stuck Detection — How The Architect Knows the Agent Is Blocked
+## 12. Stuck Detection — How The Architect Knows the Agent Is Blocked
 
 Stuck detection operates at two levels: within the output analyzer and as part of the circuit breaker.
 
@@ -706,7 +869,7 @@ Recovery action decision tree:
 
 ---
 
-## 10. Retry Logic
+## 13. Retry Logic
 
 If a task fails (not marked Done after an attempt), The Architect retries automatically:
 
@@ -750,7 +913,7 @@ A task is retried when:
 
 ---
 
-## 11. Circuit Breaker
+## 14. Circuit Breaker
 
 The circuit breaker is a per-task failure pattern detector that runs **alongside** the retry logic. While retries handle model failures, the circuit breaker catches patterns retries cannot detect:
 
@@ -823,7 +986,7 @@ The circuit breaker never crashes the run — all errors are logged and fallen t
 
 ---
 
-## 12. Rate Limit Detection — Provider Cooldowns and Free Mode
+## 15. Rate Limit Detection — Provider Cooldowns and Free Mode
 
 When `cooldown_detection=true` (the default), The Architect detects provider cooldown / rate-limit signals and pauses the run automatically.
 
@@ -891,7 +1054,7 @@ Common Claude Code quota messages that trigger cooldown detection:
 
 ---
 
-## 13. Free Mode — Zero-Cost OpenRouter Rotation
+## 16. Free Mode — Zero-Cost OpenRouter Rotation
 
 > **Note:** Free Mode requires OpenCode with OpenRouter configured. It is not available with Codex CLI, Claude Code, or Gemini CLI. See [Section 2](#2-supported-providers) for provider differences.
 
@@ -945,7 +1108,7 @@ When free mode is active, the monitor screen and TUI diagnostics show:
 
 ---
 
-## 14. Persistent Mode
+## 17. Persistent Mode
 
 When `--persistent` is enabled:
 
@@ -972,7 +1135,7 @@ When set via the interactive screen or resume screen, the `persistent` setting i
 
 ---
 
-## 14a. Infinite Loop Mode
+## 17a. Infinite Loop Mode
 
 Infinite Loop tells The Architect to keep iterating the same goal hands-free after each successful planning → execution → retrospective → validation cycle. It is intended for long-running autonomous sessions where the user wants the goal to keep being re-applied (for example, generating a series of similar artifacts, or running an unattended improvement pass against the same brief).
 
@@ -1033,7 +1196,7 @@ Per-iteration log archive cleanup preserves both files, so live-failure evidence
 
 ---
 
-## 15. Headless Mode — CI/Automated Execution
+## 18. Headless Mode — CI/Automated Execution
 
 Headless mode skips all interactive prompts. All values must come from flags or environment variables.
 
@@ -1077,7 +1240,7 @@ This is the **Premature Exit Guard** — preventing accidental re-Architecting o
 
 ---
 
-## 16. Interactive Screens and TUI
+## 19. Interactive Screens and TUI
 
 ### Textual TUI (default on TTY)
 
@@ -1206,9 +1369,13 @@ When settings are changed via either interactive screen, they are automatically 
 
 ---
 
-## 17. Token Budget
+## 20. Token Budget
 
-The optional hourly token budget prevents runaway API costs:
+The Architect supports two token budget modes that work independently or together:
+
+### Per-Hour Budget
+
+The hourly token budget prevents runaway API costs within a rolling hour window:
 
 ```toml
 [architect]
@@ -1223,7 +1390,24 @@ Token budget can be set in three ways:
 
 When set via the interactive screen or resume screen, the token budget is automatically saved to `architect.toml` so it persists across runs.
 
-### How It Works
+### Per-Run Budget
+
+The per-run budget caps total token consumption for an entire run. When exceeded, The Architect stops the run cleanly with a clear message (not as a failure).
+
+```toml
+[architect]
+token_budget_per_run = 1000000    # Max tokens for entire run (0 = disabled)
+```
+
+Use alongside `token_budget_per_hour` to cap both the rate and total spend:
+
+```toml
+[architect]
+token_budget_per_hour = 500000    # Rate cap: ~5 calls per hour
+token_budget_per_run = 2000000    # Total cap: ~20 calls per run
+```
+
+### How the Per-Hour Budget Works
 
 The `HourlyTokenBudget` class tracks usage against a rolling hour window:
 
@@ -1246,16 +1430,26 @@ The `HourlyTokenBudget` class tracks usage against a rolling hour window:
 - Budget pauses **do not affect circuit breaker state**
 - A single Claude call can use 100k+ tokens — set to e.g. `500000` for a ~5-call-per-hour budget
 - When `token_budget_per_hour = 0` (default), the tracker is fully disabled
+- Per-run budget exceeded stops the run cleanly (not a failure) — the success screen shows "Run budget exceeded"
+
+### Budget Context Injection
+
+When `token_budget_per_run` or `token_budget_per_hour` is configured, The Architect injects a budget context section into the execution prompt so the agent knows how many tokens previous tasks consumed and how much capacity remains. This enables agents to self-regulate effort based on remaining budget.
+
+### TUI Budget Display
+
+The Costs tab shows token budget progress when `token_budget_per_run` is configured: limit, usage, visual progress bar with color coding (green/yellow/red), percentage, and remaining capacity. The budget section is hidden when no budget is set.
 
 ### Use Cases
 
 - **Cost control** — prevent a long run from exceeding a monthly budget
 - **Shared API accounts** — limit usage when others share the same API key
 - **CI environments** — ensure deterministic cost per pipeline run
+- **Per-run caps** — guarantee a maximum spend per autonomous session
 
 ---
 
-## 18. Retrospective Review
+## 21. Retrospective Review
 
 After execution completes, The Architect runs retrospective review rounds using the **reviewer agent** (defined in `resources/prompts/reviewer.md`):
 
@@ -1326,7 +1520,7 @@ class RetrospectiveRequest(BaseModel):
 
 ---
 
-## 19. Inter-Task Reassessment
+## 22. Inter-Task Reassessment
 
 After each task completes, The Architect can run a lightweight **between-task reassessment** pass over the pending task files. By default, Force Reassessment is enabled, so this happens after every task. If disabled, reassessment remains conditional and runs only after failed tasks or task outcomes that indicate downstream impact.
 
@@ -1367,7 +1561,7 @@ If `integrity` mode is on and the just-completed task left `architect_eval_*` sn
 
 ---
 
-## 20. File Integrity Defense
+## 23. File Integrity Defense
 
 When `integrity = true` (the default), The Architect instructs the build agent to snapshot existing files before editing them.
 
@@ -1409,7 +1603,7 @@ architect config --set integrity=false
 
 ---
 
-## 21. Standalone Mode
+## 24. Standalone Mode
 
 Standalone mode bypasses the provider's own configuration entirely and forces a specific model for all operations — planning, execution, and retrospective.
 
@@ -1440,7 +1634,7 @@ standalone_mode = "openrouter/anthropic/claude-sonnet-4.5"
 
 ---
 
-## 22. Self-Update
+## 25. Self-Update
 
 At startup, The Architect checks PyPI for a newer version. The check uses a single HTTPS request with a 5-second timeout. Network errors are silenced — a failed check never prevents the tool from running.
 
@@ -1467,7 +1661,7 @@ The check runs every startup. It can be skipped by running offline — there is 
 
 ---
 
-## 23. Premature Exit Guard
+## 26. Premature Exit Guard
 
 The Premature Exit Guard prevents The Architect from accidentally re-planning an already-complete project.
 
@@ -1518,7 +1712,7 @@ This prevents accidentally starting a new goal on top of incomplete work.
 
 ---
 
-## 24. Lock File — Preventing Concurrent Runs
+## 27. Lock File — Preventing Concurrent Runs
 
 The Architect uses a lock file at `.architect/runner.lock` to prevent concurrent runs of The Architect on the same project.
 
@@ -1542,7 +1736,486 @@ The lock file is just a plain text file containing the PID as a string (e.g., `1
 
 ---
 
-## 25. Configuration
+## 28. Goal Templates
+
+Goal templates let you save reusable goal descriptions with `{variable}` placeholders, then launch The Architect with variable substitution. Templates are stored in `.architect/templates.json` and managed via the `architect template` command group.
+
+### Creating Templates
+
+```bash
+# Create a named template with goal text and description
+architect template create "api-scaffold" \
+  --goal "Build a REST API for {service_name} using {framework} with {auth_method} authentication" \
+  --description "Scaffold a new API service"
+```
+
+Variables are auto-extracted from the goal text using `{variable}` regex patterns.
+
+### Listing and Viewing Templates
+
+```bash
+# List all templates
+architect template list
+
+# View template details including variables and config overrides
+architect template show "api-scaffold"
+
+# JSON output for automation
+architect template list --json
+```
+
+### Running a Template
+
+```bash
+# Substitute variables and launch
+architect template run "api-scaffold" --var service_name=payments --var framework=FastAPI --var auth_method=JWT
+```
+
+The `run` sub-command:
+1. Substitutes `--var` values into the template goal text
+2. Prompts interactively for any remaining unsubstituted variables
+3. Applies config overrides (if the template defines any via `--config`)
+4. Launches The Architect with the composed goal
+
+### Config Overrides in Templates
+
+Templates can store config overrides that are applied when running the template:
+
+```bash
+architect template create "quick-fix" \
+  --goal "Fix the issue described in {ticket}" \
+  --description "Quick bug fix" \
+  --config max_retries=5 --config scope=simple
+```
+
+### TUI Template Display
+
+The Goal tab of the PreRun screen shows a "Templates" section with a selectable list of saved templates. Selecting a template pre-fills the goal text area with the template's goal text (including `{variable}` placeholders). When no templates exist, a helpful message directs users to `architect template create`.
+
+### Delete Templates
+
+```bash
+architect template delete "api-scaffold"
+```
+
+Create-only semantics prevent accidental overwrites — if a template with the same name exists, creation fails.
+
+---
+
+## 29. Configuration Presets
+
+Presets let you save and recall named configuration profiles. Create a preset once, then apply it to any project with a single command. Presets are stored per-project in `.architect/presets.json`.
+
+### Creating Presets
+
+```bash
+# Create a named preset with config overrides
+architect preset create "sprint" \
+  --description "Aggressive sprint settings" \
+  --field max_retries=10 \
+  --field pause_between_tasks=5 \
+  --field force_reassessment=true
+```
+
+### Managing Presets
+
+```bash
+# List all presets
+architect preset list
+
+# View preset details
+architect preset show "sprint"
+
+# Apply preset to current config (writes to architect.toml)
+architect preset apply "sprint"
+
+# Remove a preset
+architect preset delete "sprint"
+```
+
+Both `list` and `show` support `--json` for machine-readable output.
+
+### Use Cases
+
+- **Team presets** — Share configuration profiles across team members
+- **Environment presets** — Different settings for CI vs local development
+- **Project presets** — Save project-specific tuning (e.g., "deep-review" for critical modules)
+
+---
+
+## 30. Notifications
+
+The Architect can send desktop notifications and ring the terminal bell when a run completes or fails. This is useful for long-running unattended sessions where you want to know when work finishes without staring at the terminal.
+
+### Configuration
+
+```toml
+[architect]
+notify_on_complete = true   # default: true
+notify_on_fail = true       # default: true
+```
+
+### What Happens
+
+After a run completes (success or failure):
+1. **Desktop notification** — Sent via the native notification system (macOS `osascript`, Linux `notify-send`, Windows `toastnotify`). Fails silently in environments without notification support (Docker, CI, headless).
+2. **Terminal bell** — BEL character (`\a`) sent to stderr. Rings the terminal bell if your terminal emulator supports it.
+
+### TUI Settings
+
+Notification checkboxes appear in all four TUI screens:
+- **Mode Selection** — Enable/disable notifications before starting
+- **Pre-run Options tab** — Toggle notification preferences
+- **Config screen** — Read-only DataTable showing current settings
+- **Resume screen** — Adjust notifications for resumed runs
+
+### Per-Run Suppression
+
+You can disable notifications for a specific run:
+
+```bash
+architect config --set notify_on_complete=false
+architect config --set notify_on_fail=false
+```
+
+---
+
+## 31. Workspace Context — Context-Aware Planning
+
+The planner now injects workspace state into the architect agent's planning context. This gives the planner awareness of the current git branch, uncommitted changes, and recent commits before creating tasks.
+
+### What Is Detected
+
+The `gather_workspace_context()` function in `the_architect/core/workspace_context.py`:
+1. Detects if the project is a git repository
+2. Reads the current branch name
+3. Captures uncommitted changes (staged and unstaged)
+4. Reads recent commit messages
+
+### How It's Used
+
+The `build_planning_instruction()` function injects workspace state as a `=== WORKSPACE STATE ===` section in the architect agent's planning prompt. This helps the planner:
+- Understand what work is in progress (uncommitted changes)
+- Know the current branch context (feature branch vs main)
+- See recent commits for continuity
+
+### Graceful Handling
+
+- **Non-git projects** — Workspace context section is omitted
+- **Git errors** — Errors are caught and logged; planning continues without workspace context
+
+---
+
+## 32. Cost Estimation and Token Ledger
+
+The Architect tracks token usage and costs across runs, provides pre-run cost estimates, and maintains a detailed per-task cost breakdown.
+
+### Token Ledger
+
+Every completed run is recorded to `.architect/token_ledger.json` with:
+- Date, goal, outcome (Done/Failed), duration
+- Total tokens and estimated USD cost
+- Task count and model used
+- Per-model token and cost breakdowns
+
+Ledger writes are **atomic** (temp file + `os.replace`) and **best-effort** — a ledger write failure never crashes an execution run.
+
+### Task-Level Cost Tracking
+
+Each run record includes a `task_breakdown` array with per-task details:
+- Task ID, title, model, status
+- Token count, estimated cost, duration
+
+This powers the `--tasks` flags on `architect history` and `architect token-report`.
+
+### Cost Estimation
+
+The `estimate_run_cost()` function computes cost estimates from historical ledger data with three-tier fallback:
+1. **Model-specific** — Average cost per task for the selected model
+2. **Cross-model** — Average across all models when model-specific data is sparse
+3. **Pricing table** — Built-in model pricing when no historical data exists
+
+### `architect estimate` Command
+
+```bash
+# Pre-run cost estimation
+architect estimate
+
+# Override model or task count
+architect estimate --model claude-sonnet-4 --tasks 6
+
+# JSON output for automation
+architect estimate --json
+```
+
+Shows a Rich table with Model, Tasks, Avg Cost, Low, High, Runs Analyzed, and Confidence columns. Falls back to the model pricing table when no historical data exists.
+
+### `architect token-report` Command
+
+```bash
+# Historical token usage report
+architect token-report
+
+# Date filtering
+architect token-report --since 2026-05-01 --until 2026-05-18
+
+# Model filtering
+architect token-report --model claude-sonnet-4
+
+# Per-task breakdown
+architect token-report --tasks
+
+# JSON output
+architect token-report --json
+```
+
+### Ledger Configuration
+
+The token ledger is enabled by default. Disable it in `architect.toml`:
+
+```toml
+[architect]
+token_ledger = false
+```
+
+---
+
+## 33. Run History
+
+The `architect history` command displays past run history from the token ledger in a Rich table or interactive TUI.
+
+### CLI Output
+
+```bash
+# Default: Rich table
+architect history
+
+# Filters
+architect history --since 2026-05-01 --until 2026-05-18
+architect history --outcome done --limit 10
+
+# Per-task cost breakdown
+architect history --tasks
+
+# JSON output
+architect history --json
+```
+
+The table shows Date, Goal, Tasks, Tokens, Cost, Duration, and Outcome columns. The `--tasks` flag shows per-task breakdown (task_id, title, tokens, cost, model, duration, status) grouped under their parent run's date header.
+
+### TUI History Screen
+
+```bash
+architect history --tui
+```
+
+Opens an interactive Textual screen with a DataTable showing per-run records. Press Enter on a run row to see the per-task cost breakdown view. Press Escape or `q` to return to the run-level view.
+
+`--json` and `--tui` are mutually exclusive.
+
+---
+
+## 34. Run Report
+
+The `architect report` command displays the last run's summary from `tasks/SUMMARY.md`.
+
+### Usage
+
+```bash
+# View last run's summary
+architect report
+
+# JSON output
+architect report --json
+
+# Explicit project directory
+architect report --project /path/to/project
+```
+
+Shows a Rich table with Date, Duration, Result, Goal, Tasks, Totals, and Insights sections. Gracefully handles missing SUMMARY.md with an informative message.
+
+---
+
+## 35. Diff — Workspace Change Tracking
+
+The `architect diff` command shows what files were created, modified, or deleted per task during execution. It compares captured baselines against the current workspace.
+
+### How It Works
+
+Before execution, The Architect captures a workspace baseline (file list and hashes). After each task completes, it compares the current state against the baseline to produce created/modified/deleted lists.
+
+### CLI Output
+
+```bash
+# All tasks
+architect diff
+
+# Specific task
+architect diff --task T03
+
+# JSON output
+architect diff --json
+```
+
+### TUI Diff Viewer
+
+```bash
+architect diff --tui
+```
+
+Opens a Textual screen with a DataTable showing per-task changes (Task, Change type, File path). Supports refresh (`r`) and quit (`q`/Escape/Ctrl+C) bindings. Shows "No baseline data" when baselines directory is empty or missing.
+
+---
+
+## 36. Rollback — Restore Pre-Run State
+
+The `architect rollback` command restores files to their pre-run state using captured baselines. This is the safety net for when a run produces unwanted changes.
+
+### Usage
+
+```bash
+# Interactive rollback (TTY, no flags)
+architect rollback
+
+# Target specific task
+architect rollback --task T03
+
+# Use earliest baseline (all tasks)
+architect rollback --all
+
+# Preview changes without applying
+architect rollback --dry-run
+
+# Skip confirmation
+architect rollback --yes
+
+# JSON output
+architect rollback --json
+```
+
+### TUI Rollback Screen
+
+When running in a TTY without `--json`, `--dry-run`, or `--yes` flags, a Textual screen opens showing:
+1. **Baseline selection** — Available baselines in a task selection view
+2. **Rollback plan** — DataTable with file paths, actions (Restore/Delete), and sizes
+3. **Key bindings** — Approve (`a`), Dry Run (`d`), Cancel (`c`), Quit (`q`/Escape)
+4. **Execution results** — Counts and errors after approval
+
+---
+
+## 37. Doctor — Health Diagnostics
+
+The `architect doctor` command runs pre-flight health checks to verify the project and provider are ready for execution.
+
+### Static Checks
+
+```bash
+# Default: static configuration checks
+architect doctor
+
+# JSON output
+architect doctor --json
+```
+
+Checks include: provider installation, configuration validity, task file consistency, lock file state, and more.
+
+### Project-Level Checks
+
+```bash
+# Project health checks
+architect doctor --project
+
+# Explicit project directory
+architect doctor --project --project-path /path/to/project
+
+# JSON output
+architect doctor --project --json
+```
+
+Runs independent health checks via `the_architect/core/project_health.py`:
+- **Lock file** — Stale or active
+- **Task consistency** — Task files match PROGRESS.md
+- **Baselines** — Baseline directory state
+- **Circuit state** — Circuit breaker health
+- **Token ledger** — Ledger file integrity
+- **Presets** — Presets file validity
+
+Each check returns a status (ok/warn/fail), label, and detail. Results display in a Rich table with ✓ (ok/green), ⚠ (warn/yellow), ✗ (fail/red) symbols. Exit code 1 when any check fails.
+
+### Live Provider Probe
+
+```bash
+# Live connectivity test
+architect doctor --live
+
+# Custom timeout
+architect doctor --live --live-timeout 60
+```
+
+Sends a real request to the detected provider to verify API connectivity (auth, quota, network). Exit code 1 on probe failure.
+
+---
+
+## 38. User Feedback Injection
+
+The Architect can store user feedback that is injected into every task execution prompt. Feedback is one-time — it is consumed (and cleared) after the next task completes or fails.
+
+### How It Works
+
+1. User writes feedback to `.architect/feedback.json` (manually or via a future CLI command)
+2. Before each task execution, The Architect loads feedback from the file
+3. Feedback is injected as a `=== USER FEEDBACK ===` section in the execution prompt
+4. After the task completes or fails, feedback is cleared — it is never repeated across tasks
+
+### Use Cases
+
+- **Course correction** — Guide the agent after seeing a task go wrong
+- **Style guidance** — Remind the agent about coding conventions mid-run
+- **Priority shifts** — Change focus without restarting the run
+
+---
+
+## 39. Monitor — JSON and Watch Modes
+
+The `architect monitor` command supports JSON output and continuous polling for scripted monitoring and external dashboards.
+
+### JSON Output
+
+```bash
+# One-shot JSON snapshot
+architect monitor --json
+```
+
+Outputs the current monitor state as clean JSON with fields: `current_task_id`, `current_task_title`, `status`, `tasks`, `circuit_breaker`, `tokens`, `model`, `cooldown`, and more. When no state file exists, outputs a neutral `NO_STATE` response.
+
+Mutually exclusive with `--tui`.
+
+### Watch Mode
+
+```bash
+# Continuous polling (default: 5 second interval)
+architect monitor --watch
+
+# Custom interval
+architect monitor --watch --interval 10
+
+# Keep watching after terminal state
+architect monitor --watch --follow
+```
+
+Outputs one JSON object per line (NDJSON format) at the configured interval. Auto-exits when the run reaches a terminal state (DONE/FAILED) unless `--follow` is used. Press Ctrl+C to stop.
+
+`--watch` implies `--json`. Mutually exclusive with `--tui`.
+
+### Use Cases
+
+- **External dashboards** — Pipe JSON to a web dashboard or Grafana
+- **Notification systems** — Watch for completion events and trigger notifications
+- **CI/CD pipelines** — Poll run status from another process
+
+---
+
+## 40. Configuration
 
 The Architect is zero-config by default. All settings have sensible defaults.
 
@@ -1606,7 +2279,19 @@ cooldown_detection = true            # Detect and wait on provider rate limits
 
 # ── Token Budget ──────────────────────────────────────────────────────────────
 token_budget_per_hour = 0           # Max tokens/rolling hour (0 = disabled)
-                                       # e.g. 500000 for ~5-Claude-call-per-hour budget
+                                        # e.g. 500000 for ~5-Claude-call-per-hour budget
+token_budget_per_run = 0            # Max tokens for entire run (0 = disabled)
+                                        # Use alongside per-hour budget to cap total spend
+
+# ── Parallel Execution ────────────────────────────────────────────────────────
+max_parallel_tasks = 1              # Concurrent task limit (1 = sequential)
+
+# ── Notifications ─────────────────────────────────────────────────────────────
+notify_on_complete = true           # Desktop notification + bell on success
+notify_on_fail = true               # Desktop notification + bell on failure
+
+# ── Token Ledger ──────────────────────────────────────────────────────────────
+token_ledger = true                 # Record run costs to .architect/token_ledger.json
 ```
 
 ### All Configuration Options
@@ -1638,6 +2323,11 @@ token_budget_per_hour = 0           # Max tokens/rolling hour (0 = disabled)
 | `circuit_enable_replan` | bool | `true` | Allow REPLAN recovery action |
 | `cooldown_detection` | bool | `true` | Detect and wait on provider rate limits |
 | `token_budget_per_hour` | int | `0` | Max tokens per rolling hour (0 = disabled) |
+| `token_budget_per_run` | int | `0` | Max tokens for entire run (0 = disabled) |
+| `max_parallel_tasks` | int | `1` | Maximum concurrent tasks (1 = sequential) |
+| `notify_on_complete` | bool | `true` | Desktop notification on run success |
+| `notify_on_fail` | bool | `true` | Desktop notification on run failure |
+| `token_ledger` | bool | `true` | Record run costs to `.architect/token_ledger.json` |
 
 ### Config CLI
 
@@ -1651,6 +2341,10 @@ architect config --set carry_context=false
 architect config --set retry_model_2="openrouter/google/gemini-2.5-pro"
 architect config --set circuit_no_progress_threshold=5
 architect config --set token_budget_per_hour=500000
+architect config --set token_budget_per_run=1000000
+architect config --set max_parallel_tasks=3
+architect config --set notify_on_complete=true
+architect config --set token_ledger=true
 ```
 
 ### `architect init`
@@ -1664,7 +2358,7 @@ architect init --force          # Overwrite existing files
 
 ---
 
-## 26. Task Files
+## 41. Task Files
 
 Tasks are Markdown files in `tasks/` with a specific naming format:
 
@@ -1672,8 +2366,11 @@ Tasks are Markdown files in `tasks/` with a specific naming format:
 tasks/
 ├── T01_init.md
 ├── T02_feature.md
+├── T02A_feature_part1.md    ← split sub-task (reassessment)
+├── T02B_feature_part2.md    ← split sub-task (reassessment)
 ├── T03_api.md
-├── R01_fix_tests.md         ← retrospective fix-up task
+├── T03R1_api_fix.md         ← retrospective fix-up for T03
+├── T03R2_api_fix2.md        ← second retro fix for T03
 ├── INSTRUCTIONS.md         ← project context (auto-generated)
 └── archive/
     └── 2026-04-12_143000/  ← previous run archived
@@ -1682,14 +2379,38 @@ tasks/
         └── INSTRUCTIONS.md ← plan context from previous run
 ```
 
-### Naming Convention
+### Naming Convention and Prefix Scheme
 
-| Prefix | Type | Created By |
-|--------|------|-----------|
-| `T01`, `T02`, … | Normal tasks | Architect agent during planning |
-| `R01`, `R02`, … | Retrospective fix-up tasks | Reviewer agent during retrospective |
+Tasks support three prefix categories with a defined sort order:
+
+| Prefix | Type | Created By | Example |
+|--------|------|-----------|---------|
+| `T01`, `T02`, … | Normal tasks | Architect agent during planning | `T01_init.md` |
+| `T01A`, `T01B`, … | Split sub-tasks | Reassessment agent (splits a task into smaller pieces) | `T01A_setup.md` |
+| `T01R1`, `T01R2`, … | Retrospective fix-up tasks | Reviewer agent (tied to the failed task number) | `T03R1_fix_tests.md` |
+
+**Sort order:** `T01 → T01A → T01B → T01R1 → T01R2 → T02`
+
+This scheme replaces the older global `R01`, `R02`, … retro prefix. Retro tasks are now tied to their parent task number so you can see which task spawned which fix-up.
 
 Numbers are sequential and never reused within a planning session.
+
+### Dependencies
+
+Tasks can declare dependencies on other tasks using a `## Dependencies` section:
+
+```markdown
+# T03 — Build API Layer
+
+## Dependencies
+- T01
+- T02
+
+## Goal
+Build the API layer that depends on the database schema (T01) and auth service (T02).
+```
+
+The runner validates the dependency graph before execution: cycles abort the run, missing dependencies log warnings. Tasks with unmet dependencies are skipped. See [Section 9 — Task Dependencies](#9-task-dependencies) for details.
 
 ### Task File Format
 
@@ -1733,7 +2454,7 @@ The architect model sometimes writes task files into a subdirectory mentioned in
 
 ---
 
-## 27. PROGRESS.md
+## 42. PROGRESS.md
 
 `tasks/PROGRESS.md` is The Architect's persistent memory between tasks in the current run. It tracks which tasks are complete and what to run next.
 
@@ -1807,7 +2528,7 @@ Both must be present and correctly formatted. The Architect **always** writes PR
 
 ---
 
-## 28. tasks/SUMMARY.md — Run Summary
+## 43. tasks/SUMMARY.md — Run Summary
 
 After every run, The Architect writes `tasks/SUMMARY.md` with a complete summary of what happened in the current task package. It is archived with the task files and `INSTRUCTIONS.md` when a new planning session starts.
 
@@ -1957,7 +2678,7 @@ The following information exists in the system but is not yet surfaced in `tasks
 
 ---
 
-## 29. ARCHITECT.md — Durable Project Intelligence
+## 44. ARCHITECT.md — Durable Project Intelligence
 
 `ARCHITECT.md` is The Architect's durable project brain. It stores stable project intelligence that future unrelated tasks need: repo responsibilities, tech stack, architecture, key flows, shared contracts, code locations, verification commands, style standards, agent conventions, data/storage, environment rules, operational constraints, permanent decisions, lessons, and best practices. It is **refreshed before planning**, read at the start of every planning session and every task execution, and updated by the intelligence curator, planner, build agent, and reviewer only with durable knowledge.
 
@@ -2036,7 +2757,7 @@ During planning, execution, and retrospective, entries are appended to:
 
 ---
 
-## 30. Monitor Screen — Live Monitoring
+## 45. Monitor Screen — Live Monitoring
 
 `architect monitor` opens the TUI monitor screen from any terminal. It reads `.architect/monitor_state.json`, which the runner updates after every significant event.
 
@@ -2084,7 +2805,7 @@ Detach is **not available** on normal runs (daemon worker) — the button shows 
 
 ---
 
-## 31. Error Handling
+## 46. Error Handling
 
 The Architect handles failures robustly at every layer:
 
@@ -2126,7 +2847,7 @@ Two flag files enable external process control:
 
 ---
 
-## 32. Project Structure — What The Architect Creates
+## 47. Project Structure — What The Architect Creates
 
 ```
 your-project/
@@ -2153,9 +2874,16 @@ your-project/
 │   │   ├── architect.log    # Planning session transcript
 │   │   ├── reviewer_round1.log  # Retrospective transcript
 │   │   └── T01.attempt2.log # Per-attempt execution logs
+│   ├── baselines/           # Workspace baselines for diff and rollback
+│   │   └── T01/             # Per-task baseline snapshots
 │   ├── circuit.json          # Circuit breaker state (persisted)
+│   ├── feedback.json        # User feedback (consumed once per task)
+│   ├── intelligence.json    # Cached project intelligence data
 │   ├── monitor_state.json    # Live state (updated every event, read by `architect monitor`)
+│   ├── presets.json         # Saved configuration presets
 │   ├── runner.lock          # Lock file (prevents concurrent runs)
+│   ├── templates.json       # Saved goal templates
+│   ├── token_ledger.json    # Cross-run token and cost ledger
 │   ├── monitor_stop.flag    # Graceful stop flag (Ctrl+C)
 │   └── monitor_kill.flag    # Immediate kill flag
 ├── ARCHITECT.md             # Durable project intelligence
@@ -2173,24 +2901,40 @@ the_architect/              # Python package (published to PyPI as "the-architec
 ├── version.py             # Version resolution
 ├── core/
 │   ├── architect_md.py          # ARCHITECT.md read/write + append helpers
+│   ├── baseline.py              # Workspace baseline capture and comparison
 │   ├── circuit.py               # Circuit breaker (CLOSED/OPEN/HALF_OPEN per task)
 │   ├── claude_code_provider.py  # Claude Code CLI provider implementation
 │   ├── codex_cli_provider.py    # Codex CLI provider implementation
 │   ├── context.py               # Context file/directory loading + goal extraction
+│   ├── estimate_cost.py         # Cost estimation from historical ledger data
+│   ├── feedback.py              # User feedback storage and injection
+│   ├── fileutil.py              # Cross-platform atomic file I/O helpers
 │   ├── free_models.py           # Free-tier OpenRouter model rotator (OpenCode only)
 │   ├── gemini_cli_provider.py   # Gemini CLI provider implementation
+│   ├── intelligence.py          # Pre-planning ARCHITECT.md quality gate + model refresh
 │   ├── monitor_state.py         # Monitor state writer (.architect/monitor_state.json)
+│   ├── notifications.py         # Desktop notifications and terminal bell
 │   ├── opencode_config.py       # Backward-compat shim (delegates to opencode_provider.py)
 │   ├── opencode_provider.py     # OpenCode CLI provider implementation
-│   ├── intelligence.py          # Pre-planning ARCHITECT.md quality gate + model refresh
+│   ├── parallel_scheduler.py    # Concurrent task scheduling via dependency graph
 │   ├── planner.py               # Planning via provider architect agent
+│   ├── presets.py               # Configuration preset management
 │   ├── progress.py              # tasks/PROGRESS.md read/write + status helpers
+│   ├── project_health.py        # Project-level health check functions
+│   ├── project_intelligence.py  # Pre-planning deterministic project intelligence
 │   ├── provider.py              # ArchitectProvider protocol + detect_provider()
+│   ├── provider_health.py       # Provider connectivity and health checks
+│   ├── provider_setup.py        # Provider installation detection
 │   ├── retrospective.py         # Retrospective reviewer runner
+│   ├── rollback.py              # Baseline-based file rollback
 │   ├── runner.py                # Task execution engine (stream_provider, run_task, run_all)
+│   ├── self_update.py           # PyPI version check and update prompt
 │   ├── structure.py             # Project structure detection (repo type, framework, deps)
 │   ├── success.py               # tasks/SUMMARY.md generation + terminal summary
-│   └── tasks.py                 # Task discovery and state
+│   ├── tasks.py                 # Task discovery, Task/TaskPlan models, dependencies
+│   ├── templates.py             # Goal template CRUD and variable substitution
+│   ├── token_ledger.py          # Cross-run token and cost ledger
+│   ├── workspace_context.py     # Git workspace state for context-aware planning
 └── resources/
     ├── opencode_template.json  # OpenCode planning config (intelligence + architect + reviewer agents)
     └── prompts/
@@ -2202,7 +2946,7 @@ the_architect/              # Python package (published to PyPI as "the-architec
 
 ---
 
-## 33. Dependencies
+## 48. Dependencies
 
 ```toml
 [project]

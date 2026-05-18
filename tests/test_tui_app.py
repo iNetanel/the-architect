@@ -1032,3 +1032,149 @@ class TestRunSingleScreen:
         ):
             result = run_single_screen(SplashScreen())
             assert result is None
+
+
+class TestSigcontHandler:
+    """Tests for SIGCONT (sleep/wake) recovery."""
+
+    def test_sigcont_handler_sends_sigwinch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """SIGCONT handler sends SIGWINCH to trigger Textual resize."""
+        import signal
+
+        from the_architect.tui.app import ArchitectApp
+
+        sigwinch_sent: list[int] = []
+
+        def _mock_kill(pid: int, sig: int) -> None:
+            sigwinch_sent.append(sig)
+
+        monkeypatch.setattr(signal, "SIGWINCH", 29)
+        monkeypatch.setattr(__import__("os"), "kill", _mock_kill)
+
+        app = ArchitectApp()
+        app._sigcont_handler(signal.SIGCONT, None)
+
+        assert signal.SIGWINCH in sigwinch_sent
+
+    def test_sigcont_handler_schedules_resetup(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """SIGCONT handler schedules terminal re-setup on the event loop."""
+        from the_architect.tui.app import ArchitectApp
+
+        call_from_thread_calls: list[object] = []
+
+        def _mock_call_from_thread(fn: object) -> None:
+            call_from_thread_calls.append(fn)
+
+        app = ArchitectApp()
+        app.call_from_thread = _mock_call_from_thread  # type: ignore[method-assign]
+
+        # Mock os.kill to avoid side effects in test
+        import os
+
+        def _mock_kill(*args: object, **kwargs: object) -> None:
+            return None
+
+        monkeypatch.setattr(os, "kill", _mock_kill)
+        monkeypatch.setattr("signal.SIGWINCH", 29)
+
+        app._sigcont_handler(18, None)
+
+        # Should have scheduled _resetup_terminal_after_sleep
+        assert len(call_from_thread_calls) == 1
+        assert callable(call_from_thread_calls[0])
+
+    def test_resetup_terminal_after_sleep_no_crash(self) -> None:
+        """_resetup_terminal_after_sleep is a safe no-op in test environment."""
+        from the_architect.tui.app import ArchitectApp
+
+        app = ArchitectApp()
+        # Should not raise — in test environment it's a no-op
+        app._resetup_terminal_after_sleep()
+
+
+class TestPushAndWaitShutdown:
+    """Tests for push_and_wait shutdown unblocking."""
+
+    @pytest.mark.asyncio
+    async def test_push_waits_tracked_during_wait(self) -> None:
+        """Active push_and_wait calls are tracked in _push_waits."""
+        import threading
+
+        from textual.screen import Screen
+
+        app = ArchitectApp()
+        tracked_during_wait: list[bool] = []
+        push_result: list[object] = [None]
+
+        class _HoldScreen(Screen[None]):
+            def on_mount(self) -> None:
+                # Do NOT dismiss — stay on stack so push_and_wait blocks
+                pass
+
+        def worker_push() -> None:
+            push_result[0] = app.push_and_wait(_HoldScreen())
+
+        def worker_check() -> None:
+            # Give the push time to register
+            import time
+
+            time.sleep(0.2)
+            with app._push_waits_lock:
+                tracked_during_wait.append(len(app._push_waits) > 0)
+            # Set quit to unblock push_and_wait
+            app._quit_event.set()
+
+        async with app.run_test() as pilot:
+            await pilot.pause(0.1)
+            thread_push = threading.Thread(target=worker_push, daemon=True)
+            thread_push.start()
+            thread_check = threading.Thread(target=worker_check, daemon=True)
+            thread_check.start()
+            await pilot.pause(0.5)
+            thread_push.join(timeout=2)
+            thread_check.join(timeout=2)
+
+        assert tracked_during_wait == [True]
+
+    @pytest.mark.asyncio
+    async def test_begin_shutdown_unblocks_push_waits(self) -> None:
+        """begin_shutdown signals all pending push_and_wait done events."""
+        import threading
+
+        from textual.screen import Screen
+
+        app = ArchitectApp()
+
+        class _HoldScreen(Screen[None]):
+            def on_mount(self) -> None:
+                pass
+
+        unblocked: list[bool] = []
+        push_done: threading.Event = threading.Event()
+
+        def worker_push() -> None:
+            result = app.push_and_wait(_HoldScreen())
+            unblocked.append(result is None)
+            push_done.set()
+
+        def worker_shutdown() -> None:
+            import time
+
+            time.sleep(0.2)
+            # begin_shutdown should unblock push_and_wait
+            app.begin_shutdown()
+
+        async with app.run_test() as pilot:
+            await pilot.pause(0.1)
+            thread_push = threading.Thread(target=worker_push, daemon=True)
+            thread_push.start()
+            thread_shutdown = threading.Thread(target=worker_shutdown, daemon=True)
+            thread_shutdown.start()
+            # Wait for push to complete (unblocked by begin_shutdown)
+            push_done.wait(timeout=3)
+            await pilot.pause(0.1)
+            thread_push.join(timeout=2)
+            thread_shutdown.join(timeout=2)
+
+        assert unblocked == [True]
+        assert app._shutdown_started is True

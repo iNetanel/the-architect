@@ -122,10 +122,13 @@ class StatusApp(App[None]):
                 pass
 
         # Token budget
+        budget_parts: list[str] = []
         if config.token_budget_per_hour > 0:
-            self.query_one("#token_line", Static).update(
-                f"{config.token_budget_per_hour:,} tokens/hour"
-            )
+            budget_parts.append(f"{config.token_budget_per_hour:,} tokens/hour")
+        if config.token_budget_per_run > 0:
+            budget_parts.append(f"{config.token_budget_per_run:,} tokens/run")
+        if budget_parts:
+            self.query_one("#token_line", Static).update("  ·  ".join(budget_parts))
         else:
             self.query_one("#token_line", Static).update("unlimited")
 

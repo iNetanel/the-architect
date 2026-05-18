@@ -10,6 +10,7 @@ from the_architect.core.success import (
     _fmt_duration,
     _fmt_model,
     _fmt_tokens,
+    notify_run_completion,
     print_success_summary,
     write_success_md,
 )
@@ -764,3 +765,177 @@ class TestWriteSummaryMd:
         content = path.read_text(encoding="utf-8")
         assert "# The Architect — Run Summary" in content
         assert "T01" in content
+
+
+# ---------------------------------------------------------------------------
+# Notification hook
+# ---------------------------------------------------------------------------
+
+
+class TestNotifyRunCompletion:
+    """Tests for notify_run_completion()."""
+
+    def test_success_notification_fires(self) -> None:
+        """Should send desktop notification and bell on success."""
+        from unittest.mock import patch
+
+        results = [
+            TaskResult(prefix="T01", title="Task 1", status="done"),
+            TaskResult(prefix="T02", title="Task 2", status="done"),
+        ]
+
+        with (
+            patch("the_architect.core.notifications.send_desktop_notification") as mock_notify,
+            patch("the_architect.core.notifications.ring_terminal_bell") as mock_bell,
+        ):
+            notify_run_completion(
+                notify_on_complete=True,
+                notify_on_fail=True,
+                results=results,
+                total_duration=120.0,
+            )
+
+        mock_notify.assert_called_once_with(
+            "The Architect — Run Complete",
+            "2/2 tasks done in 2:00",
+        )
+        mock_bell.assert_called_once()
+
+    def test_failure_notification_fires(self) -> None:
+        """Should send failure notification when tasks failed."""
+        from unittest.mock import patch
+
+        results = [
+            TaskResult(prefix="T01", title="Task 1", status="done"),
+            TaskResult(prefix="T02", title="Task 2", status="failed"),
+        ]
+
+        with (
+            patch("the_architect.core.notifications.send_desktop_notification") as mock_notify,
+            patch("the_architect.core.notifications.ring_terminal_bell") as mock_bell,
+        ):
+            notify_run_completion(
+                notify_on_complete=True,
+                notify_on_fail=True,
+                results=results,
+                total_duration=60.0,
+            )
+
+        mock_notify.assert_called_once_with(
+            "The Architect — Run Failed",
+            "1/2 done, 1 failed. Duration: 1:00",
+        )
+        mock_bell.assert_called_once()
+
+    def test_notify_on_complete_false_suppresses(self) -> None:
+        """Should skip notification when notify_on_complete is False."""
+        from unittest.mock import patch
+
+        results = [
+            TaskResult(prefix="T01", title="Task 1", status="done"),
+        ]
+
+        with (
+            patch("the_architect.core.notifications.send_desktop_notification") as mock_notify,
+            patch("the_architect.core.notifications.ring_terminal_bell") as mock_bell,
+        ):
+            notify_run_completion(
+                notify_on_complete=False,
+                notify_on_fail=True,
+                results=results,
+                total_duration=30.0,
+            )
+
+        mock_notify.assert_not_called()
+        mock_bell.assert_not_called()
+
+    def test_notify_on_fail_false_suppresses(self) -> None:
+        """Should skip notification when notify_on_fail is False and run failed."""
+        from unittest.mock import patch
+
+        results = [
+            TaskResult(prefix="T01", title="Task 1", status="failed"),
+        ]
+
+        with (
+            patch("the_architect.core.notifications.send_desktop_notification") as mock_notify,
+            patch("the_architect.core.notifications.ring_terminal_bell") as mock_bell,
+        ):
+            notify_run_completion(
+                notify_on_complete=True,
+                notify_on_fail=False,
+                results=results,
+                total_duration=30.0,
+            )
+
+        mock_notify.assert_not_called()
+        mock_bell.assert_not_called()
+
+    def test_both_disabled_no_notification(self) -> None:
+        """Should skip notification when both flags are False."""
+        from unittest.mock import patch
+
+        results = [
+            TaskResult(prefix="T01", title="Task 1", status="done"),
+        ]
+
+        with (
+            patch("the_architect.core.notifications.send_desktop_notification") as mock_notify,
+            patch("the_architect.core.notifications.ring_terminal_bell") as mock_bell,
+        ):
+            notify_run_completion(
+                notify_on_complete=False,
+                notify_on_fail=False,
+                results=results,
+                total_duration=30.0,
+            )
+
+        mock_notify.assert_not_called()
+        mock_bell.assert_not_called()
+
+    def test_empty_results_all_done(self) -> None:
+        """Should handle empty results list as success (0/0 done)."""
+        from unittest.mock import patch
+
+        with (
+            patch("the_architect.core.notifications.send_desktop_notification") as mock_notify,
+            patch("the_architect.core.notifications.ring_terminal_bell") as mock_bell,
+        ):
+            notify_run_completion(
+                notify_on_complete=True,
+                notify_on_fail=True,
+                results=[],
+                total_duration=0.0,
+            )
+
+        mock_notify.assert_called_once_with(
+            "The Architect — Run Complete",
+            "0/0 tasks done in 0:00",
+        )
+        mock_bell.assert_called_once()
+
+    def test_all_failed_notification(self) -> None:
+        """Should send failure notification when all tasks failed."""
+        from unittest.mock import patch
+
+        results = [
+            TaskResult(prefix="T01", title="Task 1", status="failed"),
+            TaskResult(prefix="T02", title="Task 2", status="failed"),
+        ]
+
+        with (
+            patch("the_architect.core.notifications.send_desktop_notification") as mock_notify,
+            patch("the_architect.core.notifications.ring_terminal_bell") as mock_bell,
+        ):
+            notify_run_completion(
+                notify_on_complete=True,
+                notify_on_fail=True,
+                results=results,
+                total_duration=300.0,
+            )
+
+        mock_notify.assert_called_once_with(
+            "The Architect — Run Failed",
+            "0/2 done, 2 failed. Duration: 5:00",
+        )
+        mock_bell.assert_called_once()

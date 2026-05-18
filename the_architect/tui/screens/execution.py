@@ -18,13 +18,21 @@ Layout mirrors :class:`~the_architect.tui.screens.wait.WaitScreen`:
 from __future__ import annotations
 
 from datetime import datetime
+from typing import cast
 
 from rich.markup import escape
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
 from textual.screen import Screen
-from textual.widgets import Header, RichLog, Static, TabbedContent, TabPane
+from textual.widgets import (
+    DataTable,
+    Header,
+    RichLog,
+    Static,
+    TabbedContent,
+    TabPane,
+)
 
 from the_architect.tui.widgets import MatrixRain, next_matrix_frame
 
@@ -43,6 +51,14 @@ def _fmt_tokens(count: int) -> str:
     return str(count)
 
 
+def _footer_tabs_text() -> str:
+    """Tab navigation hint shown at the bottom of each tab page."""
+    return (
+        "[dim]Tabs:  [l] Live  [p] Progress  [d] Diagnostics"
+        "  [g] Settings  [c] Costs  [t] Tasks[/dim]"
+    )
+
+
 def _idle_footer_text() -> str:
     """Initial footer text shown before any run activity.
 
@@ -50,7 +66,10 @@ def _idle_footer_text() -> str:
     direct hard stop.  Detach is available when running in Infinite
     Loop or persistent mode — the pause menu explains this inline.
     """
-    return "(idle)  [l]ive / [p]rogress / [d]iagnostics / settin[g]s  ·  Esc=pause  ·  Ctrl+C=stop"
+    return (
+        "(idle)  [l]ive / [p]rogress / [d]iagnostics / settin[g]s"
+        " / co[s]ts / tas[k]s  ·  Esc=pause  ·  Ctrl+C=stop"
+    )
 
 
 class ExecutionScreen(Screen[None]):
@@ -66,6 +85,7 @@ class ExecutionScreen(Screen[None]):
         Binding("d", "switch_tab('tab_diagnostics')", "Diagnostics", show=False, priority=True),
         Binding("g", "switch_tab('tab_settings')", "Settings", show=False, priority=True),
         Binding("c", "switch_tab('tab_costs')", "Costs", show=False, priority=True),
+        Binding("t", "switch_tab('tab_tasks')", "Tasks", show=False, priority=True),
         Binding("o", "switch_tab('tab_live')", "Live", show=False, priority=True),
         Binding("e", "switch_tab('tab_diagnostics')", "Diagnostics", show=False, priority=True),
         Binding("s", "switch_tab('tab_progress')", "Progress", show=False, priority=True),
@@ -137,6 +157,12 @@ class ExecutionScreen(Screen[None]):
         padding: 1 2;
     }
 
+    #exec_tasks {
+        height: 1fr;
+        border: round $panel;
+        padding: 0 1;
+    }
+
     #exec_footer {
         dock: bottom;
         height: 1;
@@ -172,6 +198,13 @@ class ExecutionScreen(Screen[None]):
         # Track whether any real provider output has been received so the
         # placeholder can be cleared on the first write.
         self._output_received: bool = False
+        # Pending feedback message loaded by the runner. Displayed in the
+        # footer prefix until the runner clears it after consumption.
+        self._feedback_message: str | None = None
+        # Per-task details for the Tasks tab DataTable. Keys are task
+        # prefixes; values are dicts with optional "tokens", "model", and
+        # "circuit" keys. Populated by update_progress_tasks().
+        self._task_details: dict[str, dict[str, str]] = {}
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -206,6 +239,9 @@ class ExecutionScreen(Screen[None]):
             with TabPane("Costs", id="tab_costs"):
                 with VerticalScroll(id="exec_costs"):
                     yield Static(self._render_costs(), id="exec_costs_text")
+            with TabPane("Tasks", id="tab_tasks"):
+                with VerticalScroll(id="exec_tasks"):
+                    yield DataTable(zebra_stripes=True, id="exec_tasks_table")
         yield Static(
             _idle_footer_text(),
             id="exec_footer",
@@ -222,6 +258,7 @@ class ExecutionScreen(Screen[None]):
             "#exec_progress",
             "#exec_settings",
             "#exec_costs",
+            "#exec_tasks",
         ):
             try:
                 self.query_one(scroll_id).can_focus = True
@@ -264,6 +301,9 @@ class ExecutionScreen(Screen[None]):
             self.update_costs(self._pending_costs)
             self._pending_costs = None
         self._refresh_summary_widgets()
+        # Flush the Tasks tab DataTable now that widgets are mounted.
+        if self._progress_tasks:
+            self.update_tasks_table(self._progress_tasks)
 
     def _write_default_placeholders(self) -> None:
         # Only write the output placeholder when no real provider output
@@ -329,6 +369,7 @@ class ExecutionScreen(Screen[None]):
                 "tab_diagnostics": "#exec_diagnostics",
                 "tab_settings": "#exec_settings",
                 "tab_costs": "#exec_costs",
+                "tab_tasks": "#exec_tasks",
             }.get(active)
             if target_id:
                 self.query_one(target_id).focus()
@@ -375,18 +416,100 @@ class ExecutionScreen(Screen[None]):
             pass
 
     def update_progress_tasks(self, tasks: list[dict[str, str]]) -> None:
-        """Replace the Progress tab's task overview and refresh it."""
+        """Replace the Progress tab's task overview and refresh it.
+
+        Also updates the Tasks tab DataTable if it is mounted.
+        """
         self._progress_tasks = tasks
         self._refresh_summary_widgets()
+        # Update the Tasks tab DataTable — no-op if not mounted yet.
+        self.update_tasks_table(tasks)
 
     def update_footer(self, text: str) -> None:
-        """Set the one-line status footer under the tabs."""
+        """Set the one-line status footer under the tabs.
+
+        If pending feedback is set, it is prepended to the base footer text
+        with a visual separator so the user can see that feedback will be
+        consumed by the next task.
+        """
+        rendered = self._render_footer_text(text)
         try:
             footer = self.query_one("#exec_footer", Static)
         except Exception:
-            self._pending_footer = text
+            self._pending_footer = rendered
             return
-        footer.update(text)
+        footer.update(rendered)
+
+    def update_feedback(self, message: str | None) -> None:
+        """Set or clear the pending feedback banner in the footer.
+
+        Args:
+            message: Feedback text to display, or ``None`` to clear.
+        """
+        self._feedback_message = message
+        # If the footer widget is already mounted, refresh it with the
+        # current base text so the feedback appears or disappears now.
+        try:
+            current_footer = self.query_one("#exec_footer", Static)
+            # Strip any existing feedback prefix before re-rendering,
+            # so clearing feedback actually removes the prefix.
+            base = self._strip_feedback_prefix(str(current_footer.render_str))
+            self.update_footer(base)
+            return
+        except Exception:
+            pass
+        # If the widget isn't mounted yet, update the pending footer
+        # so the next flush renders with the new feedback state.
+        if self._pending_footer is not None:
+            # Strip any existing feedback prefix from the pending text
+            # and re-render with the new feedback state.
+            base = self._strip_feedback_prefix(self._pending_footer)
+            self._pending_footer = self._render_footer_text(base)
+
+    def _strip_feedback_prefix(self, rendered: str) -> str:
+        """Remove a previously prepended feedback prefix from rendered text.
+
+        Returns the original base text if no feedback prefix is found.
+
+        Args:
+            rendered: Footer text that may contain a feedback prefix.
+
+        Returns:
+            Base footer text without the feedback prefix.
+        """
+        prefix = "[yellow]⚡ Feedback[/yellow]:"
+        if rendered.startswith(prefix):
+            # Find the "  ·  " separator after the feedback content
+            sep = "  ·  "
+            after_prefix = rendered[len(prefix) :]
+            idx = after_prefix.find(sep)
+            if idx != -1:
+                return after_prefix[idx + len(sep) :]
+        return rendered
+
+    def _render_footer_text(self, base_text: str) -> str:
+        """Compose the final footer string from base text and feedback.
+
+        When feedback is pending, the footer shows the feedback message
+        prefixed with a yellow indicator, separated from the normal
+        footer by ``  ·  ``.  Long messages are truncated to keep the
+        footer on one line.
+
+        Args:
+            base_text: The normal footer text (phase, keys, etc.).
+
+        Returns:
+            Final footer string with feedback prepended if active.
+        """
+        if self._feedback_message is None:
+            return base_text
+        # Truncate long messages — keep the footer readable on one line.
+        msg = self._feedback_message
+        max_len = 80
+        if len(msg) > max_len:
+            msg = msg[: max_len - 3] + "…"
+        feedback_line = f"[yellow]⚡ Feedback[/yellow]: {escape(msg)}"
+        return f"{feedback_line}  ·  {base_text}"
 
     def update_details(self, **fields: str) -> None:
         """Merge run metadata into the Progress tab and refresh the title."""
@@ -423,6 +546,64 @@ class ExecutionScreen(Screen[None]):
             self.query_one("#exec_costs_text", Static).update(self._render_costs())
         except Exception:
             self._pending_costs = costs
+
+    def update_tasks_table(self, tasks: list[dict[str, str]]) -> None:
+        """Update the Tasks tab DataTable with current task state.
+
+        Each task dict may contain: prefix, title, status, tokens, model.
+        The DataTable is cleared and rebuilt on each call — the table is
+        small enough (typically 5-20 rows) that this is efficient.
+
+        Args:
+            tasks: List of task dicts from the runner callbacks.
+        """
+        # Store per-task details for later refreshes
+        for task in tasks:
+            prefix = task.get("prefix", "")
+            if prefix:
+                self._task_details[prefix] = {
+                    k: v for k, v in task.items() if k not in ("prefix", "title", "status")
+                }
+
+        try:
+            table = self.query_one("#exec_tasks_table", DataTable)
+        except Exception:
+            return
+
+        table.clear(columns=True)
+        table.add_columns("Task", "Title", "Status", "Tokens", "Model", "Circuit")
+
+        for task in tasks:
+            prefix = task.get("prefix", "")
+            title = task.get("title", "")
+            status = task.get("status", "pending")
+            tokens_raw = task.get("tokens", "")
+            model = task.get("model", "")
+
+            # Format tokens
+            tokens_str = "—"
+            if tokens_raw and tokens_raw not in ("", "—"):
+                try:
+                    token_count = int(tokens_raw)
+                    tokens_str = _fmt_tokens(token_count)
+                except (ValueError, TypeError):
+                    tokens_str = tokens_raw
+
+            # Shorten model name for display
+            model_short = model.split("/")[-1] if "/" in model else model
+            if not model_short:
+                model_short = "—"
+
+            # Circuit breaker label — maps task status to circuit state
+            circuit_str = {
+                "running": "CLOSED",
+                "done": "CLOSED",
+                "failed": "OPEN",
+                "skipped": "HALF_OPEN",
+                "pending": "CLOSED",
+            }.get(status, "CLOSED")
+
+            table.add_row(prefix, title, status.upper(), tokens_str, model_short, circuit_str)
 
     def _refresh_summary_widgets(self) -> None:
         """Refresh cached progress/settings/costs state after mount or updates."""
@@ -537,7 +718,7 @@ class ExecutionScreen(Screen[None]):
             "",
             "[dim]─────────────────────────────[/dim]",
             "",
-            "[dim]Tabs:  [l] Live  [p] Progress  [d] Diagnostics  [g] Settings  [c] Costs[/dim]",
+            _footer_tabs_text(),
             "[dim]Keys:  Esc = pause menu  ·  Ctrl+C = stop[/dim]",
         ]
         return "\n".join(lines)
@@ -556,7 +737,7 @@ class ExecutionScreen(Screen[None]):
             "",
             "[dim]─────────────────────────────[/dim]",
             "",
-            "[dim]Tabs:  [l] Live  [p] Progress  [d] Diagnostics  [g] Settings  [c] Costs[/dim]",
+            _footer_tabs_text(),
             "[dim]Keys:  Esc = pause menu  ·  Ctrl+C = stop[/dim]",
         ]
         return "\n".join(lines)
@@ -599,6 +780,40 @@ class ExecutionScreen(Screen[None]):
                     else:
                         lines.append(f"    [dim]{model_short}[/dim]")
 
+            # Budget section — only render when budget keys are present
+            budget_limit = self._costs.get("budget_per_run")
+            if budget_limit is not None:
+                budget_used = self._costs.get("budget_per_run_used", 0)
+                budget_remaining = self._costs.get("budget_per_run_remaining", 0)
+                budget_pct = self._costs.get("budget_per_run_pct", 0)
+                # Ensure numeric types — costs dict is dict[str, object]
+                budget_limit_n = int(cast("int", budget_limit))
+                budget_used_n = int(cast("int", budget_used)) if budget_used is not None else 0
+                budget_remaining_n = (
+                    int(cast("int", budget_remaining)) if budget_remaining is not None else 0
+                )
+                budget_pct_n = float(cast("float", budget_pct)) if budget_pct is not None else 0.0
+                # Color based on remaining percentage
+                remaining_pct = 100 - budget_pct_n
+                if remaining_pct > 50:
+                    budget_color = "green"
+                elif remaining_pct >= 20:
+                    budget_color = "yellow"
+                else:
+                    budget_color = "red"
+                # Visual progress bar
+                bar_width = 20
+                filled = int(bar_width * budget_pct_n / 100)
+                bar = "█" * filled + "░" * (bar_width - filled)
+                lines += [
+                    "",
+                    f"  [{budget_color}][bold]Token Budget[/bold][/{budget_color}]",
+                    f"    Limit       {_fmt_tokens(budget_limit_n)} tokens",
+                    f"    Used        {_fmt_tokens(budget_used_n)} tokens",
+                    f"    [{budget_color}]{bar}[/{budget_color}]  {budget_pct_n:.0f}%",
+                    f"    Remaining   {_fmt_tokens(budget_remaining_n)} tokens",
+                ]
+
         lines += [
             "",
             "  [dim]Prices are estimates based on public list rates.[/dim]",
@@ -606,7 +821,7 @@ class ExecutionScreen(Screen[None]):
             "",
             "[dim]─────────────────────────────[/dim]",
             "",
-            "[dim]Tabs:  [l] Live  [p] Progress  [d] Diagnostics  [g] Settings  [c] Costs[/dim]",
+            _footer_tabs_text(),
             "[dim]Keys:  Esc = pause menu  ·  Ctrl+C = stop[/dim]",
         ]
         return "\n".join(lines)

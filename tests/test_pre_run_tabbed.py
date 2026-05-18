@@ -85,6 +85,8 @@ class TestPreRunValues:
         assert v.force_reassessment is True
         assert v.infinite_loop is False
         assert v.token_budget_per_hour == 0
+        assert v.notify_on_complete is True
+        assert v.notify_on_fail is True
         assert v.action == "plan"
 
     def test_custom_values(self) -> None:
@@ -102,6 +104,8 @@ class TestPreRunValues:
             force_reassessment=False,
             infinite_loop=True,
             token_budget_per_hour=5000,
+            notify_on_complete=False,
+            notify_on_fail=False,
             action="replan",
         )
         assert v.goal == "Build auth"
@@ -116,6 +120,8 @@ class TestPreRunValues:
         assert v.force_reassessment is False
         assert v.infinite_loop is True
         assert v.token_budget_per_hour == 5000
+        assert v.notify_on_complete is False
+        assert v.notify_on_fail is False
         assert v.action == "replan"
 
     def test_serialization_round_trip(self) -> None:
@@ -1186,10 +1192,24 @@ class TestPreRunScreen:
             await pilot.pause(0.05)
             assert getattr(screen.focused, "id", None) == "chk_free"
 
-            # down key → moves focus within Options tab (chk_persistent)
+            # down key → moves focus within Options tab
+            # New order: Free, Persistent, Infinite Loop, Budget, Budget Run,
+            #   Integrity, Force Reassessment, Notify Complete, Notify Fail
             screen.action_focus_next()
             await pilot.pause(0.05)
             assert getattr(screen.focused, "id", None) == "chk_persistent"
+
+            screen.action_focus_next()
+            await pilot.pause(0.05)
+            assert getattr(screen.focused, "id", None) == "chk_infinite_loop"
+
+            screen.action_focus_next()
+            await pilot.pause(0.05)
+            assert getattr(screen.focused, "id", None) == "inp_budget"
+
+            screen.action_focus_next()
+            await pilot.pause(0.05)
+            assert getattr(screen.focused, "id", None) == "inp_budget_run"
 
             screen.action_focus_next()
             await pilot.pause(0.05)
@@ -1201,7 +1221,11 @@ class TestPreRunScreen:
 
             screen.action_focus_next()
             await pilot.pause(0.05)
-            assert getattr(screen.focused, "id", None) == "chk_infinite_loop"
+            assert getattr(screen.focused, "id", None) == "chk_notify_complete"
+
+            screen.action_focus_next()
+            await pilot.pause(0.05)
+            assert getattr(screen.focused, "id", None) == "chk_notify_fail"
 
             screen.action_cancel()
             await pilot.pause(0.05)

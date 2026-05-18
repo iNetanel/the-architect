@@ -11,68 +11,88 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ## [Unreleased]
 
-### Added
-
-- **New task prefix scheme: `T01A`/`T01B` splits and `T04R1`/`T04R2` retro tasks** — Tasks can
-  now be split into lettered sub-tasks (`T01A`, `T01B`) by reassessment, and retrospective
-  fix-ups are now tied to their failed task (`T04R1` instead of global `R01`). Sort order is
-  `T01 → T01A → T01B → T01R1 → T01R2 → T02`. The planner, reassessment agent, reviewer,
-  execution agent, all runtime regex parsers, PROGRESS.md patterns, TUI progress display, and
-  all prompt files are fully aligned to the new scheme. (build 10472)
-
 ### Fixed
 
-- **Split/retro tasks now appear in TUI Progress tab immediately** — When reassessment
-  created split sub-tasks (`T04A`, `T04B`) or retro fix-tasks (`T04R1`) during execution,
-  they were invisible in the Progress tab because `plan.tasks` was never refreshed after
-  the initial discovery. After each reassessment, `_sync_plan_from_disk()` now re-discovers
-  tasks on disk, merges any new ones into `plan.tasks` in correct sort order
-  (`T04A → T04B → T04R1` before `T05`), and fires a TUI hook so the Progress tab updates
-  immediately. Also extracted `task_sort_key()` as a public function in
-  `the_architect.core.tasks` for stable cross-platform reuse. (build 10477)
+- **Success screen exit keys accurate** — The run-complete summary screen now exits only on `Q` or `Esc` (not `Enter`), and the hint text correctly reads "Press Q or Esc to exit". (build 10553)
 
-- **TUI mouse/tab interaction restored after sleep/wake** — The SIGCONT handler added for
-  sleep/wake recovery called `refresh(layout=True)` which injected Textual's mouse-tracking
-  enable escape codes (`\x1b[?1003h` etc.) directly into the terminal input stream at an
-  unpredictable moment. This caused raw mouse cursor position bytes to appear as literal
-  text in the goal TextArea and broke tab/mouse clicks until the terminal was reset.
-  Fixed by replacing `refresh(layout=True)` with a single `os.kill(os.getpid(), SIGWINCH)`
-  call — Textual's own `on_terminal_resize` handler then fires, measures the real terminal
-  size, and repaints through the normal event loop path with no escape code injection.
-  No-op on Windows where `SIGWINCH` is unavailable. (build 10478)
+---
 
-- **Provider idle-timeout kills no longer burn retry slots** — When the provider subprocess
-  went silent and was killed by the idle-timeout watchdog, each kill was counting as a real
-  failure and exhausting `max_retries`. Idle-timeout attempts now get up to 5 bonus retries
-  (mirroring the existing sleep/wake gap logic), each preceded by a 3-minute cool-down pause
-  configurable via `ARCHITECT_IDLE_TIMEOUT_RETRY_PAUSE_SECONDS`. (build 10471)
+## [1.3.0] (build 10553) — 2026-05-18
 
-- **Infinite Loop continues after idle-timeout task failures** — The Infinite Loop driver now
-  resets tasks that failed only due to provider idle timeouts from `Failed` → `Pending` and
-  continues the loop, instead of exiting. This mirrors the existing sleep/wake gap reset path.
-  (build 10471)
+### What's New
 
-- **run_all no longer hard-stops when a pending R-task exists** — When a T-task exhausted its
-  retries, `run_all` would stop immediately, skipping any retrospective R-task that was already
-  queued for recovery. Now, if a pending R-task with the same task number exists, execution
-  continues to it instead of stopping. Only when there is no R-task (or it is already terminal)
-  does the run stop. (build 10471)
+**Parallel task execution** — The Architect can now run independent tasks concurrently. Set `max_parallel_tasks` in `architect.toml` (default 1 for backward compatibility) and the runner launches independent tasks in parallel via `asyncio.gather`. Each task gets its own circuit breaker; token budgets are lock-protected. The TUI shows a new "Tasks" tab with a live DataTable of all concurrent tasks, their status, token usage, model, and circuit state.
 
-### Fixed
+**Task dependencies** — Tasks can now declare `## Dependencies` on other tasks. The planner writes dependency edges, the runner validates the graph (cycles abort, missing deps warn), and downstream tasks are auto-skipped when their dependencies fail. Use `architect deps` to inspect the graph, `architect list` now shows a "Deps" column, and the TUI task list mirrors dependency indicators.
 
-- **Integrity protocol placement rule strengthened** — The file integrity prompt now includes
-  an explicit placement rule with concrete examples making it clear that `architect_eval_*`
-  snapshots must be created in the exact same directory as the original file, never at the
-  project root unless the original is also at root. `tasks/`, `PROGRESS.md`, and `ARCHITECT.md`
-  are now explicitly exempt from snapshotting and excluded from the corruption-signal scan in
-  retrospective/reassessment. (build 10469)
+**Goal templates** — Save reusable goal descriptions with `{variable}` placeholders via `architect template create`. Run them with `architect template run --var name=value` — variables are substituted, config overrides applied, and the Architect launches. Templates appear in the TUI pre-run Goal tab for quick selection. Stored in `.architect/templates.json`.
 
-- **OpenCode `--agent` flag workaround reverted** — The `--agent` CLI flag regression
-  introduced in OpenCode 1.15.0 was fixed upstream in 1.15.2. The Architect now passes
-  `--agent` unconditionally again; the `_agent_flag_broken()` version gate, `default_agent`
-  in the planning config template, and the worker-var env stripping introduced in build 10459
-  have all been removed. Workaround entry [OC-1] moved to Resolved in `COMPATIBILITY.md`.
-  (build 10467)
+**Dry-run mode** — Run `architect --dry-run` to plan without executing. Task files are created, a plan summary is shown (tasks, estimated cost, dependency validation), then the process exits. Combine with `--json` for CI pipelines and scripted monitoring.
+
+**Desktop notifications** — The Architect now sends a desktop notification and terminal bell when a run completes or fails. Toggle per-run via `notify_on_complete` / `notify_on_fail` config flags or the TUI Options tab. Disabled automatically in Docker, CI, and headless environments.
+
+**Context-aware planning** — The planner now sees your workspace state before writing tasks: current git branch, uncommitted changes, and recent commits are injected as a `=== WORKSPACE STATE ===` section. Non-git projects and git errors are handled gracefully.
+
+### New Commands
+
+| Command | What it does |
+|---------|-------------|
+| `architect estimate` | Pre-run cost estimation from historical ledger data |
+| `architect report` | View the last run's `SUMMARY.md` as a Rich table |
+| `architect rollback` | Restore files to pre-run state from captured baselines |
+| `architect deps` | Display the full task dependency graph |
+| `architect diff` | Show per-task file changes (created/modified/deleted) |
+| `architect diff --tui` | Interactive TUI diff viewer |
+| `architect budget` | Show token budget config and historical usage |
+| `architect history` | Browse past runs from the token ledger |
+| `architect history --tui` | Interactive TUI history viewer |
+| `architect history --tasks` | Per-task cost breakdown across runs |
+| `architect preset` | Save and recall named configuration presets |
+| `architect template` | Full template lifecycle (create/list/show/run/delete) |
+| `architect monitor --json` | One-shot JSON of current monitor state |
+| `architect monitor --watch` | Continuous NDJSON polling for live dashboards |
+| `architect doctor --project` | Project-level health checks |
+| `architect doctor --live` | Live API connectivity probe |
+| `architect token-report --tasks` | Per-task cost breakdown across all runs |
+
+### Cost Visibility
+
+- **Per-run token budget** — New `token_budget_per_run` config option caps total tokens per run. When exceeded, the run stops cleanly (not as a failure). Visible in the TUI Costs tab with a color-coded progress bar, and the success screen shows a "Run budget exceeded" headline.
+- **Budget context in execution prompts** — Agents now know how many tokens previous tasks consumed and how much capacity remains, enabling self-regulation.
+- **Task-level cost tracking** — The token ledger records per-task token usage, model, cost estimate, and duration. Browse task-level detail via `architect history --tasks`, `architect token-report --tasks`, or the TUI history screen's task detail view (press Enter on a run row).
+- **Estimated spend on success screen** — The run-complete summary now shows `~$X.XXXX est.` cost.
+- **Cost data in `monitor_state.json`** — External dashboards can read `session_cost_usd`, `last_task_cost_usd`, and per-model cost maps.
+- **All four token types for accurate cost** — Input, output, cache-read, and cache-write tokens are sent individually to the pricing engine. Claude models with prompt caching now show correct (lower) costs.
+
+### TUI Improvements
+
+- **Options tab reordered and scrollable** — Opt-in options (Free Tier, Persistent, Infinite Loop, Token budgets) at top; defaults-enabled options (Integrity, Force Reassessment, Notifications) at bottom. Scrollable for many options.
+- **TUI rollback confirmation** — Interactive screen with task selection, rollback plan DataTable, Approve/Dry Run/Cancel/Quit key bindings, and execution results.
+- **TUI template display** — Templates section in the Goal tab with selectable list and pre-fill on selection.
+- **TUI notification settings** — Notification checkboxes on mode selection, pre-run Options, config screen, and resume screen.
+
+### Smarter Task Management
+
+- **New task prefix scheme** — Tasks can be split into lettered sub-tasks (`T01A`, `T01B`) by reassessment; retrospective fix-ups are tied to their parent task (`T04R1` instead of global `R01`). Sort order: `T01 → T01A → T01B → T01R1 → T01R2 → T02`.
+- **Split/retro tasks visible immediately** — New sub-tasks and retro tasks appear in the TUI Progress tab the moment reassessment creates them.
+- **Runner feedback injection** — User feedback from `.architect/feedback.json` is injected into the execution prompt as `=== USER FEEDBACK ===` and consumed once.
+
+### Reliability and Fixes
+
+- **TUI mouse and keyboard restored after system sleep** — Full terminal re-setup on the event loop after wake: alternate screen, mouse tracking, bracketed paste, and layout refresh.
+- **Clean exit on ESC/quit** — Worker threads unblocked during shutdown; no stuck terminal, no Ctrl+C needed.
+- **Provider idle-timeout kills no longer burn retry slots** — Up to 5 bonus retries with configurable cool-down.
+- **Infinite Loop continues after idle-timeout failures** — Failed tasks reset from `Failed` → `Pending` and the loop continues.
+- **Retro execution only runs newly created retro tasks** — Stale/orphan task files no longer cause duplicate prefix failures.
+- **Orphan task files filtered gracefully** — Orphans (not tracked in PROGRESS.md) are filtered with a warning instead of hard failure.
+- **Execution agents forbidden from creating task files** — Only the planning agent and retrospective reviewer create tasks.
+- **Integrity protocol placement rule strengthened** — Snapshots must live in the same directory as the original file; `tasks/`, `PROGRESS.md`, `ARCHITECT.md` are exempt.
+- **OpenCode `--agent` workaround reverted** — Upstream fix in OpenCode 1.15.2 means the Architect passes `--agent` unconditionally again.
+- **run_all continues to pending R-tasks** — When a T-task exhausts retries, execution continues to its retrospective R-task instead of stopping.
+
+### Changed
+
+- **CI now tests on Ubuntu, Windows, and macOS** across Python 3.11, 3.12, and 3.13 (9 matrix combinations).
 
 ---
 

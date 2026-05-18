@@ -21,6 +21,20 @@ TERMINAL_RESTORE_SEQUENCE = (
     "\033[?25h"  # cursor visible
 )
 
+# Terminal re-setup sequence used after sleep/wake to re-enter the alternate
+# screen and re-enable mouse tracking.  The kernel may reset the alternate
+# screen buffer and input modes when the system resumes from suspend.
+# Textual's LinuxDriver sets up these modes in _setup_terminal(), but after
+# sleep the driver's internal state is stale.  Sending this sequence forces
+# the terminal emulator to re-establish the alternate screen, re-enable SGR
+# mouse tracking (which Textual uses), and re-enable bracketed paste.
+TERMINAL_RESETUP_SEQUENCE = (
+    "\033[?1049h"  # enter alternate screen buffer
+    "\033[?1003h"  # any-event mouse tracking (SGR mode set by Textual driver)
+    "\033[?2004h"  # bracketed paste mode
+    "\033[?1006h"  # SGR extended mouse coordinates
+)
+
 # The controlling-terminal device path on POSIX systems.
 # Does not exist on Windows — access is guarded by the ``sys.platform`` check
 # in :func:`restore_terminal_input_modes`.
@@ -74,5 +88,39 @@ def restore_terminal_input_modes() -> None:
         try:
             with open(_DEV_TTY, "w", encoding="utf-8") as tty:
                 _write_restore_sequence(tty, require_tty=False)
+        except Exception:
+            pass
+
+
+def resetup_terminal_after_sleep() -> None:
+    """Re-establish terminal modes after system resume from sleep.
+
+    When the OS suspends and resumes, the terminal emulator may reset the
+    alternate screen buffer, mouse tracking, and bracketed paste modes.
+    This function writes the re-setup sequences to restore those modes so
+    the TUI can continue functioning (mouse clicks, tab switching, etc.).
+
+    Must be called from the Textual event loop thread so the driver can
+    process the sequences without corrupting the input stream.
+
+    All writes are best-effort — failures are silently swallowed.
+    """
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        return
+
+    # Write re-setup sequence to stdout (the controlling terminal)
+    if _stream_is_tty(sys.stdout):
+        try:
+            sys.stdout.write(TERMINAL_RESETUP_SEQUENCE)
+            sys.stdout.flush()
+        except Exception:
+            pass
+
+    # Also target /dev/tty directly for robustness
+    if sys.platform != "win32":
+        try:
+            with open(_DEV_TTY, "w", encoding="utf-8") as tty:
+                tty.write(TERMINAL_RESETUP_SEQUENCE)
+                tty.flush()
         except Exception:
             pass

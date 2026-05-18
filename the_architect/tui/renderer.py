@@ -63,6 +63,14 @@ class TextualStreamRenderer(StreamRenderer):
         except Exception:
             pass
 
+    def set_feedback(self, message: str | None) -> None:
+        if self._app is None:
+            return
+        try:
+            self._app.update_feedback(message)
+        except Exception:
+            pass
+
     def close(self) -> None:
         return
 

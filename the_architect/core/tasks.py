@@ -51,6 +51,10 @@ class Task(BaseModel):
     path: Path = Field(description="Absolute path to task file")
     status: TaskStatus = Field(default=TaskStatus.PENDING, description="Current status")
     title: str = Field(default="", description="Human-readable title from file heading")
+    depends_on: list[str] = Field(
+        default_factory=list,
+        description="Task prefixes this task depends on (e.g. ['T01', 'T02'])",
+    )
 
     model_config = {"frozen": True}
 
@@ -183,6 +187,64 @@ def _extract_title(file_path: Path, fallback_name: str) -> str:
     return stripped.replace("_", " ").capitalize()
 
 
+def _extract_dependencies(file_path: Path) -> list[str]:
+    """Extract dependency declarations from a task file.
+
+    Reads the task file looking for a ``## Dependencies`` section.
+    Each dependency is a line starting with ``- `` followed by a task
+    prefix (e.g. ``T01``, ``T02``, ``T04R1``).
+
+    Returns an empty list if the section is not found or the file
+    cannot be read.
+
+    Args:
+        file_path: Absolute path to the task file.
+
+    Returns:
+        List of task prefix strings this task depends on.
+
+    Examples:
+        Given a task file containing:
+
+        ```markdown
+        ## Dependencies
+        - T01
+        - T02
+        ```
+
+        Returns ``["T01", "T02"]``.
+    """
+    try:
+        content = file_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
+
+    dependencies: list[str] = []
+    in_section = False
+
+    for line in content.splitlines():
+        stripped = line.strip()
+
+        # Check for section header
+        if re.match(r"^##\s+Dependencies\s*$", stripped, re.IGNORECASE):
+            in_section = True
+            continue
+
+        # End of section on next heading
+        if in_section and stripped.startswith("##"):
+            break
+
+        if not in_section:
+            continue
+
+        # Parse dependency line: "- TXX" or "- TXXR1" or "- TXXA"
+        dep_match = re.match(r"^-\s+(T\d+(?:R\d+|[A-Z])?)\s*$", stripped)
+        if dep_match:
+            dependencies.append(dep_match.group(1))
+
+    return dependencies
+
+
 def task_sort_key(t: Task) -> tuple[int, int, int]:
     """Return a stable sort key for a task, ordering by base number then variant.
 
@@ -267,6 +329,7 @@ def discover_tasks(tasks_dir: Path | str) -> list[Task]:
                 prefix_raw = match.group(1).upper()
                 number = int(match.group(2))
                 title = _extract_title(entry.resolve(), entry.stem)
+                deps = _extract_dependencies(entry.resolve())
                 tasks.append(
                     Task(
                         name=entry.stem,
@@ -275,6 +338,7 @@ def discover_tasks(tasks_dir: Path | str) -> list[Task]:
                         path=entry.resolve(),
                         status=TaskStatus.PENDING,
                         title=title,
+                        depends_on=deps,
                     )
                 )
 
@@ -380,3 +444,104 @@ def duplicate_task_prefixes(tasks: Sequence[Task]) -> dict[str, list[str]]:
     for task in tasks:
         names_by_prefix.setdefault(task.prefix, []).append(task.name)
     return {prefix: sorted(names) for prefix, names in names_by_prefix.items() if len(names) > 1}
+
+
+# ---------------------------------------------------------------------------
+# Dependency graph validation
+# ---------------------------------------------------------------------------
+
+
+def detect_dependency_cycles(tasks: list[Task]) -> list[list[str]]:
+    """Detect circular dependencies among tasks using DFS.
+
+    Builds a directed graph from each task's ``depends_on`` field and
+    searches for back-edges using depth-first search.  Each cycle is
+    returned as a list of task prefixes forming the loop.
+
+    Args:
+        tasks: All discovered tasks.
+
+    Returns:
+        List of cycles, where each cycle is a list of task prefixes.
+        An empty list means no cycles were found.
+
+    Examples:
+        >>> t1 = Task(name='T01_a', prefix='T01', number=1, path=Path('/x'),
+        ...           depends_on=['T02'])
+        >>> t2 = Task(name='T02_b', prefix='T02', number=2, path=Path('/y'),
+        ...           depends_on=['T01'])
+        >>> cycles = detect_dependency_cycles([t1, t2])
+        >>> len(cycles)
+        1
+        >>> set(cycles[0]) == {'T01', 'T02'}
+        True
+    """
+    # Build adjacency map: prefix -> list of prefixes it depends on
+    graph: dict[str, list[str]] = {}
+    all_prefixes: set[str] = set()
+    for task in tasks:
+        graph[task.prefix] = list(task.depends_on)
+        all_prefixes.add(task.prefix)
+
+    cycles: list[list[str]] = []
+    visited: set[str] = set()
+    # Track the current recursion stack to detect back-edges
+    stack: set[str] = set()
+    path: list[str] = []
+
+    def dfs(node: str) -> None:
+        visited.add(node)
+        stack.add(node)
+        path.append(node)
+
+        for neighbor in graph.get(node, []):
+            # Only consider neighbors that are actual tasks
+            if neighbor not in all_prefixes:
+                continue
+            if neighbor in stack:
+                # Found a cycle — extract it from the path
+                cycle_start = path.index(neighbor)
+                cycle = path[cycle_start:]
+                cycles.append(list(cycle))
+            elif neighbor not in visited:
+                dfs(neighbor)
+
+        path.pop()
+        stack.discard(node)
+
+    for prefix in sorted(all_prefixes):
+        if prefix not in visited:
+            dfs(prefix)
+
+    return cycles
+
+
+def detect_missing_dependencies(tasks: list[Task]) -> dict[str, list[str]]:
+    """Find dependency references to non-existent task prefixes.
+
+    Scans every task's ``depends_on`` field and checks whether each
+    referenced prefix exists among the discovered tasks.
+
+    Args:
+        tasks: All discovered tasks.
+
+    Returns:
+        Mapping of task prefix to list of missing dependency prefixes.
+        An empty dict means all dependencies reference existing tasks.
+
+    Examples:
+        >>> t1 = Task(name='T01_a', prefix='T01', number=1, path=Path('/x'),
+        ...           depends_on=['T099'])
+        >>> missing = detect_missing_dependencies([t1])
+        >>> missing
+        {'T01': ['T099']}
+    """
+    known_prefixes: set[str] = {task.prefix for task in tasks}
+    missing: dict[str, list[str]] = {}
+
+    for task in tasks:
+        task_missing = [dep for dep in task.depends_on if dep not in known_prefixes]
+        if task_missing:
+            missing[task.prefix] = task_missing
+
+    return missing

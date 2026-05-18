@@ -22,6 +22,11 @@ from the_architect.config import ArchitectConfig
 from the_architect.core.progress import PROGRESS_TEMPLATE
 from the_architect.core.runner import StreamRenderer, stream_provider
 from the_architect.core.tasks import Task, TaskScope, discover_tasks, duplicate_task_prefixes
+from the_architect.core.workspace_context import (
+    WorkspaceContext,
+    format_workspace_context,
+    gather_workspace_context,
+)
 
 if TYPE_CHECKING:
     from the_architect.core.provider import ArchitectProvider
@@ -470,7 +475,11 @@ def _next_task_number(tasks_dir: Path) -> int:
     return highest + 1
 
 
-def build_planning_instruction(request: PlanningRequest, context: str) -> str:
+def build_planning_instruction(
+    request: PlanningRequest,
+    context: str,
+    workspace_context: WorkspaceContext | None = None,
+) -> str:
     """Build the instruction string to send to OpenCode's architect agent.
 
     Includes an explicit project-root boundary so the architect never
@@ -482,11 +491,15 @@ def build_planning_instruction(request: PlanningRequest, context: str) -> str:
         3. Structure report (auto-detected project structure)
         4. Additional context files (user-provided)
         5. Project context (file tree, PROGRESS.md history)
-        6. User's goal
+        6. Workspace state (git branch, uncommitted changes, recent commits)
+        7. User's goal
 
     Args:
         request: The planning request with goal and model size.
         context: The gathered project context string.
+        workspace_context: Detected workspace state from git.  When ``None``
+            or when the project is not a git repository, the workspace state
+            section is omitted.
 
     Returns:
         The complete instruction string for opencode run.
@@ -556,7 +569,21 @@ def build_planning_instruction(request: PlanningRequest, context: str) -> str:
         ]
     )
 
-    # 6. User's goal
+    # 6. Workspace state (git branch, uncommitted changes, recent commits)
+    # Only inject when workspace context is available and the project is a git repo.
+    # Non-git repos produce an empty string from format_workspace_context — omit silently.
+    if workspace_context is not None:
+        ws_section = format_workspace_context(workspace_context)
+        if ws_section:
+            lines.extend(
+                [
+                    "=== WORKSPACE STATE ===",
+                    ws_section,
+                    "",
+                ]
+            )
+
+    # 7. User's goal
     lines.extend(
         [
             "=== USER REQUEST ===",
@@ -1229,7 +1256,10 @@ async def run_planner(
 
     # Build the instruction with project context embedded
     context = gather_project_context(project_dir, provider=provider)
-    instruction = build_planning_instruction(request, context)
+    # Gather workspace state for planning context — errors in git detection
+    # are handled gracefully (returns WorkspaceContext with is_git=False).
+    ws_context = gather_workspace_context(project_dir)
+    instruction = build_planning_instruction(request, context, ws_context)
 
     # For Claude Code: prepend the architect prompt since there are no named agents
     if not provider.supports_agents():

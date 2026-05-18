@@ -49,6 +49,7 @@ if TYPE_CHECKING:
     from the_architect.config import ArchitectConfig
     from the_architect.core.provider import ArchitectProvider
     from the_architect.core.tasks import Task
+    from the_architect.core.templates import GoalTemplate
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -120,6 +121,9 @@ class PreRunValues(BaseModel):
     force_reassessment: bool = True
     infinite_loop: bool = False
     token_budget_per_hour: int = 0
+    token_budget_per_run: int = 0
+    notify_on_complete: bool = True
+    notify_on_fail: bool = True
     action: str = "plan"
 
 
@@ -370,12 +374,35 @@ class PreRunScreen(Screen[PreRunValues]):
         padding: 0 1;
     }
 
+    /* Template section */
+    PreRunScreen #template_label {
+        color: $accent;
+        text-style: bold;
+        padding: 0 0 0 0;
+    }
+    PreRunScreen #template_list {
+        border: round $panel;
+        height: auto;
+        max-height: 6;
+        padding: 0 1;
+    }
+    PreRunScreen #template_no_msg {
+        color: $text-muted;
+        padding: 0 0 1 3;
+    }
+
     PreRunScreen Checkbox {
         padding: 0;
     }
 
     PreRunScreen Input {
         border: round $panel;
+    }
+
+    PreRunScreen #options_scroll {
+        height: 1fr;
+        overflow-y: scroll;
+        overflow-x: hidden;
     }
     """
 
@@ -416,6 +443,9 @@ class PreRunScreen(Screen[PreRunValues]):
             integrity=config.integrity,
             force_reassessment=config.force_reassessment,
             token_budget_per_hour=config.token_budget_per_hour,
+            token_budget_per_run=config.token_budget_per_run,
+            notify_on_complete=config.notify_on_complete,
+            notify_on_fail=config.notify_on_fail,
             action=action,
         )
 
@@ -436,6 +466,22 @@ class PreRunScreen(Screen[PreRunValues]):
         self._infinite_loop_confirmed = False
         self._infinite_loop_confirmation_active = False
         self._infinite_loop_submit_after_confirm = False
+
+        # Load templates synchronously so they are available during compose()
+        self._templates: list[GoalTemplate] = []
+        self._load_templates()
+
+    # ── Template loading ─────────────────────────────────────────────
+
+    def _load_templates(self) -> None:
+        """Load goal templates from the project's .architect/templates.json."""
+        try:
+            from the_architect.core.templates import list_templates
+
+            self._templates = list_templates(self._project_dir)
+        except Exception:
+            # If templates can't be loaded, silently show empty
+            self._templates = []
 
     # ── Composition ──────────────────────────────────────────────────
 
@@ -474,6 +520,24 @@ class PreRunScreen(Screen[PreRunValues]):
                                 id="rb_action_replan",
                                 value=self._values.action == "replan",
                             )
+                    # ── Template selection section ────────────────────
+                    yield Static("Templates", id="template_label", classes="tab_title")
+                    if self._templates:
+                        template_items: list[ListItem] = []
+                        for tpl in self._templates:
+                            desc = tpl.description or "(no description)"
+                            label = f"  [bold]{tpl.name}[/bold] — {desc}"
+                            template_items.append(ListItem(Static(label, markup=True)))
+                        yield ListView(*template_items, id="template_list")
+                    else:
+                        yield Static(
+                            "[dim]No templates saved. Use 'architect template create' to "
+                            "add one.[/dim]",
+                            id="template_no_msg",
+                            classes="tab_hint",
+                            markup=True,
+                        )
+                    # ── Scope section ─────────────────────────────────
                     yield Static("Scope", id="scope_title", classes="tab_title")
                     yield Static(
                         "Choose how wide each planned task should be. This is not a target "
@@ -550,60 +614,88 @@ class PreRunScreen(Screen[PreRunValues]):
 
                 # Tab 4: Options
                 with TabPane(self._tab_label("Options", True), id=_TAB_MODE):
-                    yield Static("Options", classes="tab_title")
-                    yield Static(
-                        "Configure how the run behaves.",
-                        classes="tab_hint",
-                    )
-                    yield BlankOffCheckbox(
-                        "Free Tier  (OpenRouter rotation)",
-                        id="chk_free",
-                        value=self._values.free,
-                    )
-                    yield Static(
-                        "rotate to the next free model on rate-limit",
-                        classes="tab_hint",
-                    )
-                    yield BlankOffCheckbox(
-                        "Persistent  (30 retries, 3 retrospective rounds)",
-                        id="chk_persistent",
-                        value=self._values.persistent,
-                    )
-                    yield Static("deeper retry + review loop", classes="tab_hint")
-                    yield BlankOffCheckbox(
-                        "Integrity defense  (snapshot before edits)",
-                        id="chk_integrity",
-                        value=self._values.integrity,
-                    )
-                    yield Static(
-                        "architect_eval snapshots catch truncated/corrupted writes",
-                        classes="tab_hint",
-                    )
-                    yield BlankOffCheckbox(
-                        "Force Reassessment  (after every task)",
-                        id="chk_force_reassessment",
-                        value=self._values.force_reassessment,
-                    )
-                    yield Static(
-                        "when disabled, reassess only failed/downstream-impact tasks",
-                        classes="tab_hint",
-                    )
-                    yield BlankOffCheckbox(
-                        "Infinite Loop  (rerun this goal forever)",
-                        id="chk_infinite_loop",
-                        value=False,
-                    )
-                    yield Static(
-                        "requires confirmation; preserved only for this execution chain",
-                        classes="tab_hint",
-                    )
-                    yield Label("Token budget/hour (0 = unlimited):")
-                    budget_str = (
-                        str(self._values.token_budget_per_hour)
-                        if self._values.token_budget_per_hour > 0
-                        else ""
-                    )
-                    yield Input(placeholder="0", id="inp_budget", value=budget_str)
+                    with Vertical(id="options_scroll"):
+                        yield Static("Options", classes="tab_title")
+                        yield Static(
+                            "Configure how the run behaves.",
+                            classes="tab_hint",
+                        )
+                        # ── Opt-in options (default off) ──────────────────
+                        yield BlankOffCheckbox(
+                            "Free Tier  (OpenRouter rotation)",
+                            id="chk_free",
+                            value=self._values.free,
+                        )
+                        yield Static(
+                            "rotate to the next free model on rate-limit",
+                            classes="tab_hint",
+                        )
+                        yield BlankOffCheckbox(
+                            "Persistent  (30 retries, 3 retrospective rounds)",
+                            id="chk_persistent",
+                            value=self._values.persistent,
+                        )
+                        yield Static("deeper retry + review loop", classes="tab_hint")
+                        yield BlankOffCheckbox(
+                            "Infinite Loop  (rerun this goal forever)",
+                            id="chk_infinite_loop",
+                            value=False,
+                        )
+                        yield Static(
+                            "requires confirmation; preserved only for this execution chain",
+                            classes="tab_hint",
+                        )
+                        yield Label("Token budget/hour (0 = unlimited):")
+                        budget_str = (
+                            str(self._values.token_budget_per_hour)
+                            if self._values.token_budget_per_hour > 0
+                            else ""
+                        )
+                        yield Input(placeholder="0", id="inp_budget", value=budget_str)
+                        yield Label("Token budget/run (0 = unlimited):")
+                        budget_run_str = (
+                            str(self._values.token_budget_per_run)
+                            if self._values.token_budget_per_run > 0
+                            else ""
+                        )
+                        yield Input(placeholder="0", id="inp_budget_run", value=budget_run_str)
+                        # ── Defaults-enabled options ──────────────────────
+                        yield BlankOffCheckbox(
+                            "Integrity defense  (snapshot before edits)",
+                            id="chk_integrity",
+                            value=self._values.integrity,
+                        )
+                        yield Static(
+                            "architect_eval snapshots catch truncated/corrupted writes",
+                            classes="tab_hint",
+                        )
+                        yield BlankOffCheckbox(
+                            "Force Reassessment  (after every task)",
+                            id="chk_force_reassessment",
+                            value=self._values.force_reassessment,
+                        )
+                        yield Static(
+                            "when disabled, reassess only failed/downstream-impact tasks",
+                            classes="tab_hint",
+                        )
+                        yield BlankOffCheckbox(
+                            "Notify on complete  (desktop alert)",
+                            id="chk_notify_complete",
+                            value=self._values.notify_on_complete,
+                        )
+                        yield Static(
+                            "desktop notification when the run finishes successfully",
+                            classes="tab_hint",
+                        )
+                        yield BlankOffCheckbox(
+                            "Notify on fail  (desktop alert)",
+                            id="chk_notify_fail",
+                            value=self._values.notify_on_fail,
+                        )
+                        yield Static(
+                            "desktop notification when the run fails",
+                            classes="tab_hint",
+                        )
 
         yield Static(self._footer_text(), id="prerun_footer")
 
@@ -925,6 +1017,23 @@ class PreRunScreen(Screen[PreRunValues]):
         except Exception as exc:
             logger.debug(f"PreRunScreen: activate_tab({tab_id}) failed: {exc!r}")
 
+    @staticmethod
+    def _collect_focusable_descendants(container: Widget) -> list[Widget]:
+        """Recursively collect all focusable widgets from a container.
+
+        Walks the widget tree depth-first, yielding focusable widgets
+        from the container's children and their descendants. This is
+        needed because tab panes may wrap content in containers
+        (e.g. ``Vertical``) that are not themselves focusable.
+        """
+        result: list[Widget] = []
+        for child in container.children:
+            if child.focusable and child.display:
+                result.append(child)
+            elif child.display:
+                result.extend(PreRunScreen._collect_focusable_descendants(child))
+        return result
+
     def _activate_and_focus_tab(self, tab_id: str) -> None:
         """Re-assert tab activation after pending tab messages, then focus it."""
         try:
@@ -941,12 +1050,11 @@ class PreRunScreen(Screen[PreRunValues]):
             if not active_id:
                 return
             pane = self.query_one(f"#{active_id}", TabPane)
-            for widget in pane.children:
-                if widget.focusable and widget.display:
-                    # RadioSet has can_focus_children=False, so we focus the
-                    # container itself — don't try to focus inner RadioButtons.
-                    widget.focus()
-                    return
+            for widget in self._collect_focusable_descendants(pane):
+                # RadioSet has can_focus_children=False, so we focus the
+                # container itself — don't try to focus inner RadioButtons.
+                widget.focus()
+                return
         except Exception as exc:
             logger.debug(f"PreRunScreen: auto_focus failed: {exc!r}")
 
@@ -967,22 +1075,24 @@ class PreRunScreen(Screen[PreRunValues]):
             return False
 
         stops: list[Widget] = []
-        for widget in pane.children:
+        for widget in self._collect_focusable_descendants(pane):
             widget_id = getattr(widget, "id", "")
-            if not widget.display:
-                continue
             if widget_id in {
                 "scope_set",
                 "action_set",
                 "provider_set",
                 "model_list",
                 "agent_list",
+                "template_list",
                 "chk_free",
                 "chk_persistent",
                 "chk_integrity",
                 "chk_force_reassessment",
                 "chk_infinite_loop",
+                "chk_notify_complete",
+                "chk_notify_fail",
                 "inp_budget",
+                "inp_budget_run",
                 "goal_text",
             }:
                 stops.append(widget)
@@ -1280,6 +1390,25 @@ class PreRunScreen(Screen[PreRunValues]):
         except (ValueError, Exception):
             budget = 0
 
+        budget_run = 0
+        try:
+            raw_run = self.query_one("#inp_budget_run", Input).value or "0"
+            budget_run = max(int(raw_run.strip() or "0"), 0)
+        except (ValueError, Exception):
+            budget_run = 0
+
+        notify_complete = True
+        try:
+            notify_complete = bool(self.query_one("#chk_notify_complete", Checkbox).value)
+        except Exception:
+            pass
+
+        notify_fail = True
+        try:
+            notify_fail = bool(self.query_one("#chk_notify_fail", Checkbox).value)
+        except Exception:
+            pass
+
         return PreRunValues(
             goal=goal,
             scope=scope,
@@ -1293,6 +1422,9 @@ class PreRunScreen(Screen[PreRunValues]):
             force_reassessment=force_reassessment,
             infinite_loop=infinite_loop,
             token_budget_per_hour=budget,
+            token_budget_per_run=budget_run,
+            notify_on_complete=notify_complete,
+            notify_on_fail=notify_fail,
             action=action,
         )
 
@@ -1377,8 +1509,13 @@ class PreRunScreen(Screen[PreRunValues]):
             self._update_replan_controls_visibility()
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
-        """Commit model/agent choices only when the user explicitly selects a row."""
+        """Handle ListView selection — template, model, or agent."""
         list_id = event.list_view.id or ""
+        if list_id == "template_list":
+            self._on_template_selected(event)
+            return
+
+        # Model/agent selection
         if list_id == "model_list":
             self._values.architect_model = (
                 self._models[event.index - 1]
@@ -1396,6 +1533,21 @@ class PreRunScreen(Screen[PreRunValues]):
         self._update_models_tab()
         self._update_tab_labels()
         self._update_footer()
+
+    def _on_template_selected(self, event: ListView.Selected) -> None:
+        """Pre-fill the goal text area from the selected template."""
+        idx = event.index if event.index is not None else 0
+        if 0 <= idx < len(self._templates):
+            template = self._templates[idx]
+            try:
+                area = self.query_one("#goal_text", TextArea)
+                area.text = template.goal_text
+                # Focus the goal text area so user can edit
+                area.focus()
+            except Exception as exc:
+                logger.debug(f"PreRunScreen: template goal pre-fill failed: {exc!r}")
+            self._update_tab_labels()
+            self._update_footer()
 
     def on_key(self, event: Any) -> None:
         """Use Space to commit focused ListView rows without affecting text input."""

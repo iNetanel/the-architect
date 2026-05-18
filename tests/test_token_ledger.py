@@ -9,6 +9,7 @@ from the_architect.core.runner import TaskResult, TokenUsage
 from the_architect.core.token_ledger import (
     MODEL_PRICING,
     LedgerRunRecord,
+    LedgerTaskRecord,
     ModelTokenRecord,
     TokenLedger,
     _normalise_model,
@@ -56,6 +57,7 @@ class TestModelAndCost:
             "total_tokens",
             "total_cost_estimate",
             "model_breakdown",
+            "task_breakdown",
             "task_count",
             "outcome",
             "duration_seconds",
@@ -360,3 +362,221 @@ class TestAppendRunSameModelAggregation:
         assert len(record.model_breakdown) == 1
         assert record.model_breakdown[0].input_tokens == 150
         assert record.model_breakdown[0].output_tokens == 275
+
+
+class TestLedgerTaskRecord:
+    """Tests for the LedgerTaskRecord per-task cost model."""
+
+    def test_ledger_task_record_defaults_and_serialization(self) -> None:
+        """LedgerTaskRecord should serialize all task-level fields."""
+        record = LedgerTaskRecord(
+            task_id="T01",
+            status="done",
+            input_tokens=100,
+            output_tokens=200,
+            model="gpt-4o",
+            cost_estimate=0.001,
+            duration_seconds=15.5,
+        )
+
+        assert record.title == ""
+        assert record.cache_read_tokens == 0
+        assert record.cache_write_tokens == 0
+        dumped = record.model_dump()
+        assert dumped["task_id"] == "T01"
+        assert dumped["status"] == "done"
+        assert dumped["input_tokens"] == 100
+        assert dumped["output_tokens"] == 200
+        assert dumped["model"] == "gpt-4o"
+        assert dumped["cost_estimate"] == 0.001
+        assert dumped["duration_seconds"] == 15.5
+
+    def test_ledger_task_record_all_fields(self) -> None:
+        """LedgerTaskRecord should accept all fields including title and cache."""
+        record = LedgerTaskRecord(
+            task_id="T02R1",
+            title="Fix flaky tests",
+            status="failed",
+            input_tokens=500,
+            output_tokens=300,
+            cache_read_tokens=100,
+            cache_write_tokens=50,
+            model="claude-sonnet-4-5",
+            cost_estimate=0.05,
+            duration_seconds=45.0,
+        )
+
+        assert record.task_id == "T02R1"
+        assert record.title == "Fix flaky tests"
+        assert record.status == "failed"
+        assert record.cache_read_tokens == 100
+        assert record.cache_write_tokens == 50
+
+
+class TestAppendRunTaskBreakdown:
+    """Tests for task_breakdown population in append_run."""
+
+    def test_append_run_populates_task_breakdown(self) -> None:
+        """append_run should create a LedgerTaskRecord per TaskResult."""
+        ledger = TokenLedger()
+        results = [
+            TaskResult(
+                prefix="T01",
+                title="Core model",
+                status="done",
+                tokens=TokenUsage(input_tokens=100, output_tokens=200),
+                model="gpt-4o",
+                duration_seconds=10.0,
+            ),
+            TaskResult(
+                prefix="T02",
+                title="CLI command",
+                status="done",
+                tokens=TokenUsage(input_tokens=50, output_tokens=75),
+                model="claude-sonnet-4-5",
+                duration_seconds=20.0,
+            ),
+        ]
+
+        append_run(ledger, results, "goal", 30.0)
+
+        record = ledger.records[0]
+        assert len(record.task_breakdown) == 2
+
+        t1 = record.task_breakdown[0]
+        assert t1.task_id == "T01"
+        assert t1.title == "Core model"
+        assert t1.status == "done"
+        assert t1.input_tokens == 100
+        assert t1.output_tokens == 200
+        assert t1.model == "gpt-4o"
+        assert t1.cost_estimate > 0
+        assert t1.duration_seconds == 10.0
+
+        t2 = record.task_breakdown[1]
+        assert t2.task_id == "T02"
+        assert t2.title == "CLI command"
+        assert t2.status == "done"
+        assert t2.model == "claude-sonnet-4-5"
+        assert t2.duration_seconds == 20.0
+
+    def test_append_run_task_breakdown_cost_matches_model(self) -> None:
+        """Task cost estimates should be computed via estimate_cost_detailed."""
+        ledger = TokenLedger()
+        result = TaskResult(
+            prefix="T01",
+            status="done",
+            tokens=TokenUsage(
+                input_tokens=1_000,
+                output_tokens=500,
+                cache_read_tokens=100,
+                cache_write_tokens=100,
+            ),
+            model="gpt-4o",
+        )
+
+        append_run(ledger, [result], "goal", 10.0)
+
+        task = ledger.records[0].task_breakdown[0]
+        expected_cost = estimate_cost_detailed(
+            input_tokens=1_000,
+            output_tokens=500,
+            cache_read_tokens=100,
+            cache_write_tokens=100,
+            model="gpt-4o",
+        )
+        assert task.cost_estimate == expected_cost
+
+    def test_append_run_task_breakdown_empty_results(self) -> None:
+        """append_run with empty results should produce an empty task_breakdown."""
+        ledger = TokenLedger()
+
+        append_run(ledger, [], "goal", 5.0)
+
+        record = ledger.records[0]
+        assert record.task_breakdown == []
+        assert record.task_count == 0
+
+    def test_append_run_task_breakdown_with_failed_task(self) -> None:
+        """Task breakdown should preserve per-task status including failures."""
+        ledger = TokenLedger()
+        results = [
+            TaskResult(
+                prefix="T01",
+                status="done",
+                tokens=TokenUsage(input_tokens=100, output_tokens=200),
+                model="gpt-4o",
+            ),
+            TaskResult(
+                prefix="T02",
+                status="failed",
+                tokens=TokenUsage(input_tokens=50, output_tokens=25),
+                model="gpt-4o",
+            ),
+        ]
+
+        append_run(ledger, results, "goal", 10.0)
+
+        statuses = {t.task_id: t.status for t in ledger.records[0].task_breakdown}
+        assert statuses["T01"] == "done"
+        assert statuses["T02"] == "failed"
+
+
+class TestBackwardCompatibility:
+    """Tests for backward-compatible loading of old ledger records."""
+
+    def test_load_record_without_task_breakdown(self, tmp_path: Path) -> None:
+        """Old records missing task_breakdown should load with empty list."""
+        ledger_path = tmp_path / ".architect" / "token_ledger.json"
+        ledger_path.parent.mkdir()
+        # Simulate an old record that has no task_breakdown field
+        old_record = {
+            "run_id": "abc123",
+            "timestamp": "2026-05-01T00:00:00+00:00",
+            "goal_summary": "old run",
+            "total_tokens": 100,
+            "total_cost_estimate": 0.01,
+            "model_breakdown": [],
+            "task_count": 1,
+            "outcome": "success",
+            "duration_seconds": 10.0,
+        }
+        ledger_path.write_text(json.dumps([old_record]), encoding="utf-8")
+
+        loaded = load_ledger(tmp_path)
+
+        assert len(loaded.records) == 1
+        assert loaded.records[0].goal_summary == "old run"
+        assert loaded.records[0].task_breakdown == []
+
+    def test_save_load_task_breakdown_round_trip(self, tmp_path: Path) -> None:
+        """task_breakdown should survive JSON persistence."""
+        ledger = TokenLedger()
+        append_run(
+            ledger,
+            [
+                TaskResult(
+                    prefix="T01",
+                    title="test task",
+                    status="done",
+                    tokens=TokenUsage(input_tokens=1_000, output_tokens=500),
+                    model="gpt-4o",
+                    duration_seconds=12.5,
+                )
+            ],
+            "round trip goal",
+            15.0,
+        )
+
+        save_ledger(tmp_path, ledger)
+        loaded = load_ledger(tmp_path)
+
+        assert len(loaded.records) == 1
+        task = loaded.records[0].task_breakdown[0]
+        assert task.task_id == "T01"
+        assert task.title == "test task"
+        assert task.status == "done"
+        assert task.input_tokens == 1_000
+        assert task.output_tokens == 500
+        assert task.duration_seconds == 12.5
+        assert task.cost_estimate > 0

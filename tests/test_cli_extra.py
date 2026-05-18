@@ -18,6 +18,7 @@ pre-existing suite did not exercise:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -27,6 +28,17 @@ from click.testing import CliRunner
 
 from the_architect.cli import main
 from the_architect.core.provider import ProviderNotFoundError
+from the_architect.core.tasks import Task, TaskStatus
+
+
+def _run_coro(coro) -> None:
+    """Run a coroutine in a fresh event loop for testing asyncio.run patches."""
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
 
 # ---------------------------------------------------------------------------
 # init
@@ -160,6 +172,22 @@ class TestConfigCmd:
         toml = (tmp_path / "architect.toml").read_text(encoding="utf-8")
         assert "max_retries = 9" in toml
         assert "retry_pause = 45" in toml
+
+    def test_config_set_token_budget_per_run(self, tmp_path: Path) -> None:
+        """Setting token_budget_per_run via CLI works."""
+        result = CliRunner().invoke(
+            main,
+            [
+                "config",
+                "-p",
+                str(tmp_path),
+                "--set",
+                "token_budget_per_run=1000000",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        toml = (tmp_path / "architect.toml").read_text(encoding="utf-8")
+        assert "token_budget_per_run = 1000000" in toml
 
 
 # ---------------------------------------------------------------------------
@@ -370,8 +398,7 @@ class TestStatusJsonCmd:
         assert result.exit_code == 0, result.output
         data = json.loads(result.output)
         assert data["token_budget"] is not None
-        assert data["token_budget"]["limit"] == 500000
-        assert "tracked per run" in data["token_budget"]["description"]
+        assert data["token_budget"]["per_hour"] == 500000
 
     def test_status_json_log_files(self, tmp_path: Path) -> None:
         """Log files appear when log dir exists, null when it does not."""
@@ -671,6 +698,229 @@ class TestCircuitCmd:
         assert result.exit_code in (0, 1)
 
 
+class TestCircuitJsonOutput:
+    """Tests for ``architect circuit --json`` structured JSON output."""
+
+    def test_circuit_json_basic_output(self, tmp_path: Path) -> None:
+        """Should output valid JSON with tasks, project, and summary keys."""
+        import json
+
+        (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
+        arch_dir = tmp_path / ".architect"
+        arch_dir.mkdir()
+        circuit_data = {
+            "T01": {
+                "state": "CLOSED",
+                "consecutive_no_progress": 0,
+                "consecutive_same_error": 0,
+            }
+        }
+        (arch_dir / "circuit.json").write_text(json.dumps(circuit_data), encoding="utf-8")
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        mock_task = Task(
+            name="T01_test",
+            prefix="T01",
+            number=1,
+            path=tasks_dir / "T01_test.md",
+            title="Test task",
+            status=TaskStatus.PENDING,
+        )
+
+        with patch("the_architect.cli.discover_tasks", return_value=[mock_task]):
+            runner = CliRunner()
+            result = runner.invoke(main, ["circuit", "-p", str(tmp_path), "--json"])
+            assert result.exit_code == 0, result.output
+            data = json.loads(result.output)
+            assert "tasks" in data
+            assert "project" in data
+            assert "summary" in data
+            assert data["summary"]["total"] == 1
+            assert data["summary"]["closed"] == 1
+
+    def test_circuit_json_open_state(self, tmp_path: Path) -> None:
+        """Should include OPEN state with recovery_action and opened_at."""
+        import json
+        from datetime import UTC, datetime
+
+        (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
+        arch_dir = tmp_path / ".architect"
+        arch_dir.mkdir()
+        circuit_data = {
+            "T02": {
+                "state": "OPEN",
+                "consecutive_no_progress": 3,
+                "consecutive_same_error": 0,
+                "recovery_action": "REPLAN",
+                "opened_at": datetime.now(tz=UTC).isoformat(),
+            }
+        }
+        (arch_dir / "circuit.json").write_text(json.dumps(circuit_data), encoding="utf-8")
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        mock_task = Task(
+            name="T02_fail",
+            prefix="T02",
+            number=2,
+            path=tasks_dir / "T02_fail.md",
+            title="Failing task",
+            status=TaskStatus.PENDING,
+        )
+
+        with patch("the_architect.cli.discover_tasks", return_value=[mock_task]):
+            runner = CliRunner()
+            result = runner.invoke(main, ["circuit", "-p", str(tmp_path), "--json"])
+            assert result.exit_code == 0, result.output
+            data = json.loads(result.output)
+            assert data["summary"]["open"] == 1
+            task_entry = data["tasks"][0]
+            assert task_entry["task_id"] == "T02"
+            assert task_entry["state"] == "OPEN"
+            assert task_entry["recovery_action"] == "REPLAN"
+            assert task_entry["opened_at"] is not None
+
+    def test_circuit_json_half_open_state(self, tmp_path: Path) -> None:
+        """Should include HALF_OPEN state in output."""
+        import json
+
+        (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
+        arch_dir = tmp_path / ".architect"
+        arch_dir.mkdir()
+        circuit_data = {
+            "T03": {
+                "state": "HALF_OPEN",
+                "consecutive_no_progress": 0,
+                "consecutive_same_error": 0,
+                "recovery_action": None,
+                "opened_at": None,
+            }
+        }
+        (arch_dir / "circuit.json").write_text(json.dumps(circuit_data), encoding="utf-8")
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        mock_task = Task(
+            name="T03_retry",
+            prefix="T03",
+            number=3,
+            path=tasks_dir / "T03_retry.md",
+            title="Retry task",
+            status=TaskStatus.PENDING,
+        )
+
+        with patch("the_architect.cli.discover_tasks", return_value=[mock_task]):
+            runner = CliRunner()
+            result = runner.invoke(main, ["circuit", "-p", str(tmp_path), "--json"])
+            assert result.exit_code == 0, result.output
+            data = json.loads(result.output)
+            assert data["summary"]["half_open"] == 1
+            task_entry = data["tasks"][0]
+            assert task_entry["state"] == "HALF_OPEN"
+
+    def test_circuit_json_mixed_states(self, tmp_path: Path) -> None:
+        """Should correctly count mixed CLOSED, OPEN, and HALF_OPEN states."""
+        import json
+
+        (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
+        arch_dir = tmp_path / ".architect"
+        arch_dir.mkdir()
+        circuit_data = {
+            "T01": {
+                "state": "CLOSED",
+                "consecutive_no_progress": 0,
+                "consecutive_same_error": 0,
+            },
+            "T02": {
+                "state": "OPEN",
+                "consecutive_no_progress": 3,
+                "consecutive_same_error": 0,
+                "recovery_action": "WAIT",
+                "opened_at": "2026-05-17T00:00:00",
+            },
+            "T03": {
+                "state": "HALF_OPEN",
+                "consecutive_no_progress": 0,
+                "consecutive_same_error": 0,
+            },
+        }
+        (arch_dir / "circuit.json").write_text(json.dumps(circuit_data), encoding="utf-8")
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        mock_tasks = [
+            Task(
+                name=f"T{i:02d}_task",
+                prefix=f"T{i:02d}",
+                number=i,
+                path=tasks_dir / f"T{i:02d}_task.md",
+                title=f"Task {i}",
+                status=TaskStatus.PENDING,
+            )
+            for i in range(1, 4)
+        ]
+
+        with patch("the_architect.cli.discover_tasks", return_value=mock_tasks):
+            runner = CliRunner()
+            result = runner.invoke(main, ["circuit", "-p", str(tmp_path), "--json"])
+            assert result.exit_code == 0, result.output
+            data = json.loads(result.output)
+            assert data["summary"]["total"] == 3
+            assert data["summary"]["closed"] == 1
+            assert data["summary"]["open"] == 1
+            assert data["summary"]["half_open"] == 1
+
+    def test_circuit_json_task_no_circuit_state(self, tmp_path: Path) -> None:
+        """Should include tasks with no circuit state as CLOSED with zeroed counters."""
+        import json
+
+        (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
+        arch_dir = tmp_path / ".architect"
+        arch_dir.mkdir()
+        # No circuit.json — all tasks have no circuit state
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        mock_task = Task(
+            name="T01_test",
+            prefix="T01",
+            number=1,
+            path=tasks_dir / "T01_test.md",
+            title="Test task",
+            status=TaskStatus.PENDING,
+        )
+
+        with patch("the_architect.cli.discover_tasks", return_value=[mock_task]):
+            runner = CliRunner()
+            result = runner.invoke(main, ["circuit", "-p", str(tmp_path), "--json"])
+            assert result.exit_code == 0, result.output
+            data = json.loads(result.output)
+            assert data["summary"]["total"] == 1
+            assert data["summary"]["closed"] == 1
+            task_entry = data["tasks"][0]
+            assert task_entry["task_id"] == "T01"
+            assert task_entry["state"] == "CLOSED"
+            assert task_entry["consecutive_no_progress"] == 0
+            assert task_entry["consecutive_same_error"] == 0
+            assert task_entry["recovery_action"] is None
+
+    def test_circuit_json_mutual_exclusion_tui(self, tmp_path: Path) -> None:
+        """Should error when --json and --tui are both provided."""
+        (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
+        (tmp_path / ".architect").mkdir()
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["circuit", "-p", str(tmp_path), "--json", "--tui"])
+        assert result.exit_code == 1
+        assert "mutually exclusive" in result.output
+
+    def test_circuit_json_mutual_exclusion_reset(self, tmp_path: Path) -> None:
+        """Should error when --json and --reset are both provided."""
+        (tmp_path / "architect.toml").write_text("[architect]\n", encoding="utf-8")
+        (tmp_path / ".architect").mkdir()
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["circuit", "-p", str(tmp_path), "--json", "--reset", "T01"])
+        assert result.exit_code == 1
+        assert "mutually exclusive" in result.output
+
+
 # ---------------------------------------------------------------------------
 # skip — extra branches
 # ---------------------------------------------------------------------------
@@ -921,6 +1171,513 @@ class TestDoctorCmd:
         assert result.exit_code == 0, result.output
         assert "Python version" in result.output
 
+    # -----------------------------------------------------------------------
+    # Live health probe tests (--live flag)
+    # -----------------------------------------------------------------------
+
+    def test_doctor_live_success(self, tmp_path: Path) -> None:
+        """doctor --live with successful health check returns exit code 0."""
+        fake = self._fake_provider(
+            name="opencode", display_name="OpenCode", installed=True, models=True
+        )
+
+        async def fake_health(*_a, **_kw) -> None:  # pragma: no cover - called via asyncio.run
+            pass
+
+        with (
+            patch("the_architect.cli.detect_provider", return_value=fake),
+            patch("the_architect.cli.supported_providers", return_value=[fake]),
+            patch(
+                "the_architect.core.provider_health.check_provider_health",
+                side_effect=fake_health,
+            ),
+            patch("asyncio.run", side_effect=_run_coro),
+        ):
+            result = CliRunner().invoke(main, ["doctor", "--live"])
+
+        assert result.exit_code == 0, result.output
+        assert "Live check skipped" not in result.output
+        assert "live check passed" in result.output.lower() or "All checks passed" in result.output
+
+    def test_doctor_live_provider_health_error(self, tmp_path: Path) -> None:
+        """doctor --live with ProviderHealthError returns exit code 1."""
+        fake = self._fake_provider(
+            name="opencode", display_name="OpenCode", installed=True, models=True
+        )
+
+        from the_architect.core.provider_health import ProviderHealthError
+
+        async def fake_health_fail(*_a, **_kw) -> None:  # pragma: no cover
+            raise ProviderHealthError("quota exhausted")
+
+        with (
+            patch("the_architect.cli.detect_provider", return_value=fake),
+            patch("the_architect.cli.supported_providers", return_value=[fake]),
+            patch(
+                "the_architect.core.provider_health.check_provider_health",
+                side_effect=fake_health_fail,
+            ),
+            patch("asyncio.run", side_effect=_run_coro),
+        ):
+            result = CliRunner().invoke(main, ["doctor", "--live"])
+
+        assert result.exit_code == 1, result.output
+        assert "Live check failed" in result.output or "live check failed" in result.output.lower()
+
+    def test_doctor_live_no_provider_skips(self, tmp_path: Path) -> None:
+        """doctor --live with no provider detected skips live check."""
+        fake = self._fake_provider(
+            name="opencode", display_name="OpenCode", installed=False, models=False
+        )
+
+        with (
+            patch(
+                "the_architect.cli.detect_provider",
+                side_effect=ProviderNotFoundError("none found"),
+            ),
+            patch("the_architect.cli.supported_providers", return_value=[fake]),
+            patch(
+                "the_architect.core.provider_health.check_provider_health",
+                side_effect=AssertionError("must not be called"),
+            ),
+        ):
+            result = CliRunner().invoke(main, ["doctor", "--live"])
+
+        assert result.exit_code == 1, result.output
+        assert "Live check skipped" in result.output
+
+    def test_doctor_without_live_no_health_check(self, tmp_path: Path) -> None:
+        """doctor without --live does not invoke health check."""
+        fake = self._fake_provider(
+            name="opencode", display_name="OpenCode", installed=True, models=True
+        )
+
+        with (
+            patch("the_architect.cli.detect_provider", return_value=fake),
+            patch("the_architect.cli.supported_providers", return_value=[fake]),
+            patch(
+                "the_architect.core.provider_health.check_provider_health",
+                side_effect=AssertionError("must not be called without --live"),
+            ),
+        ):
+            result = CliRunner().invoke(main, ["doctor"])
+
+        assert result.exit_code == 0, result.output
+        assert "Live check" not in result.output
+
+    def test_doctor_live_timeout_passed(self, tmp_path: Path) -> None:
+        """--live-timeout value is passed through to check_provider_health."""
+        fake = self._fake_provider(
+            name="opencode", display_name="OpenCode", installed=True, models=True
+        )
+
+        captured_timeout: float | None = None
+
+        async def capture_timeout(**kw) -> None:  # pragma: no cover
+            nonlocal captured_timeout
+            captured_timeout = kw.get("timeout_seconds")
+
+        with (
+            patch("the_architect.cli.detect_provider", return_value=fake),
+            patch("the_architect.cli.supported_providers", return_value=[fake]),
+            patch(
+                "the_architect.core.provider_health.check_provider_health",
+                side_effect=capture_timeout,
+            ),
+            patch("asyncio.run", side_effect=_run_coro),
+        ):
+            CliRunner().invoke(main, ["doctor", "--live", "--live-timeout", "60"])
+
+        assert captured_timeout == 60.0
+
+    def test_doctor_live_generic_exception(self, tmp_path: Path) -> None:
+        """doctor --live with a generic exception returns exit code 1."""
+        fake = self._fake_provider(
+            name="opencode", display_name="OpenCode", installed=True, models=True
+        )
+
+        async def fake_health_generic(*_a, **_kw) -> None:  # pragma: no cover
+            raise RuntimeError("unexpected crash")
+
+        with (
+            patch("the_architect.cli.detect_provider", return_value=fake),
+            patch("the_architect.cli.supported_providers", return_value=[fake]),
+            patch(
+                "the_architect.core.provider_health.check_provider_health",
+                side_effect=fake_health_generic,
+            ),
+            patch("asyncio.run", side_effect=_run_coro),
+        ):
+            result = CliRunner().invoke(main, ["doctor", "--live"])
+
+        assert result.exit_code == 1, result.output
+        assert "Live check error" in result.output or "live check error" in result.output.lower()
+
+    # -----------------------------------------------------------------------
+    # Project health tests (--project flag)
+    # -----------------------------------------------------------------------
+
+    def test_doctor_project_display(self, tmp_path: Path) -> None:
+        """doctor --project shows Project Health section with check labels."""
+        fake = self._fake_provider(
+            name="opencode", display_name="OpenCode", installed=True, models=True
+        )
+
+        from the_architect.core.project_health import HealthCheck
+
+        fake_checks = [
+            HealthCheck(status="ok", label="Lock file", detail="No runner.lock found"),
+            HealthCheck(
+                status="ok", label="Task consistency", detail="No tasks/ or PROGRESS.md found"
+            ),
+            HealthCheck(
+                status="ok", label="Baselines", detail="No .architect/baselines/ directory found"
+            ),
+            HealthCheck(status="ok", label="Circuit state", detail="No circuit.json found"),
+            HealthCheck(status="ok", label="Token ledger", detail="No token_ledger.json found"),
+            HealthCheck(status="ok", label="Presets", detail="No presets.json found"),
+        ]
+
+        with (
+            patch("the_architect.cli.detect_provider", return_value=fake),
+            patch("the_architect.cli.supported_providers", return_value=[fake]),
+            patch(
+                "the_architect.core.project_health.run_project_checks",
+                return_value=fake_checks,
+            ),
+        ):
+            result = CliRunner().invoke(main, ["doctor", "--project"])
+
+        assert result.exit_code == 0, result.output
+        assert "Project Health" in result.output
+        assert "Lock file" in result.output
+        assert "Task consistency" in result.output
+
+    def test_doctor_project_json_output(self, tmp_path: Path) -> None:
+        """doctor --project --json outputs clean structured JSON."""
+        fake = self._fake_provider(
+            name="opencode", display_name="OpenCode", installed=True, models=True
+        )
+
+        from the_architect.core.project_health import HealthCheck
+
+        fake_checks = [
+            HealthCheck(status="ok", label="Lock file", detail="No runner.lock found"),
+            HealthCheck(status="warn", label="Circuit state", detail="1 OPEN out of 2 task(s)"),
+            HealthCheck(
+                status="ok", label="Baselines", detail="No .architect/baselines/ directory found"
+            ),
+            HealthCheck(status="ok", label="Token ledger", detail="No token_ledger.json found"),
+            HealthCheck(status="ok", label="Presets", detail="No presets.json found"),
+            HealthCheck(
+                status="ok", label="Task consistency", detail="No tasks/ or PROGRESS.md found"
+            ),
+        ]
+
+        with (
+            patch("the_architect.cli.detect_provider", return_value=fake),
+            patch("the_architect.cli.supported_providers", return_value=[fake]),
+            patch(
+                "the_architect.core.project_health.run_project_checks",
+                return_value=fake_checks,
+            ),
+        ):
+            result = CliRunner().invoke(main, ["doctor", "--project", "--json"])
+
+        assert result.exit_code == 0, result.output
+        # Parse the JSON output
+        data = json.loads(result.output)
+        assert "checks" in data
+        assert "project" in data
+        assert "summary" in data
+        assert len(data["checks"]) == 6
+        assert data["summary"]["ok"] == 5
+        assert data["summary"]["warn"] == 1
+        assert data["summary"]["fail"] == 0
+
+    def test_doctor_json_without_project_ignored(self, tmp_path: Path) -> None:
+        """--json without --project is silently ignored — environment diagnostics still run."""
+        fake = self._fake_provider(
+            name="opencode", display_name="OpenCode", installed=True, models=True
+        )
+
+        with (
+            patch("the_architect.cli.detect_provider", return_value=fake),
+            patch("the_architect.cli.supported_providers", return_value=[fake]),
+        ):
+            result = CliRunner().invoke(main, ["doctor", "--json"])
+
+        assert result.exit_code == 0, result.output
+        # Should show environment diagnostics, not JSON
+        assert "Environment Diagnostics" in result.output
+        assert "Providers" in result.output
+        # Should NOT have the project health JSON structure
+        data = None
+        try:
+            data = json.loads(result.output)
+        except (json.JSONDecodeError, ValueError):
+            pass
+        if data is not None:
+            assert "checks" not in data
+
+    # -----------------------------------------------------------------------
+    # Project health exit code tests
+    # -----------------------------------------------------------------------
+
+    def test_doctor_project_exit_code_all_ok(self, tmp_path: Path) -> None:
+        """doctor --project exits 0 when all checks are ok or warn."""
+        fake = self._fake_provider(
+            name="opencode", display_name="OpenCode", installed=True, models=True
+        )
+
+        from the_architect.core.project_health import HealthCheck
+
+        fake_checks = [
+            HealthCheck(status="ok", label="Lock file", detail="No runner.lock found"),
+            HealthCheck(status="warn", label="Circuit state", detail="1 OPEN out of 2 task(s)"),
+            HealthCheck(
+                status="ok", label="Baselines", detail="No .architect/baselines/ directory found"
+            ),
+            HealthCheck(status="ok", label="Token ledger", detail="No token_ledger.json found"),
+            HealthCheck(status="ok", label="Presets", detail="No presets.json found"),
+            HealthCheck(
+                status="ok", label="Task consistency", detail="No tasks/ or PROGRESS.md found"
+            ),
+        ]
+
+        with (
+            patch("the_architect.cli.detect_provider", return_value=fake),
+            patch("the_architect.cli.supported_providers", return_value=[fake]),
+            patch(
+                "the_architect.core.project_health.run_project_checks",
+                return_value=fake_checks,
+            ),
+        ):
+            result = CliRunner().invoke(main, ["doctor", "--project"])
+
+        assert result.exit_code == 0, result.output
+        assert "Project Health" in result.output
+
+    def test_doctor_project_exit_code_fail(self, tmp_path: Path) -> None:
+        """doctor --project exits 1 when any check is fail."""
+        fake = self._fake_provider(
+            name="opencode", display_name="OpenCode", installed=True, models=True
+        )
+
+        from the_architect.core.project_health import HealthCheck
+
+        fake_checks = [
+            HealthCheck(
+                status="fail",
+                label="Lock file",
+                detail="runner.lock exists — another Architect process may be active",
+            ),
+            HealthCheck(
+                status="ok", label="Task consistency", detail="No tasks/ or PROGRESS.md found"
+            ),
+            HealthCheck(
+                status="ok", label="Baselines", detail="No .architect/baselines/ directory found"
+            ),
+            HealthCheck(status="ok", label="Circuit state", detail="No circuit.json found"),
+            HealthCheck(status="ok", label="Token ledger", detail="No token_ledger.json found"),
+            HealthCheck(status="ok", label="Presets", detail="No presets.json found"),
+        ]
+
+        with (
+            patch("the_architect.cli.detect_provider", return_value=fake),
+            patch("the_architect.cli.supported_providers", return_value=[fake]),
+            patch(
+                "the_architect.core.project_health.run_project_checks",
+                return_value=fake_checks,
+            ),
+        ):
+            result = CliRunner().invoke(main, ["doctor", "--project"])
+
+        assert result.exit_code == 1, result.output
+        assert "project health checks failed" in result.output.lower()
+
+    def test_doctor_project_json_exit_code_fail(self, tmp_path: Path) -> None:
+        """doctor --project --json exits 1 when any check is fail."""
+        fake = self._fake_provider(
+            name="opencode", display_name="OpenCode", installed=True, models=True
+        )
+
+        from the_architect.core.project_health import HealthCheck
+
+        fake_checks = [
+            HealthCheck(
+                status="fail",
+                label="Lock file",
+                detail="runner.lock exists — another Architect process may be active",
+            ),
+            HealthCheck(
+                status="ok", label="Task consistency", detail="No tasks/ or PROGRESS.md found"
+            ),
+            HealthCheck(
+                status="ok", label="Baselines", detail="No .architect/baselines/ directory found"
+            ),
+            HealthCheck(status="ok", label="Circuit state", detail="No circuit.json found"),
+            HealthCheck(status="ok", label="Token ledger", detail="No token_ledger.json found"),
+            HealthCheck(status="ok", label="Presets", detail="No presets.json found"),
+        ]
+
+        with (
+            patch("the_architect.cli.detect_provider", return_value=fake),
+            patch("the_architect.cli.supported_providers", return_value=[fake]),
+            patch(
+                "the_architect.core.project_health.run_project_checks",
+                return_value=fake_checks,
+            ),
+        ):
+            result = CliRunner().invoke(main, ["doctor", "--project", "--json"])
+
+        assert result.exit_code == 1, result.output
+        data = json.loads(result.output)
+        assert data["summary"]["fail"] == 1
+
+    # -----------------------------------------------------------------------
+    # Project path override tests
+    # -----------------------------------------------------------------------
+
+    def test_doctor_project_path_override(self, tmp_path: Path) -> None:
+        """--project-path uses the specified directory for project checks."""
+        fake = self._fake_provider(
+            name="opencode", display_name="OpenCode", installed=True, models=True
+        )
+
+        # Create a separate project directory with a lock file
+        custom_project = tmp_path / "custom_project"
+        custom_project.mkdir()
+        (custom_project / ".architect").mkdir()
+        (custom_project / ".architect" / "runner.lock").write_text("locked")
+
+        with (
+            patch("the_architect.cli.detect_provider", return_value=fake),
+            patch("the_architect.cli.supported_providers", return_value=[fake]),
+        ):
+            result = CliRunner().invoke(
+                main, ["doctor", "--project", "--project-path", str(custom_project)]
+            )
+
+        assert result.exit_code == 1, result.output
+        assert "runner.lock exists" in result.output
+
+    def test_doctor_project_path_json_override(self, tmp_path: Path) -> None:
+        """--project-path with --json uses the specified directory path in JSON."""
+        fake = self._fake_provider(
+            name="opencode", display_name="OpenCode", installed=True, models=True
+        )
+
+        custom_project = tmp_path / "custom_project"
+        custom_project.mkdir()
+
+        with (
+            patch("the_architect.cli.detect_provider", return_value=fake),
+            patch("the_architect.cli.supported_providers", return_value=[fake]),
+        ):
+            result = CliRunner().invoke(
+                main, ["doctor", "--project", "--json", "--project-path", str(custom_project)]
+            )
+
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["project"] == str(custom_project.resolve())
+
+    # -----------------------------------------------------------------------
+    # Combined --project --live tests
+    # -----------------------------------------------------------------------
+
+    def test_doctor_project_live_combined(self, tmp_path: Path) -> None:
+        """doctor --project --live shows both Project Health and Live Health Check sections."""
+        fake = self._fake_provider(
+            name="opencode", display_name="OpenCode", installed=True, models=True
+        )
+
+        from the_architect.core.project_health import HealthCheck
+
+        fake_checks = [
+            HealthCheck(status="ok", label="Lock file", detail="No runner.lock found"),
+            HealthCheck(
+                status="ok", label="Task consistency", detail="No tasks/ or PROGRESS.md found"
+            ),
+            HealthCheck(
+                status="ok", label="Baselines", detail="No .architect/baselines/ directory found"
+            ),
+            HealthCheck(status="ok", label="Circuit state", detail="No circuit.json found"),
+            HealthCheck(status="ok", label="Token ledger", detail="No token_ledger.json found"),
+            HealthCheck(status="ok", label="Presets", detail="No presets.json found"),
+        ]
+
+        async def fake_health(*_a, **_kw) -> None:  # pragma: no cover
+            pass
+
+        with (
+            patch("the_architect.cli.detect_provider", return_value=fake),
+            patch("the_architect.cli.supported_providers", return_value=[fake]),
+            patch(
+                "the_architect.core.project_health.run_project_checks",
+                return_value=fake_checks,
+            ),
+            patch(
+                "the_architect.core.provider_health.check_provider_health",
+                side_effect=fake_health,
+            ),
+            patch("asyncio.run", side_effect=_run_coro),
+        ):
+            result = CliRunner().invoke(main, ["doctor", "--project", "--live"])
+
+        assert result.exit_code == 0, result.output
+        assert "Project Health" in result.output
+        assert "Live Health Check" in result.output
+        assert "Lock file" in result.output
+
+    def test_doctor_project_live_combined_fail(self, tmp_path: Path) -> None:
+        """doctor --project --live with project fail exits 1."""
+        fake = self._fake_provider(
+            name="opencode", display_name="OpenCode", installed=True, models=True
+        )
+
+        from the_architect.core.project_health import HealthCheck
+
+        fake_checks = [
+            HealthCheck(
+                status="fail",
+                label="Lock file",
+                detail="runner.lock exists — another Architect process may be active",
+            ),
+            HealthCheck(
+                status="ok", label="Task consistency", detail="No tasks/ or PROGRESS.md found"
+            ),
+            HealthCheck(
+                status="ok", label="Baselines", detail="No .architect/baselines/ directory found"
+            ),
+            HealthCheck(status="ok", label="Circuit state", detail="No circuit.json found"),
+            HealthCheck(status="ok", label="Token ledger", detail="No token_ledger.json found"),
+            HealthCheck(status="ok", label="Presets", detail="No presets.json found"),
+        ]
+
+        async def fake_health(*_a, **_kw) -> None:  # pragma: no cover
+            pass
+
+        with (
+            patch("the_architect.cli.detect_provider", return_value=fake),
+            patch("the_architect.cli.supported_providers", return_value=[fake]),
+            patch(
+                "the_architect.core.project_health.run_project_checks",
+                return_value=fake_checks,
+            ),
+            patch(
+                "the_architect.core.provider_health.check_provider_health",
+                side_effect=fake_health,
+            ),
+            patch("asyncio.run", side_effect=_run_coro),
+        ):
+            result = CliRunner().invoke(main, ["doctor", "--project", "--live"])
+
+        assert result.exit_code == 1, result.output
+        assert "Project Health" in result.output
+        assert "project health checks failed" in result.output.lower()
+
 
 # ---------------------------------------------------------------------------
 # Windows / PowerShell TUI detection
@@ -1030,3 +1787,183 @@ class TestResolveTuiDefaultWindows:
         with patch("sys.stdout") as mock_stdout:
             mock_stdout.isatty.return_value = True
             assert _resolve_tui_default(False, headless=False) is False
+
+
+class TestDiffCommand:
+    """Cover the ``diff`` command for per-task baseline change display."""
+
+    def _write_baseline(self, tmp_path: Path, name: str, files: dict[str, str]) -> None:
+        """Write a baseline JSON file with the given file checksums."""
+        import hashlib
+
+        from the_architect.core.baseline import FileRecord, WorkspaceBaseline
+
+        baseline = WorkspaceBaseline(
+            task_prefix=name.replace(".json", ""),
+            files={
+                p: FileRecord(path=p, sha256=hashlib.sha256(c.encode()).hexdigest(), size=len(c))
+                for p, c in files.items()
+            },
+        )
+        baselines_dir = tmp_path / ".architect" / "baselines"
+        baselines_dir.mkdir(parents=True, exist_ok=True)
+
+        (baselines_dir / f"{name}.json").write_text(
+            baseline.model_dump_json(indent=2), encoding="utf-8"
+        )
+
+    def test_diff_no_baselines_dir(self, tmp_path: Path) -> None:
+        """Shows message when baselines directory does not exist."""
+        result = CliRunner().invoke(main, ["diff", "-p", str(tmp_path)])
+        assert result.exit_code == 0
+        assert "No baseline data available" in result.output
+
+    def test_diff_empty_baselines_dir(self, tmp_path: Path) -> None:
+        """Shows message when baselines directory exists but is empty."""
+        (tmp_path / ".architect" / "baselines").mkdir(parents=True)
+        result = CliRunner().invoke(main, ["diff", "-p", str(tmp_path)])
+        assert result.exit_code == 0
+        assert "No baseline data available" in result.output
+
+    def test_diff_single_task(self, tmp_path: Path) -> None:
+        """Displays changes for a single task baseline."""
+        # Create a tracked file that exists in the workspace
+        (tmp_path / "example.py").write_text("hello world", encoding="utf-8")
+        self._write_baseline(tmp_path, "T01", {"example.py": "hello world"})
+
+        result = CliRunner().invoke(main, ["diff", "-p", str(tmp_path)])
+        assert result.exit_code == 0
+        assert "T01" in result.output
+        # File matches baseline so no changes expected
+        assert "Created: 0" in result.output or "Modified: 0" in result.output
+
+    def test_diff_single_task_with_changes(self, tmp_path: Path) -> None:
+        """Displays created files when workspace has new files."""
+        # Baseline has no files, workspace has a new file
+        self._write_baseline(tmp_path, "T01", {})
+        (tmp_path / "new_file.py").write_text("new content", encoding="utf-8")
+
+        result = CliRunner().invoke(main, ["diff", "-p", str(tmp_path)])
+        assert result.exit_code == 0
+        assert "T01" in result.output
+        assert "Created: 1" in result.output
+        assert "new_file.py" in result.output
+
+    def test_diff_multiple_tasks(self, tmp_path: Path) -> None:
+        """Displays changes for multiple task baselines."""
+        self._write_baseline(tmp_path, "T01", {})
+        self._write_baseline(tmp_path, "T02", {})
+
+        result = CliRunner().invoke(main, ["diff", "-p", str(tmp_path)])
+        assert result.exit_code == 0
+        assert "T01" in result.output
+        assert "T02" in result.output
+
+    def test_diff_task_filter(self, tmp_path: Path) -> None:
+        """--task filter shows only the matching task."""
+        self._write_baseline(tmp_path, "T01", {})
+        self._write_baseline(tmp_path, "T02", {})
+
+        result = CliRunner().invoke(main, ["diff", "-p", str(tmp_path), "--task", "T01"])
+        assert result.exit_code == 0
+        assert "T01" in result.output
+        assert "T02" not in result.output
+
+    def test_diff_task_filter_no_match(self, tmp_path: Path) -> None:
+        """--task with non-existent task shows no data message."""
+        self._write_baseline(tmp_path, "T01", {})
+
+        result = CliRunner().invoke(main, ["diff", "-p", str(tmp_path), "--task", "T99"])
+        assert result.exit_code == 0
+        assert "No baseline data found for task T99" in result.output
+
+    def test_diff_json_basic_structure(self, tmp_path: Path) -> None:
+        """JSON output contains required top-level keys."""
+        self._write_baseline(tmp_path, "T01", {})
+
+        result = CliRunner().invoke(main, ["diff", "-p", str(tmp_path), "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert "project" in data
+        assert "tasks" in data
+        assert isinstance(data["tasks"], list)
+
+    def test_diff_json_task_structure(self, tmp_path: Path) -> None:
+        """JSON task entries have task_id, created, modified, deleted keys."""
+        self._write_baseline(tmp_path, "T01", {})
+        (tmp_path / "new.py").write_text("x", encoding="utf-8")
+
+        result = CliRunner().invoke(main, ["diff", "-p", str(tmp_path), "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert len(data["tasks"]) == 1
+        task = data["tasks"][0]
+        assert "task_id" in task
+        assert "created" in task
+        assert "modified" in task
+        assert "deleted" in task
+        assert task["task_id"] == "T01"
+        assert isinstance(task["created"], list)
+        assert isinstance(task["modified"], list)
+        assert isinstance(task["deleted"], list)
+
+    def test_diff_json_task_filter(self, tmp_path: Path) -> None:
+        """JSON output respects --task filter."""
+        self._write_baseline(tmp_path, "T01", {})
+        self._write_baseline(tmp_path, "T02", {})
+
+        result = CliRunner().invoke(main, ["diff", "-p", str(tmp_path), "--json", "--task", "T01"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert len(data["tasks"]) == 1
+        assert data["tasks"][0]["task_id"] == "T01"
+
+    def test_diff_json_deterministic(self, tmp_path: Path) -> None:
+        """JSON output is deterministic with sorted keys."""
+        self._write_baseline(tmp_path, "T01", {})
+
+        result = CliRunner().invoke(main, ["diff", "-p", str(tmp_path), "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        expected = json.dumps(data, indent=2, sort_keys=True)
+        assert result.output.strip() == expected
+
+    def test_diff_json_no_rich_markup(self, tmp_path: Path) -> None:
+        """JSON output contains no Rich ANSI escape codes."""
+        self._write_baseline(tmp_path, "T01", {})
+
+        result = CliRunner().invoke(main, ["diff", "-p", str(tmp_path), "--json"])
+        assert result.exit_code == 0
+        assert "\x1b" not in result.output
+
+    def test_diff_corrupted_baseline(self, tmp_path: Path) -> None:
+        """Corrupted baseline files are skipped gracefully."""
+        baselines_dir = tmp_path / ".architect" / "baselines"
+        baselines_dir.mkdir(parents=True)
+        (baselines_dir / "T01.json").write_text("not valid json{", encoding="utf-8")
+
+        result = CliRunner().invoke(main, ["diff", "-p", str(tmp_path)])
+        assert result.exit_code == 0
+        # Should not crash — corrupted baseline is skipped
+
+    def test_diff_json_mutual_exclusion_tui(self, tmp_path: Path) -> None:
+        """--json and --tui are mutually exclusive."""
+        result = CliRunner().invoke(main, ["diff", "-p", str(tmp_path), "--json", "--tui"])
+        assert result.exit_code == 1
+        assert "mutually exclusive" in result.output
+
+    def test_diff_json_empty_baselines(self, tmp_path: Path) -> None:
+        """JSON output with no baselines returns empty tasks array."""
+        result = CliRunner().invoke(main, ["diff", "-p", str(tmp_path), "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["tasks"] == []
+
+    def test_diff_format_json_no_baselines(self, tmp_path: Path) -> None:
+        """_format_diff_json returns valid JSON with no baselines dir."""
+        from the_architect.cli import _format_diff_json
+
+        output = _format_diff_json(tmp_path)
+        data = json.loads(output)
+        assert data["project"] == str(tmp_path)
+        assert data["tasks"] == []

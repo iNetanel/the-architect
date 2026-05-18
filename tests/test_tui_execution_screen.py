@@ -452,3 +452,117 @@ class TestWriteDiagnosticLineWithData:
         assert "retry" in call_args
         assert "attempt" in call_args
         assert "3" in call_args
+
+
+class TestFeedbackDisplay:
+    """Test feedback banner rendering in the execution screen footer."""
+
+    def test_update_feedback_sets_message(self) -> None:
+        screen = ExecutionScreen()
+        # Before mount, query_one raises — feedback should still be stored
+        screen.update_feedback("fix the login bug")
+        assert screen._feedback_message == "fix the login bug"
+
+    def test_update_feedback_clears_message(self) -> None:
+        screen = ExecutionScreen()
+        screen.update_feedback("some message")
+        screen.update_feedback(None)
+        assert screen._feedback_message is None
+
+    def test_render_footer_text_no_feedback(self) -> None:
+        screen = ExecutionScreen()
+        screen._feedback_message = None
+        result = screen._render_footer_text("(idle)  keys here")
+        assert result == "(idle)  keys here"
+
+    def test_render_footer_text_with_feedback(self) -> None:
+        screen = ExecutionScreen()
+        screen._feedback_message = "fix the login bug"
+        result = screen._render_footer_text("(idle)  keys here")
+        assert "⚡ Feedback" in result
+        assert "fix the login bug" in result
+        assert "(idle)  keys here" in result
+
+    def test_render_footer_text_truncates_long_message(self) -> None:
+        screen = ExecutionScreen()
+        long_msg = "A" * 100
+        screen._feedback_message = long_msg
+        result = screen._render_footer_text("base")
+        # Message should be truncated to ~80 chars
+        assert "…" in result
+        assert len(result) < 200
+
+    def test_render_footer_text_escapes_rich_markup(self) -> None:
+        screen = ExecutionScreen()
+        screen._feedback_message = "[bold]test[/bold]"
+        result = screen._render_footer_text("base")
+        # Rich's escape() converts [ to \[ — the brackets are escaped
+        # so the message is displayed literally, not as Rich markup tags
+        assert "\\[bold]" in result
+        assert "\\[/bold]" in result
+        assert "⚡ Feedback" in result
+
+    def test_strip_feedback_prefix_removes_prefix(self) -> None:
+        screen = ExecutionScreen()
+        rendered = "[yellow]⚡ Feedback[/yellow]: some message  ·  (idle)  keys"
+        stripped = screen._strip_feedback_prefix(rendered)
+        assert stripped == "(idle)  keys"
+
+    def test_strip_feedback_prefix_no_prefix_returns_as_is(self) -> None:
+        screen = ExecutionScreen()
+        text = "(idle)  keys here"
+        assert screen._strip_feedback_prefix(text) == text
+
+    def test_strip_feedback_prefix_partial_no_separator(self) -> None:
+        screen = ExecutionScreen()
+        # Has prefix marker but no separator — return as-is
+        text = "[yellow]⚡ Feedback[/yellow]: msg"
+        assert screen._strip_feedback_prefix(text) == text
+
+    def test_update_feedback_updates_pending_footer(self) -> None:
+        screen = ExecutionScreen()
+        # Set a pending footer first (simulates pre-mount update_footer)
+        screen.update_footer("base text")
+        assert screen._pending_footer == "base text"
+        # Now set feedback — should re-render pending footer with feedback
+        screen.update_feedback("new feedback")
+        assert screen._pending_footer is not None
+        assert "⚡ Feedback" in screen._pending_footer
+        assert "base text" in screen._pending_footer
+
+    def test_update_feedback_clear_removes_from_pending(self) -> None:
+        screen = ExecutionScreen()
+        screen.update_footer("base text")
+        screen.update_feedback("some feedback")
+        assert "⚡ Feedback" in (screen._pending_footer or "")
+        # Clear feedback
+        screen.update_feedback(None)
+        assert screen._pending_footer == "base text"
+
+
+class TestFeedbackMounted:
+    """Test feedback display when the footer widget is mounted."""
+
+    def test_update_feedback_refreshes_footer(self) -> None:
+        screen = ExecutionScreen()
+        mock_footer = MagicMock()
+        mock_footer.render_str = "base footer"
+        with patch.object(screen, "query_one", return_value=mock_footer):
+            screen.update_feedback("hello")
+        # update_footer was called, which calls query_one again —
+        # our mock returns mock_footer for all selectors
+        mock_footer.update.assert_called()
+        call_arg = mock_footer.update.call_args[0][0]
+        assert "⚡ Feedback" in call_arg
+        assert "hello" in call_arg
+
+    def test_update_feedback_clear_refreshes_footer(self) -> None:
+        screen = ExecutionScreen()
+        mock_footer = MagicMock()
+        mock_footer.render_str = "[yellow]⚡ Feedback[/yellow]: old  ·  base"
+        with patch.object(screen, "query_one", return_value=mock_footer):
+            screen.update_feedback(None)
+        mock_footer.update.assert_called()
+        call_arg = mock_footer.update.call_args[0][0]
+        # After clearing, the feedback prefix should be gone
+        assert "⚡ Feedback" not in call_arg
