@@ -5711,7 +5711,7 @@ class TestStreamProviderWarningCallbackStdin:
             long_instruction = "x" * 20000  # > 16384
             with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
                 mock_exec.return_value = _make_mock_process(stdout_lines=[], exit_code=0)
-                result = await stream_provider(long_instruction, Path("/tmp"), provider)
+                result = await stream_provider(long_instruction, Path.cwd(), provider)
                 assert isinstance(result, StreamResult)
             # The warning fires regardless of platform when instruction is large
             log_output = sink.getvalue()
@@ -5726,7 +5726,7 @@ class TestStreamProviderWarningCallbackStdin:
         with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.return_value = _make_mock_process(stdout_lines=[b"hello\n"], exit_code=0)
             result = await stream_provider(
-                "test", Path("/tmp"), provider, on_first_output=bad_callback
+                "test", Path.cwd(), provider, on_first_output=bad_callback
             )
             assert isinstance(result, StreamResult)
             assert bad_callback.call_count == 1
@@ -5743,14 +5743,8 @@ class TestStreamProviderWarningCallbackStdin:
             mock_proc.stdin.close = MagicMock()
             mock_proc.stdin.wait_closed = AsyncMock()
             mock_exec.return_value = mock_proc
-            result = await stream_provider("test", Path("/tmp"), provider)
+            result = await stream_provider("test", Path.cwd(), provider)
             assert isinstance(result, StreamResult)
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# R01.4 — stream_provider readline timeout and probe paths
-#          (lines 1034, 1073-1074)
-# ═══════════════════════════════════════════════════════════════════════════
 
 
 class TestStreamProviderReadlinePaths:
@@ -5767,7 +5761,7 @@ class TestStreamProviderReadlinePaths:
                     mock_exec.return_value = _make_mock_process(
                         stdout_lines=[b"ok\n", b""], exit_code=0
                     )
-                    result = await stream_provider("test", Path("/tmp"), provider)
+                    result = await stream_provider("test", Path.cwd(), provider)
                     assert isinstance(result, StreamResult)
 
     @pytest.mark.asyncio
@@ -5781,7 +5775,7 @@ class TestStreamProviderReadlinePaths:
                     mock_exec.return_value = _make_mock_process(
                         stdout_lines=[b"short\n", b""], exit_code=0
                     )
-                    result = await stream_provider("test", Path("/tmp"), provider)
+                    result = await stream_provider("test", Path.cwd(), provider)
                     assert isinstance(result, StreamResult)
 
 
@@ -5807,7 +5801,7 @@ class TestStreamProviderErrorHandlers:
             side_effect=asyncio.CancelledError(),
         ):
             with pytest.raises(asyncio.CancelledError):
-                await stream_provider("test", Path("/tmp"), provider)
+                await stream_provider("test", Path.cwd(), provider)
 
     @pytest.mark.asyncio
     async def test_stream_provider_generic_exc_kill_fails(self):
@@ -5818,7 +5812,7 @@ class TestStreamProviderErrorHandlers:
             "the_architect.core.runner.asyncio.create_subprocess_exec",
             side_effect=RuntimeError("subprocess failed"),
         ):
-            result = await stream_provider("test", Path("/tmp"), provider)
+            result = await stream_provider("test", Path.cwd(), provider)
             assert result.exit_code == -1
 
     @pytest.mark.asyncio
@@ -5830,7 +5824,7 @@ class TestStreamProviderErrorHandlers:
 
         with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.return_value = _make_mock_process(stdout_lines=[], exit_code=0)
-            result = await stream_provider("test", Path("/tmp"), provider, renderer=bad_renderer)
+            result = await stream_provider("test", Path.cwd(), provider, renderer=bad_renderer)
             assert isinstance(result, StreamResult)
             assert bad_renderer.close.called
 
@@ -5963,20 +5957,24 @@ class TestRunTaskExecutionPaths:
 
     @pytest.mark.asyncio
     async def test_run_task_baseline_capture_fails(self, task, config):
-        async def mock_run_once(**kwargs):
-            return TaskResult(
-                prefix=task.prefix,
-                title="test",
-                status="done",
-                duration_seconds=1.0,
-                attempts=1,
-                tokens=TokenUsage(),
-                model="",
-            )
-
-        with patch(
-            "the_architect.core.baseline.capture_baseline", side_effect=Exception("baseline boom")
+        with (
+            patch(
+                "the_architect.core.baseline.capture_baseline",
+                side_effect=Exception("baseline boom"),
+            ),
+            patch(
+                "the_architect.core.runner.stream_provider", new_callable=AsyncMock
+            ) as mock_stream,
         ):
+            mock_stream.return_value = StreamResult(
+                exit_code=0,
+                tokens=TokenUsage(),
+                accumulated_text="Task completed successfully.\n",
+                rate_limit_hit=False,
+                cooldown_until=0,
+                interrupted=False,
+                interruption_reason="",
+            )
             result = await run_task(task=task, config=config)
             assert result.status == "done"
 

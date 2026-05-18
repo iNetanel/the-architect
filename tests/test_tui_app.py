@@ -8,6 +8,7 @@ intentionally distinct from :class:`~the_architect.tui.screens.wait.WaitScreen`
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -1037,6 +1038,7 @@ class TestRunSingleScreen:
 class TestSigcontHandler:
     """Tests for SIGCONT (sleep/wake) recovery."""
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="SIGWINCH unavailable on Windows")
     def test_sigcont_handler_sends_sigwinch(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """SIGCONT handler sends SIGWINCH to trigger Textual resize."""
         import signal
@@ -1056,6 +1058,7 @@ class TestSigcontHandler:
 
         assert signal.SIGWINCH in sigwinch_sent
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="SIGWINCH unavailable on Windows")
     def test_sigcont_handler_schedules_resetup(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """SIGCONT handler schedules terminal re-setup on the event loop."""
         from the_architect.tui.app import ArchitectApp

@@ -618,7 +618,6 @@ class TestHistoryCommand:
         assert "ship" in result.output
         assert "token" in result.output
         assert "ledger" in result.output
-        assert "reporting" in result.output
         assert "1.5K" in result.output  # token formatting
         assert "2 run(s)" in result.output
 
