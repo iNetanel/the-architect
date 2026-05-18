@@ -11,9 +11,6 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ## [Unreleased]
 
-### Fixed
-
-- **Success screen exit keys accurate** — The run-complete summary screen now exits only on `Q` or `Esc` (not `Enter`), and the hint text correctly reads "Press Q or Esc to exit". (build 10553)
 
 ---
 
@@ -93,6 +90,7 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 ### Changed
 
 - **CI now tests on Ubuntu, Windows, and macOS** across Python 3.11, 3.12, and 3.13 (9 matrix combinations).
+- **Success screen exit keys accurate** — The run-complete summary screen now exits only on `Q` or `Esc` (not `Enter`), and the hint text correctly reads "Press Q or Esc to exit". (build 10553)
 
 ---
 

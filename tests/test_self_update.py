@@ -41,7 +41,7 @@ class TestCheckSelfUpdate:
     def test_returns_empty_when_up_to_date(self) -> None:
         from the_architect.core.self_update import check_self_update
 
-        mock_resp = MagicMock()
+        mock_resp = MagicMock(spec=["raise_for_status", "json"])
         mock_resp.json.return_value = {"info": {"version": "0.0.1"}}
 
         with patch("the_architect.core.self_update._CURRENT_VERSION", "1.0.0"):
@@ -54,7 +54,7 @@ class TestCheckSelfUpdate:
     def test_returns_versions_when_update_available(self) -> None:
         from the_architect.core.self_update import check_self_update
 
-        mock_resp = MagicMock()
+        mock_resp = MagicMock(spec=["raise_for_status", "json"])
         mock_resp.json.return_value = {"info": {"version": "9.9.9"}}
 
         with patch("the_architect.core.self_update._CURRENT_VERSION", "1.0.0"):

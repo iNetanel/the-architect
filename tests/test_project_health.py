@@ -96,7 +96,7 @@ class TestCheckTaskConsistency:
         (tasks_dir / "T01_foo.md").write_text("# T01")
         (tasks_dir / "T02_bar.md").write_text("# T02")
         progress = "| T01 | Foo | Done | 2026-01-01 |\n| T02 | Bar | Pending | — |\n"
-        (tasks_dir / "PROGRESS.md").write_text(progress)
+        (tasks_dir / "PROGRESS.md").write_text(progress, encoding="utf-8")
         result = check_task_consistency(tmp_path)
         assert result.status == "ok"
         assert "2 task file(s)" in result.detail
@@ -119,7 +119,7 @@ class TestCheckTaskConsistency:
         tasks_dir.mkdir()
         (tasks_dir / "T01_foo.md").write_text("# T01")
         progress = "| T01 | Foo | Done | 2026-01-01 |\n| T02 | Bar | Pending | — |\n"
-        (tasks_dir / "PROGRESS.md").write_text(progress)
+        (tasks_dir / "PROGRESS.md").write_text(progress, encoding="utf-8")
         result = check_task_consistency(tmp_path)
         assert result.status == "warn"
         assert "without task file" in result.detail

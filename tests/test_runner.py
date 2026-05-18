@@ -7310,7 +7310,7 @@ class TestRunTaskErrorPaths:
 
         with (
             patch("the_architect.core.runner.run_task_once", side_effect=mock_run_once),
-            patch("the_architect.core.runner.asyncio.sleep", return_value=None),
+            patch("the_architect.core.runner.asyncio.sleep", new_callable=AsyncMock),
         ):
             result = await run_task(task=task, config=config)
 
