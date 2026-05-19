@@ -365,6 +365,26 @@ class ParallelScheduler:
             return True
         return False
 
+    def register_tasks(self, tasks: list[Task]) -> None:
+        """Register tasks added to the plan after scheduler initialization.
+
+        Called by the runner when reassessment adds split tasks (T03A, T03B)
+        or retro tasks (T03R1) to an active execution loop.
+
+        Args:
+            tasks: The newly added :class:`Task` objects to register.
+        """
+        registered = 0
+        for task in tasks:
+            if task.prefix not in self._state.pending:
+                self._state.pending.add(task.prefix)
+                self._deps[task.prefix] = list(task.depends_on)
+                registered += 1
+        if registered:
+            logger.debug(
+                f"Scheduler: registered {registered} new task(s): {[t.prefix for t in tasks]}"
+            )
+
     def has_remaining_work(self) -> bool:
         """Return ``True`` if there are pending or running tasks.
 

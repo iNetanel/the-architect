@@ -629,3 +629,94 @@ class TestDependencyChain:
         batch = scheduler.get_next_batch()
         assert len(batch) == 1
         assert batch[0].prefix == "T04"
+
+
+class TestRegisterTasks:
+    """Tests for the register_tasks() method that handles mid-run task additions."""
+
+    def test_register_tasks_adds_to_pending(self) -> None:
+        """New tasks registered via register_tasks appear in pending state."""
+        t1 = _task("T01", 1)
+        plan = TaskPlan(tasks=[t1])
+        scheduler = ParallelScheduler(plan)
+
+        # T01 is pending, T02A does not exist yet
+        assert scheduler.get_state("T01") == SchedulerTaskState.PENDING
+        assert scheduler.get_state("T02A") is None
+
+        # Register a new task added by reassessment
+        t2a = _task("T02A", 2)
+        scheduler.register_tasks([t2a])
+
+        assert scheduler.get_state("T02A") == SchedulerTaskState.PENDING
+        assert scheduler.has_remaining_work() is True
+
+    def test_register_tasks_adds_deps(self) -> None:
+        """Registered tasks carry their dependency declarations."""
+        t1 = _task("T01", 1)
+        plan = TaskPlan(tasks=[t1])
+        scheduler = ParallelScheduler(plan)
+
+        # Complete T01 first
+        scheduler.complete_task("T01")
+
+        # Register T02A that depends on T01
+        t2a = _task("T02A", 2, depends_on=["T01"])
+        scheduler.register_tasks([t2a])
+
+        # T02A is in pending state with deps tracked
+        assert scheduler.get_state("T02A") == SchedulerTaskState.PENDING
+        # T02A is ready because T01 is terminal (completed)
+        # Note: register_tasks adds to _state.pending and _deps,
+        # but get_ready_tasks iterates _plan.tasks. The runner syncs
+        # the plan via _sync_plan_from_disk. Here we verify the
+        # scheduler's internal dep tracking is correct.
+        assert "T02A" in scheduler._state.pending
+        assert scheduler._deps.get("T02A") == ["T01"]
+
+    def test_register_tasks_blocks_on_unmet_deps(self) -> None:
+        """Registered tasks with unmet dependencies are not ready."""
+        t1 = _task("T01", 1)
+        plan = TaskPlan(tasks=[t1])
+        scheduler = ParallelScheduler(plan)
+
+        # Register T02A that depends on T01 (still pending)
+        t2a = _task("T02A", 2, depends_on=["T01"])
+        scheduler.register_tasks([t2a])
+
+        # T02A should NOT be ready — T01 is still pending
+        ready = scheduler.get_ready_tasks()
+        prefixes = {t.prefix for t in ready}
+        assert "T02A" not in prefixes
+        assert "T01" in prefixes
+
+    def test_register_tasks_idempotent(self) -> None:
+        """Registering the same task twice does not duplicate it."""
+        t1 = _task("T01", 1)
+        plan = TaskPlan(tasks=[t1])
+        scheduler = ParallelScheduler(plan)
+
+        t2a = _task("T02A", 2)
+        scheduler.register_tasks([t2a])
+        scheduler.register_tasks([t2a])
+
+        assert scheduler.pending_count == 2  # T01 + T02A
+        assert "T02A" in scheduler._state.pending
+
+    def test_register_tasks_multiple_at_once(self) -> None:
+        """Registering multiple tasks at once works."""
+        t1 = _task("T01", 1)
+        plan = TaskPlan(tasks=[t1])
+        scheduler = ParallelScheduler(plan)
+
+        scheduler.register_tasks(
+            [
+                _task("T02A", 2),
+                _task("T02B", 2),
+                _task("T03R1", 3),
+            ]
+        )
+
+        assert scheduler.pending_count == 4
+        ready = scheduler.get_ready_tasks()
+        assert len(ready) == 1  # Only T01 (max_concurrency=1)

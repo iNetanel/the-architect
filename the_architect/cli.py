@@ -4892,11 +4892,29 @@ def main(
                                     "continuing loop"
                                 )
                             else:
-                                logger.info(
-                                    "Infinite Loop driver: SystemExit not eligible for loop "
-                                    "continuation, re-raising"
+                                # Check if there are pending tasks to execute —
+                                # reassessment may have split a failed task into
+                                # smaller tasks (T03A-D) that are Pending.  The
+                                # next iteration will create a fresh scheduler
+                                # that sees them and executes them.
+                                loop_tasks_dir = resolved_project / config.tasks_dir.name
+                                loop_progress_file = config.progress_file
+                                loop_pending = check_pending_tasks(
+                                    loop_tasks_dir, loop_progress_file
                                 )
-                                raise
+                                if loop_pending:
+                                    logger.info(
+                                        f"Infinite Loop driver: SystemExit(1) but "
+                                        f"{len(loop_pending)} pending task(s) remain "
+                                        f"— continuing loop for execution"
+                                    )
+                                    plan_local["v"] = False  # Force execution, not planning
+                                else:
+                                    logger.info(
+                                        "Infinite Loop driver: SystemExit not eligible "
+                                        "for loop continuation, re-raising"
+                                    )
+                                    raise
                         else:
                             logger.info(
                                 "Infinite Loop driver: SystemExit not eligible for loop "

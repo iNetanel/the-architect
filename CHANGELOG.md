@@ -11,6 +11,13 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ## [Unreleased]
 
+---
+
+## [1.3.1] (build 10557) — 2026-05-19
+
+### Fixed
+- Reassessment tasks (split tasks T03A-D) are now executed instead of being silently skipped — scheduler re-syncs when plan grows during callbacks
+- Infinite Loop driver now continues on SystemExit(1) when pending tasks remain, instead of exiting
 
 ---
 

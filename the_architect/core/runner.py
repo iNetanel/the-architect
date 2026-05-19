@@ -4171,6 +4171,9 @@ async def _run_all_inner(
             f"({len(started)}/{max_parallel} parallel slots)"
         )
 
+        # Record plan length before callbacks fire — reassessment may add tasks
+        _plan_len = len(plan.tasks)
+
         # Execute tasks concurrently
         coros = [_execute_one(task) for task in started]
         results = await asyncio.gather(*coros)
@@ -4183,6 +4186,21 @@ async def _run_all_inner(
                 # failed and skipped are both terminal — mark as failed
                 # so downstream dependents become ready
                 scheduler.fail_task(task.prefix)
+
+        # ── Check if plan grew during callbacks ──────────────────────────
+        # Reassessment may have added split tasks (T04A, T04B) or retro tasks
+        # (T04R1) to plan.tasks via _sync_plan_from_disk.  If so, register
+        # them with the scheduler so the execution loop picks them up instead
+        # of exiting.
+        if len(plan.tasks) > _plan_len:
+            new_tasks = [t for t in plan.tasks if t.prefix not in _task_result_statuses]
+            if new_tasks:
+                logger.info(
+                    f"Plan grew from {_plan_len} to {len(plan.tasks)} tasks "
+                    f"during callbacks — registering {len(new_tasks)} new "
+                    f"task(s) with scheduler: {[t.prefix for t in new_tasks]}"
+                )
+                scheduler.register_tasks(new_tasks)
 
         # ── Batch-level token budget check ───────────────────────────────
         # After a batch completes, check if budgets are exceeded.

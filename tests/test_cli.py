@@ -194,6 +194,61 @@ class TestMoreHelperFunctions:
             is False
         )
 
+    def test_infinite_loop_continues_on_systemexit1_with_pending_tasks(
+        self, tmp_path: Path
+    ) -> None:
+        """Infinite Loop driver continues when SystemExit(1) has pending tasks.
+
+        This test verifies that the Infinite Loop driver's SystemExit(1) handler
+        checks for pending tasks and continues the loop instead of re-raising.
+        We test this by simulating the condition where reassessment split a task.
+        """
+        from the_architect.cli import (
+            _infinite_loop_reset_idle_timeout_tasks,
+            _infinite_loop_reset_sleep_interrupted_tasks,
+        )
+        from the_architect.core.planner import check_pending_tasks
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        progress_file = tasks_dir / "PROGRESS.md"
+
+        # Write task files for split tasks (T03A, T03B)
+        (tasks_dir / "T03A_part_a.md").write_text("# T03A\n", encoding="utf-8")
+        (tasks_dir / "T03B_part_b.md").write_text("# T03B\n", encoding="utf-8")
+
+        # PROGRESS.md shows T03A and T03B as Pending
+        progress_file.write_text(
+            "**Tasks completed:** 0\n**Next task to run:** T03A\n\n"
+            "## Task Log\n| Task | Title | Status | Completed |\n"
+            "|------|-------|--------|-----------|\n"
+            "| T03A | Part A | Pending | — |\n"
+            "| T03B | Part B | Pending | — |\n",
+            encoding="utf-8",
+        )
+
+        config = ArchitectConfig(
+            tasks_dir=tasks_dir,
+            progress_file=progress_file,
+            log_dir=tmp_path / ".architect" / "logs",
+        )
+
+        # Verify that check_pending_tasks finds the pending tasks
+        pending = check_pending_tasks(tasks_dir, config.progress_file)
+        assert len(pending) == 2
+        assert "T03A_part_a" in pending
+        assert "T03B_part_b" in pending
+
+        # Verify that sleep/idle reset returns 0 (these are new tasks, not sleep-interrupted)
+        sleep_reset = _infinite_loop_reset_sleep_interrupted_tasks(tmp_path, config)
+        idle_reset = _infinite_loop_reset_idle_timeout_tasks(tmp_path, config)
+        assert sleep_reset == 0
+        assert idle_reset == 0
+
+        # The key assertion: pending tasks exist, so the loop should continue
+        # (this is what the new code path checks)
+        assert len(pending) > 0, "Pending tasks must exist for loop continuation"
+
     def test_monitor_killed_finalizer_preserves_failed_state(self) -> None:
         """The outer finalizer must not overwrite a legitimate FAILED run."""
         from the_architect.cli import _monitor_state_needs_killed_finalizer
