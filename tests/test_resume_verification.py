@@ -227,7 +227,8 @@ class TestVerifyCompletedTaskValid:
         assert result.status == "valid"
         assert result.baseline_exists is True
         assert result.baseline_age_seconds is not None
-        assert result.baseline_age_seconds >= 0
+        # Allow small negative jitter from sub-microsecond timing on Windows
+        assert result.baseline_age_seconds >= -0.001
         assert "1 tracked file" in result.reason
 
     def test_multiple_files_valid(self, tmp_path: Path) -> None:
