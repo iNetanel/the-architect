@@ -192,6 +192,31 @@ What you did, what changed, what decisions you made.
 
 ---
 
+## Failure Report
+
+### Task
+[Task prefix — title]
+
+### What Was Tried
+- [Approaches, commands, code changes — specific details]
+
+### Root Cause
+- [Why the task failed — or "Unknown" with what was ruled out]
+
+### Technical Errors
+- [Exact error messages, output, logs]
+
+### Environment State
+- [What's available vs missing — toolchain, deps, runtime]
+
+### What Has NOT Been Tried
+- [Approaches not yet attempted — potential paths forward]
+
+### Blocking Dependencies
+- [Upstream failed tasks or missing prerequisites]
+
+---
+
 ## Permanent Decisions
 
 | Decision | Value | Reason | Task |
@@ -210,6 +235,7 @@ What you did, what changed, what decisions you made.
 - Update `## Lessons Learned` with real lessons from this task; preserve existing lessons
 - Update `## Missing / Follow-up Notes` with gaps, unverified areas, risks, blockers,
   or information the next agent needs; say explicitly when nothing is missing
+- IF the task is NOT complete: write a `## Failure Report` section (mandatory) — include what was tried, exact errors, root cause analysis, environment state, what has NOT been tried, and blocking dependencies
 
 ---
 
@@ -341,6 +367,51 @@ exhausts retries) will take it from there. Do NOT write `Failed` or
 
 ---
 
+## Failure Reporting — CRITICAL
+
+When you cannot complete the task, you MUST write a detailed Failure Report
+in PROGRESS.md. This report is the primary mechanism for passing failure
+context to the reviewer, the reassessment agent, and the infinite-loop planner.
+
+### When to write a Failure Report
+
+Write a Failure Report on **every failed attempt**, not just the last one.
+Each attempt appends to the report — preserve all previous findings.
+
+### Failure Report structure
+
+Use the `## Failure Report` section in PROGRESS.md with these subsections:
+
+- **Task** — the task prefix and title
+- **What Was Tried** — every approach, command, code change with expected vs actual results. Include exact commands and output, not summaries.
+- **Root Cause** — your best understanding of why it failed, or "Unknown" with what was ruled out.
+- **Technical Errors** — exact error messages, compiler output, log snippets, QEMU output.
+- **Environment State** — what's installed/available vs missing, toolchain constraints.
+- **What Has NOT Been Tried** — approaches not yet attempted, potential paths forward.
+- **Blocking Dependencies** — upstream failed tasks, missing prerequisites.
+
+### Attempt progression rules
+
+- **Attempt 1**: implement normally, write failure report if stuck
+- **Attempt 2**: read the failure report from attempt 1, try a DIFFERENT approach
+- **Attempt 3**: read all previous reports, try a fundamentally different strategy
+
+### Audience
+
+Write the Failure Report for three audiences:
+1. **Reviewer** — creating fix-up tasks that try different approaches
+2. **Reassessment** — splitting tasks that are too large
+3. **Planner** — infinite-loop replanning that avoids all known failures
+
+### Rules
+
+- Include exact commands and output, not summaries
+- Each attempt preserves previous findings — append, don't overwrite
+- Write for all three audiences above
+- If you cannot determine root cause, say "Unknown" and list what you ruled out
+
+---
+
 ## Updating ARCHITECT.md — Persistent Project Intelligence
 
 ARCHITECT.md is The Architect's durable project brain. It is long-term project
@@ -410,3 +481,4 @@ was discovered, do not edit ARCHITECT.md.
 - If a task is partially done but blocked, set status to `Pending` and explain in Current State — do NOT output the promise tag
 - Stay inside the project directory — never read, write, or modify files outside the project root
 - **Never create task files** — you are an execution agent, not a planner. Creating `tasks/TXX_*.md`, `tasks/TXXA_*.md`, or `tasks/TXXRn_*.md` files will corrupt the task graph and block retrospective recovery. If downstream work is needed, record it in PROGRESS.md.
+- Write a detailed Failure Report in PROGRESS.md when the task cannot be completed — include what was tried, exact errors, root cause, environment state, and what has NOT been tried

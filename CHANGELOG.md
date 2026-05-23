@@ -11,8 +11,15 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ## [Unreleased]
 
+## [1.4.1] (build 10663) — 2026-05-23
+
+### Changed
+
+- Added Failure Report template and rules to execution.md prompt — agents now write structured failure reports (what was tried, errors, root cause, environment state, what hasn't been tried, blocking dependencies) in PROGRESS.md when tasks cannot be completed (build 10661)
+
 ### Fixed
 
+- TUI task status now reads actual status from PROGRESS.md as source of truth instead of relying on in-memory TaskStatus enum; "blocked" status now recognized with yellow color and HALF_OPEN circuit state; Notes column added to Tasks table showing Completed cell from PROGRESS.md (build 10662)
 - Cross-platform test fixes: path separator normalization for ARCHITECT.md assertions, POSIX env var syntax skipped on Windows, exit code 127 vs 1 handling, provider detection mocked in TUI cancel test (build 10658)
 
 ## [1.4.0] (build 10657) — 2026-05-23

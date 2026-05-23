@@ -723,7 +723,9 @@ class ExecutionScreen(Screen[None]):
             return
 
         table.clear(columns=True)
-        table.add_columns("Task", "Title", "Status", "Priority", "Tokens", "Model", "Circuit")
+        table.add_columns(
+            "Task", "Title", "Status", "Priority", "Tokens", "Model", "Circuit", "Notes"
+        )
 
         for task in tasks:
             prefix = task.get("prefix", "")
@@ -761,11 +763,23 @@ class ExecutionScreen(Screen[None]):
                 "done": "CLOSED",
                 "failed": "OPEN",
                 "skipped": "HALF_OPEN",
+                "blocked": "HALF_OPEN",
                 "pending": "CLOSED",
             }.get(status, "CLOSED")
 
+            notes = task.get("notes", "")
+            if not notes:
+                notes = "\u2014"
+
             table.add_row(
-                prefix, title, status.upper(), priority_str, tokens_str, model_short, circuit_str
+                prefix,
+                title,
+                status.upper(),
+                priority_str,
+                tokens_str,
+                model_short,
+                circuit_str,
+                notes,
             )
 
     def update_validation_gate(self, gate_result: object) -> None:
@@ -904,6 +918,7 @@ class ExecutionScreen(Screen[None]):
                     "done": "#7cc800",
                     "failed": "red",
                     "skipped": "dim",
+                    "blocked": "yellow",
                     "pending": "dim",
                 }.get(status, "dim")
                 marker = ">" if status == "running" else " "

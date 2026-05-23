@@ -3377,17 +3377,40 @@ async def _run_tasks_raw(
         _orig_on_circuit_event = on_circuit_event
         _orig_on_model_switched = on_model_switched
 
-        _tui_task_statuses: dict[str, str] = {
-            t.prefix: "done"
-            if t.status == TaskStatus.DONE
-            else "failed"
-            if t.status == TaskStatus.FAILED
-            else "pending"
-            for t in plan.tasks
-        }
+        _tui_task_statuses: dict[str, str] = {}
+        for t in plan.tasks:
+            # Read actual status from PROGRESS.md as source of truth.
+            # task_status() returns "Done", "Failed", "Blocked", "Skipped", "Pending"
+            # or None if the row is missing or unrecognised.
+            md_status = task_status(config.progress_file, t.prefix)
+            if md_status is not None:
+                # Map PROGRESS.md canonical status to TUI lowercase status.
+                _tui_task_statuses[t.prefix] = md_status.lower()
+            elif t.status == TaskStatus.DONE:
+                _tui_task_statuses[t.prefix] = "done"
+            elif t.status == TaskStatus.FAILED:
+                _tui_task_statuses[t.prefix] = "failed"
+            else:
+                _tui_task_statuses[t.prefix] = "pending"
         # Per-task details for the Tasks tab DataTable.
         # Populated by on_task_done / on_task_failed callbacks.
         _tui_task_details: dict[str, dict[str, str]] = {}
+
+        def _progress_completed_cell(progress_file: str | Path, prefix: str) -> str:
+            """Extract the Completed (fourth) cell from PROGRESS.md for a task."""
+            try:
+                content = Path(progress_file).read_text(encoding="utf-8")
+                pattern = re.compile(
+                    rf"^\|\s*{re.escape(prefix)}\s+\|[^|]*\|[^|]*\|([^|]*)\|",
+                    re.MULTILINE,
+                )
+                m = pattern.search(content)
+                if m:
+                    cell = m.group(1).strip()
+                    return cell if cell and cell != "\u2014" else ""
+            except Exception:
+                pass
+            return ""
 
         def _tui_progress_rows() -> list[dict[str, str]]:
             return [
@@ -3396,6 +3419,7 @@ async def _run_tasks_raw(
                     "title": t.title or t.name,
                     "status": _tui_task_statuses.get(t.prefix, "pending"),
                     "priority": t.priority or "medium",
+                    "notes": _progress_completed_cell(config.progress_file, t.prefix),
                     **_tui_task_details.get(t.prefix, {}),
                 }
                 for t in plan.tasks
@@ -3413,7 +3437,14 @@ async def _run_tasks_raw(
             """
             for prefix in added_prefixes:
                 if prefix not in _tui_task_statuses:
-                    _tui_task_statuses[prefix] = "pending"
+                    # Check PROGRESS.md first — a split or retro task may already
+                    # have a terminal status if it was created and completed in
+                    # a previous run within the same session.
+                    md_status = task_status(config.progress_file, prefix)
+                    if md_status is not None:
+                        _tui_task_statuses[prefix] = md_status.lower()
+                    else:
+                        _tui_task_statuses[prefix] = "pending"
             if added_prefixes:
                 _tui_publish_progress()
 
