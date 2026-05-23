@@ -243,6 +243,9 @@ class TestSavePreset:
         first = save_preset(tmp_path, "sprint", "v1", {"max_retries": 3})
         original_created = first.created_at
 
+        # Small delay to ensure different timestamps on Windows (lower clock resolution)
+        __import__("time").sleep(0.01)
+
         second = save_preset(tmp_path, "sprint", "v2", {"max_retries": 5})
         assert second.created_at == original_created
         assert second.updated_at != second.created_at

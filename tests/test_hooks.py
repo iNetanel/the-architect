@@ -378,7 +378,9 @@ class TestExecuteHook:
         result = await execute_hook(hook)
         expected_exit = 1 if sys.platform == "win32" else 127
         assert result.exit_code == expected_exit
-        assert "not found" in result.stderr.lower()
+        # POSIX: "not found"; Windows: "is not recognized"
+        if sys.platform != "win32":
+            assert "not found" in result.stderr.lower()
         assert result.error == ""
 
     @pytest.mark.asyncio
