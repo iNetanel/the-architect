@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from the_architect.core.tasks import task_sort_key
+from the_architect.core.tasks import priority_sort_key, task_sort_key
 
 if TYPE_CHECKING:
     from the_architect.core.tasks import Task, TaskPlan
@@ -229,8 +229,12 @@ class ParallelScheduler:
         - All prefixes in its ``depends_on`` list are in the scheduler's
           terminal set (completed or failed).
 
-        Tasks are returned in plan order (sorted by
-        :func:`the_architect.core.tasks.task_sort_key`).
+        Tasks are returned sorted by priority first (critical > high >
+        medium > low), then by plan order within the same priority
+        (sorted by :func:`the_architect.core.tasks.task_sort_key`).
+        This ensures critical tasks execute first when resources are
+        constrained, while preserving dependency ordering among equal
+        priority tasks.
 
         Returns:
             List of :class:`Task` objects that can be started immediately.
@@ -245,7 +249,7 @@ class ParallelScheduler:
             if all(dep in terminal for dep in deps):
                 ready.append(task)
 
-        ready.sort(key=task_sort_key)
+        ready.sort(key=lambda t: (priority_sort_key(t), task_sort_key(t)))
         return ready
 
     def get_next_batch(self, max_concurrency: int | None = None) -> list[Task]:

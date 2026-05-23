@@ -9,7 +9,49 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ---
 
-## [Unreleased]
+## [1.4.0] (build 10657) — 2026-05-23
+
+### What's New
+
+**Validation gate fix-up flow** — When a validation gate check fails (lint, test, typecheck), the system now attempts targeted fix-up runs using the provider agent instead of immediately marking the task as failed. A focused instruction (under 4KB) derived from the gate output tells the agent exactly what to fix. Configurable via `fixup_attempts` (default 2, persistent mode: 5, set to 0 to disable). The gate re-runs after each fix-up attempt; the task is only marked failed after all fix-up attempts are exhausted.
+
+**Conditional plan history** — The planning prompt no longer includes previous plan history (PROGRESS.md summary, leftover task files, archive sessions) for fresh planning. History is only included during replanning scenarios (infinite loop recovery, reassessment, retrospective), reducing prompt noise and token waste. ARCHITECT.md and the intelligence agent provide sufficient context for new goals.
+
+**Retrospective E2BIG prevention** — Baseline evidence in retrospective context is now capped to the 10 most recent baselines (sorted by modification time) with a 50KB total size limit. The file tree is capped at 2000 entries. This reduces the retrospective instruction from 1.86MB to ~73KB, preventing OS argument-list limit crashes.
+
+### Added
+
+**TUI diagnostic screens** — Three new standalone Textual screens: `architect doctor --tui` (project health diagnostics), `architect cost --tui` (cross-run cost analytics), and `architect deps --tui` (task dependency graph visualization). Each supports graceful degradation when data is unavailable.
+
+**Task priority system** — Tasks can declare `## Priority` (CRITICAL, HIGH, MEDIUM, LOW). The scheduler respects priority ordering (critical tasks first). TUI and CLI display color-coded priority indicators. Priority-aware parallel scheduling.
+
+**Lifecycle hooks** — `architect hooks` command for managing pre_run, post_task, post_run_success, post_run_failure hooks. Hooks fire automatically during execution. TUI shows hook configuration summary and execution events.
+
+**Per-task model assignment** — Tasks can declare `## Model` to use a specific model for execution. Model resolution priority: retry override > task model > standalone mode > provider default. TUI shows model routing summary.
+
+**Inter-task artifacts** — Tasks can declare artifacts (outputs) that downstream tasks consume. The runner captures and injects upstream artifacts into dependent task instructions.
+
+**Cost analytics** — `architect cost` command shows cross-run spending: total cost, per-model breakdown, top expensive tasks, daily trends. Supports date filters, model filters, and JSON output. Mode selection shows recent spending summary.
+
+**Resume verification** — Resuming an interrupted run automatically verifies completed tasks against captured baselines. Valid tasks (files unchanged) are skipped. Stale tasks (files changed) are re-executed.
+
+**CLI --json support** — `architect hooks`, `template`, `preset`, `retry`, `skip`, `cancel`, `reset`, `doctor` commands now support `--json` for machine-readable output and `--force`/`--yes` for non-interactive use.
+
+### Changed
+
+**ARCHITECT.md curation rules tightened** — Architect, reviewer, and intelligence prompts now enforce strict rules: only durable project intelligence that helps future unrelated sessions. Stale entries can be removed (replacing the old "append-only" rule). Section size budgets enforced (20KB total target).
+
+**Failure reporting injected dynamically** — Failure reports are now injected by the runner only on retry attempts instead of baked into the static execution prompt, eliminating per-task token overhead on successful first attempts.
+
+### Fixed
+
+**Cross-platform subprocess encoding** — All subprocess calls now use `encoding="utf-8"` instead of `text=True` (which defaults to the system code page on Windows). Defensive decoding with `errors="replace"` for git output.
+
+**TUI hardening** — Timer leak elimination across all screens, signal handler safety (SIGINT forced-kill, SIGCONT async-signal-safe), terminal escape sequence fixes for macOS, shutdown thread safety, responsive CSS for narrow terminals.
+
+**Execution screen input robustness** — Provider subprocess stdin/stderr always piped (never inherited), preventing TTY detection and terminal state corruption. Arrow keys, Tab, mouse all work during provider runs.
+
+**E2BIG root cause fix** — Instruction builders reference files by path instead of embedding contents inline, keeping instructions under a few KB everywhere.
 
 ---
 

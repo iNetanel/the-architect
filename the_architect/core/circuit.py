@@ -896,17 +896,10 @@ class CircuitBreaker:
 
         # ── Build the replan prompt ─────────────────────────────────────
         try:
-            task_content = task_file.read_text(encoding="utf-8")
+            task_file.read_text(encoding="utf-8")
         except OSError as exc:
             logger.error(f"Circuit replan: cannot read task file {task_file}: {exc!r}")
             return False
-
-        try:
-            progress_content = (
-                progress_file.read_text(encoding="utf-8") if progress_file.exists() else ""
-            )
-        except OSError:
-            progress_content = ""
 
         attempt_summary_text = (
             f"no_progress_count={state.consecutive_no_progress}, "
@@ -916,9 +909,8 @@ class CircuitBreaker:
 
         instruction = _build_replan_instruction(
             task_id=task_id,
-            task_content=task_content,
+            task_file_path=task_file,
             attempt_summary=attempt_summary_text,
-            progress_content=progress_content,
             project_root=self._project_root,
         )
 
@@ -1220,9 +1212,8 @@ class CircuitBreaker:
 
 def _build_replan_instruction(
     task_id: str,
-    task_content: str,
+    task_file_path: Path,
     attempt_summary: str,
-    progress_content: str,
     project_root: Path,
 ) -> str:
     """Build the instruction sent to the architect for a targeted replan.
@@ -1230,16 +1221,20 @@ def _build_replan_instruction(
     This is NOT a full re-plan of the project — it asks the architect to
     fix or split one specific failing task only.
 
+    Uses path references for large files (ARCHITECT.md, PROGRESS.md, task file)
+    to prevent E2BIG crashes. The provider AI CLI has file system access.
+
     Args:
         task_id: The failing task prefix.
-        task_content: Content of the original task file.
+        task_file_path: Path to the original task file.
         attempt_summary: Human-readable summary of what was tried.
-        progress_content: Current PROGRESS.md content for context.
         project_root: The project root directory.
 
     Returns:
         Instruction string for opencode run.
     """
+    architect_path = project_root / "ARCHITECT.md"
+    progress_path = project_root / "tasks" / "PROGRESS.md"
     lines = [
         f"PROJECT ROOT: {project_root}",
         "BOUNDARY: You MUST NOT read, write, or modify any file outside this project root.",
@@ -1250,14 +1245,12 @@ def _build_replan_instruction(
         "Your job is to FIX THIS ONE TASK ONLY — do NOT replan the entire project.",
         "Do NOT modify any other task files.",
         "",
-        "=== ORIGINAL TASK FILE CONTENT ===",
-        task_content,
+        f"Read {architect_path} for persistent project intelligence.",
+        f"Read {task_file_path} for the original task details.",
+        f"Read {progress_path} for current task progress.",
         "",
         "=== WHAT WAS TRIED AND WHAT WENT WRONG ===",
         attempt_summary,
-        "",
-        "=== CURRENT PROGRESS.MD ===",
-        progress_content[:3000] if progress_content else "(not available)",
         "",
         "=== YOUR INSTRUCTIONS ===",
         f"1. Analyse why task {task_id} is failing based on the attempt history above.",

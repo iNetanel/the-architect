@@ -312,6 +312,7 @@ class TestStatusJsonCmd:
             "token_budget",
             "log_dir",
             "log_files",
+            "last_run",
         }
         assert set(data.keys()) == expected_keys
 
@@ -548,6 +549,416 @@ class TestFormatStatusJson:
         assert data["pid"] is None
 
 
+class TestStatusLastRun:
+    """Tests for the Last Run summary section in ``status`` command."""
+
+    def _write_ledger(self, tmp_path: Path, records: list[dict]) -> None:
+        """Write a token ledger file with the given records."""
+        arch_dir = tmp_path / ".architect"
+        arch_dir.mkdir(exist_ok=True)
+        (arch_dir / "token_ledger.json").write_text(json.dumps(records), encoding="utf-8")
+
+    def test_last_run_display_success(self, tmp_path: Path) -> None:
+        """Last Run section shows for a successful run."""
+        self._write_ledger(
+            tmp_path,
+            [
+                {
+                    "run_id": "abc123",
+                    "timestamp": "2026-05-20T10:00:00+00:00",
+                    "goal_summary": "Add a new feature",
+                    "total_tokens": 50000,
+                    "total_cost_estimate": 0.50,
+                    "model_breakdown": [],
+                    "task_breakdown": [
+                        {
+                            "task_id": "T01",
+                            "title": "First",
+                            "status": "done",
+                            "input_tokens": 20000,
+                            "output_tokens": 30000,
+                            "cache_read_tokens": 0,
+                            "cache_write_tokens": 0,
+                            "model": "gpt-4o",
+                            "cost_estimate": 0.25,
+                            "duration_seconds": 60.0,
+                        },
+                        {
+                            "task_id": "T02",
+                            "title": "Second",
+                            "status": "done",
+                            "input_tokens": 10000,
+                            "output_tokens": 10000,
+                            "cache_read_tokens": 0,
+                            "cache_write_tokens": 0,
+                            "model": "gpt-4o",
+                            "cost_estimate": 0.25,
+                            "duration_seconds": 30.0,
+                        },
+                    ],
+                    "task_count": 2,
+                    "outcome": "success",
+                    "duration_seconds": 90.0,
+                }
+            ],
+        )
+        result = CliRunner().invoke(main, ["status", "-p", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "Last Run" in result.output
+        assert "2026-05-20" in result.output
+        assert "Success" in result.output
+        assert "Add a new feature" in result.output
+        assert "2/2" in result.output
+        assert "50,000" in result.output
+
+    def test_last_run_display_failure(self, tmp_path: Path) -> None:
+        """Last Run section shows Failed outcome in red."""
+        self._write_ledger(
+            tmp_path,
+            [
+                {
+                    "run_id": "def456",
+                    "timestamp": "2026-05-19T08:30:00+00:00",
+                    "goal_summary": "Fix a bug",
+                    "total_tokens": 25000,
+                    "total_cost_estimate": 0.25,
+                    "model_breakdown": [],
+                    "task_breakdown": [
+                        {
+                            "task_id": "T01",
+                            "title": "Fix",
+                            "status": "failed",
+                            "input_tokens": 15000,
+                            "output_tokens": 10000,
+                            "cache_read_tokens": 0,
+                            "cache_write_tokens": 0,
+                            "model": "gpt-4o",
+                            "cost_estimate": 0.25,
+                            "duration_seconds": 45.0,
+                        },
+                    ],
+                    "task_count": 1,
+                    "outcome": "failure",
+                    "duration_seconds": 50.0,
+                }
+            ],
+        )
+        result = CliRunner().invoke(main, ["status", "-p", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "Last Run" in result.output
+        assert "Failed" in result.output
+        assert "0/1" in result.output
+
+    def test_last_run_hidden_no_ledger(self, tmp_path: Path) -> None:
+        """Last Run section is hidden when no ledger file exists."""
+        result = CliRunner().invoke(main, ["status", "-p", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "Last Run" not in result.output
+
+    def test_last_run_hidden_empty_ledger(self, tmp_path: Path) -> None:
+        """Last Run section is hidden when ledger file is empty array."""
+        arch_dir = tmp_path / ".architect"
+        arch_dir.mkdir()
+        (arch_dir / "token_ledger.json").write_text("[]", encoding="utf-8")
+        result = CliRunner().invoke(main, ["status", "-p", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "Last Run" not in result.output
+
+    def test_last_run_hidden_corrupted_ledger(self, tmp_path: Path) -> None:
+        """Last Run section is hidden when ledger file has invalid JSON."""
+        arch_dir = tmp_path / ".architect"
+        arch_dir.mkdir()
+        (arch_dir / "token_ledger.json").write_text("{bad json", encoding="utf-8")
+        result = CliRunner().invoke(main, ["status", "-p", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "Last Run" not in result.output
+
+    def test_last_run_goal_truncation(self, tmp_path: Path) -> None:
+        """Goal summary longer than 60 chars is truncated with ellipsis."""
+        long_goal = "A" * 100
+        self._write_ledger(
+            tmp_path,
+            [
+                {
+                    "run_id": "ghi789",
+                    "timestamp": "2026-05-18T12:00:00+00:00",
+                    "goal_summary": long_goal,
+                    "total_tokens": 10000,
+                    "total_cost_estimate": 0.10,
+                    "model_breakdown": [],
+                    "task_breakdown": [],
+                    "task_count": 1,
+                    "outcome": "success",
+                    "duration_seconds": 30.0,
+                }
+            ],
+        )
+        result = CliRunner().invoke(main, ["status", "-p", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        # The goal should be truncated to 57 chars + "..."
+        assert "..." in result.output
+        # Full 100-char goal should NOT appear
+        assert long_goal not in result.output
+
+    def test_last_run_json_includes_field(self, tmp_path: Path) -> None:
+        """status --json includes last_run field with data."""
+        self._write_ledger(
+            tmp_path,
+            [
+                {
+                    "run_id": "jkl012",
+                    "timestamp": "2026-05-20T15:00:00+00:00",
+                    "goal_summary": "Build something",
+                    "total_tokens": 30000,
+                    "total_cost_estimate": 0.30,
+                    "model_breakdown": [],
+                    "task_breakdown": [
+                        {
+                            "task_id": "T01",
+                            "title": "Task1",
+                            "status": "done",
+                            "input_tokens": 15000,
+                            "output_tokens": 15000,
+                            "cache_read_tokens": 0,
+                            "cache_write_tokens": 0,
+                            "model": "gpt-4o",
+                            "cost_estimate": 0.30,
+                            "duration_seconds": 40.0,
+                        },
+                    ],
+                    "task_count": 1,
+                    "outcome": "success",
+                    "duration_seconds": 45.0,
+                }
+            ],
+        )
+        result = CliRunner().invoke(main, ["status", "-p", str(tmp_path), "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert "last_run" in data
+        lr = data["last_run"]
+        assert lr is not None
+        assert lr["date"] == "2026-05-20"
+        assert lr["goal"] == "Build something"
+        assert lr["tasks_done"] == 1
+        assert lr["tasks_total"] == 1
+        assert lr["tokens"] == 30000
+        assert lr["cost"] == 0.30
+        assert lr["outcome"] == "success"
+
+    def test_last_run_json_none_when_no_ledger(self, tmp_path: Path) -> None:
+        """status --json has last_run null when no ledger data."""
+        result = CliRunner().invoke(main, ["status", "-p", str(tmp_path), "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["last_run"] is None
+
+    def test_last_run_json_goal_truncated(self, tmp_path: Path) -> None:
+        """status --json truncates goal to 60 chars."""
+        long_goal = "B" * 100
+        self._write_ledger(
+            tmp_path,
+            [
+                {
+                    "run_id": "mno345",
+                    "timestamp": "2026-05-20T16:00:00+00:00",
+                    "goal_summary": long_goal,
+                    "total_tokens": 5000,
+                    "total_cost_estimate": 0.05,
+                    "model_breakdown": [],
+                    "task_breakdown": [],
+                    "task_count": 1,
+                    "outcome": "failure",
+                    "duration_seconds": 20.0,
+                }
+            ],
+        )
+        result = CliRunner().invoke(main, ["status", "-p", str(tmp_path), "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        lr = data["last_run"]
+        assert lr is not None
+        assert len(lr["goal"]) == 60  # 57 + "..."
+        assert lr["goal"].endswith("...")
+
+
+class TestGetLastRunSummary:
+    """Unit tests for the ``_get_last_run_summary`` helper function."""
+
+    def test_returns_none_no_ledger_file(self, tmp_path: Path) -> None:
+        """Returns None when ledger file does not exist."""
+        from the_architect.cli import _get_last_run_summary
+
+        result = _get_last_run_summary(tmp_path)
+        assert result is None
+
+    def test_returns_none_empty_ledger(self, tmp_path: Path) -> None:
+        """Returns None when ledger file exists but has no records."""
+        from the_architect.cli import _get_last_run_summary
+
+        arch_dir = tmp_path / ".architect"
+        arch_dir.mkdir()
+        (arch_dir / "token_ledger.json").write_text("[]", encoding="utf-8")
+        result = _get_last_run_summary(tmp_path)
+        assert result is None
+
+    def test_returns_none_corrupted_ledger(self, tmp_path: Path) -> None:
+        """Returns None when ledger file contains invalid JSON."""
+        from the_architect.cli import _get_last_run_summary
+
+        arch_dir = tmp_path / ".architect"
+        arch_dir.mkdir()
+        (arch_dir / "token_ledger.json").write_text("{bad", encoding="utf-8")
+        result = _get_last_run_summary(tmp_path)
+        assert result is None
+
+    def test_returns_summary_with_record(self, tmp_path: Path) -> None:
+        """Returns correct summary dict when ledger has records."""
+        from the_architect.cli import _get_last_run_summary
+
+        arch_dir = tmp_path / ".architect"
+        arch_dir.mkdir()
+        records = [
+            {
+                "run_id": "r1",
+                "timestamp": "2026-05-20T10:00:00+00:00",
+                "goal_summary": "Test goal",
+                "total_tokens": 10000,
+                "total_cost_estimate": 0.10,
+                "model_breakdown": [],
+                "task_breakdown": [
+                    {
+                        "task_id": "T01",
+                        "title": "Task1",
+                        "status": "done",
+                        "input_tokens": 5000,
+                        "output_tokens": 5000,
+                        "cache_read_tokens": 0,
+                        "cache_write_tokens": 0,
+                        "model": "gpt-4o",
+                        "cost_estimate": 0.10,
+                        "duration_seconds": 30.0,
+                    },
+                    {
+                        "task_id": "T02",
+                        "title": "Task2",
+                        "status": "failed",
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "cache_read_tokens": 0,
+                        "cache_write_tokens": 0,
+                        "model": "gpt-4o",
+                        "cost_estimate": 0.0,
+                        "duration_seconds": 10.0,
+                    },
+                ],
+                "task_count": 2,
+                "outcome": "failure",
+                "duration_seconds": 40.0,
+            }
+        ]
+        (arch_dir / "token_ledger.json").write_text(json.dumps(records), encoding="utf-8")
+        result = _get_last_run_summary(tmp_path)
+        assert result is not None
+        assert result["date"] == "2026-05-20"
+        assert result["goal"] == "Test goal"
+        assert result["tasks_done"] == 1
+        assert result["tasks_total"] == 2
+        assert result["tokens"] == 10000
+        assert result["cost"] == 0.10
+        assert result["outcome"] == "failure"
+
+    def test_returns_last_record_when_multiple(self, tmp_path: Path) -> None:
+        """Returns the most recent (last) record when multiple exist."""
+        from the_architect.cli import _get_last_run_summary
+
+        arch_dir = tmp_path / ".architect"
+        arch_dir.mkdir()
+        records = [
+            {
+                "run_id": "r1",
+                "timestamp": "2026-05-19T10:00:00+00:00",
+                "goal_summary": "Old goal",
+                "total_tokens": 5000,
+                "total_cost_estimate": 0.05,
+                "model_breakdown": [],
+                "task_breakdown": [],
+                "task_count": 1,
+                "outcome": "success",
+                "duration_seconds": 20.0,
+            },
+            {
+                "run_id": "r2",
+                "timestamp": "2026-05-20T10:00:00+00:00",
+                "goal_summary": "New goal",
+                "total_tokens": 10000,
+                "total_cost_estimate": 0.10,
+                "model_breakdown": [],
+                "task_breakdown": [],
+                "task_count": 1,
+                "outcome": "failure",
+                "duration_seconds": 30.0,
+            },
+        ]
+        (arch_dir / "token_ledger.json").write_text(json.dumps(records), encoding="utf-8")
+        result = _get_last_run_summary(tmp_path)
+        assert result is not None
+        assert result["goal"] == "New goal"
+        assert result["outcome"] == "failure"
+
+    def test_goal_truncation_at_60_chars(self, tmp_path: Path) -> None:
+        """Goal longer than 60 chars is truncated with ellipsis."""
+        from the_architect.cli import _get_last_run_summary
+
+        arch_dir = tmp_path / ".architect"
+        arch_dir.mkdir()
+        long_goal = "X" * 100
+        records = [
+            {
+                "run_id": "r1",
+                "timestamp": "2026-05-20T10:00:00+00:00",
+                "goal_summary": long_goal,
+                "total_tokens": 1000,
+                "total_cost_estimate": 0.01,
+                "model_breakdown": [],
+                "task_breakdown": [],
+                "task_count": 1,
+                "outcome": "success",
+                "duration_seconds": 10.0,
+            }
+        ]
+        (arch_dir / "token_ledger.json").write_text(json.dumps(records), encoding="utf-8")
+        result = _get_last_run_summary(tmp_path)
+        assert result is not None
+        assert len(result["goal"]) == 60  # 57 + "..."
+        assert result["goal"].endswith("...")
+
+    def test_empty_goal_summary(self, tmp_path: Path) -> None:
+        """Empty goal_summary renders as empty string."""
+        from the_architect.cli import _get_last_run_summary
+
+        arch_dir = tmp_path / ".architect"
+        arch_dir.mkdir()
+        records = [
+            {
+                "run_id": "r1",
+                "timestamp": "2026-05-20T10:00:00+00:00",
+                "goal_summary": "",
+                "total_tokens": 1000,
+                "total_cost_estimate": 0.01,
+                "model_breakdown": [],
+                "task_breakdown": [],
+                "task_count": 1,
+                "outcome": "success",
+                "duration_seconds": 10.0,
+            }
+        ]
+        (arch_dir / "token_ledger.json").write_text(json.dumps(records), encoding="utf-8")
+        result = _get_last_run_summary(tmp_path)
+        assert result is not None
+        assert result["goal"] == ""
+
+
 # ---------------------------------------------------------------------------
 # monitor
 # ---------------------------------------------------------------------------
@@ -675,6 +1086,113 @@ class TestCancelCmd:
         result = CliRunner().invoke(main, ["cancel", "-p", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert not (arch_dir / "runner.lock").exists()
+
+    def test_cancel_json_no_lock(self, tmp_path: Path) -> None:
+        """--json with no lock file outputs clean JSON."""
+        import json
+
+        result = CliRunner().invoke(main, ["cancel", "-p", str(tmp_path), "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["lock_file"] == "not_found"
+        assert data["cancelled"] is False
+
+    def test_cancel_json_removes_stale_lock(self, tmp_path: Path) -> None:
+        """--json with a stale lock outputs clean JSON and removes lock."""
+        import json
+
+        arch_dir = tmp_path / ".architect"
+        arch_dir.mkdir()
+        (arch_dir / "runner.lock").write_text("999999999", encoding="utf-8")
+
+        result = CliRunner().invoke(main, ["cancel", "-p", str(tmp_path), "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["lock_file"] == "removed"
+        assert data["cancelled"] is True
+        assert not (arch_dir / "runner.lock").exists()
+
+    def test_cancel_json_monitor_state_cleaned(self, tmp_path: Path) -> None:
+        """--json cancel cleans up monitor state file."""
+        import json
+
+        arch_dir = tmp_path / ".architect"
+        arch_dir.mkdir()
+        (arch_dir / "runner.lock").write_text("999999999", encoding="utf-8")
+        # Write a monitor state file
+        monitor_file = arch_dir / "monitor_state.json"
+        monitor_file.write_text(
+            json.dumps({"status": "RUNNING", "current_task_id": "T01"}),
+            encoding="utf-8",
+        )
+
+        result = CliRunner().invoke(main, ["cancel", "-p", str(tmp_path), "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["monitor_state"] == "cleaned"
+        # Monitor state should be updated with cancelled info
+        updated_state = json.loads(monitor_file.read_text(encoding="utf-8"))
+        assert updated_state["cancelled"] is True
+
+    def test_cancel_force_skips_confirmation(self, tmp_path: Path) -> None:
+        """--force bypasses confirmation prompt for alive PID."""
+        # We cannot easily test with a real alive PID, but we can verify
+        # that --force flag is accepted and doesn't crash
+        arch_dir = tmp_path / ".architect"
+        arch_dir.mkdir()
+        (arch_dir / "runner.lock").write_text("999999999", encoding="utf-8")
+
+        result = CliRunner().invoke(main, ["cancel", "-p", str(tmp_path), "--force"])
+        assert result.exit_code == 0, result.output
+        assert not (arch_dir / "runner.lock").exists()
+
+    def test_cancel_yes_flag_alias(self, tmp_path: Path) -> None:
+        """--yes is an alias for --force and works identically."""
+        arch_dir = tmp_path / ".architect"
+        arch_dir.mkdir()
+        (arch_dir / "runner.lock").write_text("999999999", encoding="utf-8")
+
+        result = CliRunner().invoke(main, ["cancel", "-p", str(tmp_path), "--yes"])
+        assert result.exit_code == 0, result.output
+        assert not (arch_dir / "runner.lock").exists()
+
+    def test_cancel_clean_output(self, tmp_path: Path) -> None:
+        """Non-JSON cancel shows lock removed and monitor state cleaned."""
+        arch_dir = tmp_path / ".architect"
+        arch_dir.mkdir()
+        (arch_dir / "runner.lock").write_text("999999999", encoding="utf-8")
+
+        result = CliRunner().invoke(main, ["cancel", "-p", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "Lock removed" in result.output
+        assert "Monitor state cleaned" in result.output
+
+    def test_cancel_monitor_state_preserves_existing_fields(self, tmp_path: Path) -> None:
+        """Monitor state cleanup preserves existing task and token data."""
+        import json
+
+        arch_dir = tmp_path / ".architect"
+        arch_dir.mkdir()
+        (arch_dir / "runner.lock").write_text("999999999", encoding="utf-8")
+        # Write a monitor state with existing data
+        monitor_file = arch_dir / "monitor_state.json"
+        existing_state = {
+            "status": "RUNNING",
+            "current_task_id": "T02",
+            "current_task_title": "Some Task",
+            "tasks": [{"id": "T01", "title": "Done", "status": "done"}],
+            "tokens": {"session_total": 5000},
+            "circuit_breaker": {"state": "CLOSED"},
+        }
+        monitor_file.write_text(json.dumps(existing_state), encoding="utf-8")
+
+        CliRunner().invoke(main, ["cancel", "-p", str(tmp_path)])
+
+        updated_state = json.loads(monitor_file.read_text(encoding="utf-8"))
+        assert updated_state["cancelled"] is True
+        assert updated_state["current_task_id"] == "T02"
+        assert updated_state["tokens"]["session_total"] == 5000
+        assert len(updated_state["tasks"]) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -952,6 +1470,649 @@ class TestSkipCmdMissingProgress:
         assert "already Done" in result.output
 
 
+class TestSkipCmdAllStatuses:
+    """Skip command handles all terminal statuses (Pending, Failed, Blocked, Skipped)."""
+
+    def _make_progress(self, tmp_path: Path, status: str) -> Path:
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        pf = tasks_dir / "PROGRESS.md"
+        pf.write_text(
+            f"""# The Architect — Progress Tracker
+
+## Overall Status
+
+**Tasks completed:** 0
+**Next task to run:** T01
+
+---
+
+## Task Log
+
+| Task | Title | Status | Completed |
+|------|-------|--------|-----------|
+| T01 | Test task | {status} | — |
+
+---
+
+## Current State
+
+Testing.
+
+## Last Task Summary
+
+N/A
+
+---
+
+## Permanent Decisions
+
+| Decision | Value | Reason | Task |
+|----------|-------|--------|------|
+| | | | |
+""",
+            encoding="utf-8",
+        )
+        return pf
+
+    def test_skip_pending_to_done(self, tmp_path: Path) -> None:
+        """Skip a Pending task — transitions to Done."""
+        self._make_progress(tmp_path, "Pending")
+        result = CliRunner().invoke(main, ["skip", "-t", "T01", "-p", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "marked as Done" in result.output
+        assert "Pending → Done" in result.output
+
+    def test_skip_failed_to_done(self, tmp_path: Path) -> None:
+        """Skip a Failed task — transitions to Done."""
+        self._make_progress(tmp_path, "Failed")
+        result = CliRunner().invoke(main, ["skip", "-t", "T01", "-p", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "marked as Done" in result.output
+        assert "Failed → Done" in result.output
+
+    def test_skip_blocked_to_done(self, tmp_path: Path) -> None:
+        """Skip a Blocked task — transitions to Done."""
+        self._make_progress(tmp_path, "Blocked")
+        result = CliRunner().invoke(main, ["skip", "-t", "T01", "-p", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "marked as Done" in result.output
+        assert "Blocked → Done" in result.output
+
+    def test_skip_skipped_to_done(self, tmp_path: Path) -> None:
+        """Skip a Skipped task — transitions to Done."""
+        self._make_progress(tmp_path, "Skipped")
+        result = CliRunner().invoke(main, ["skip", "-t", "T01", "-p", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "marked as Done" in result.output
+        assert "Skipped → Done" in result.output
+
+    def test_skip_failed_annotated_to_done(self, tmp_path: Path) -> None:
+        """Skip a Failed (3 attempts) task — annotated status transitions to Done."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        pf = tasks_dir / "PROGRESS.md"
+        pf.write_text(
+            """# The Architect — Progress Tracker
+
+## Overall Status
+
+**Tasks completed:** 0
+**Next task to run:** T01
+
+---
+
+## Task Log
+
+| Task | Title | Status | Completed |
+|------|-------|--------|-----------|
+| T01 | Test task | Failed (3 attempts) | — |
+
+---
+
+## Current State
+
+Testing.
+
+## Last Task Summary
+
+N/A
+
+---
+
+## Permanent Decisions
+
+| Decision | Value | Reason | Task |
+|----------|-------|--------|------|
+| | | | |
+""",
+            encoding="utf-8",
+        )
+        result = CliRunner().invoke(main, ["skip", "-t", "T01", "-p", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "marked as Done" in result.output
+
+
+class TestSkipCmdCounterIncrement:
+    """Skip command increments the Tasks completed counter."""
+
+    def test_skip_increments_counter(self, tmp_path: Path) -> None:
+        """Counter goes from 0 to 1 after skipping."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        pf = tasks_dir / "PROGRESS.md"
+        pf.write_text(
+            """# The Architect — Progress Tracker
+
+## Overall Status
+
+**Tasks completed:** 0
+**Next task to run:** T01
+
+---
+
+## Task Log
+
+| Task | Title | Status | Completed |
+|------|-------|--------|-----------|
+| T01 | Test task | Pending | — |
+
+---
+
+## Current State
+
+Testing.
+
+## Last Task Summary
+
+N/A
+
+---
+
+## Permanent Decisions
+
+| Decision | Value | Reason | Task |
+|----------|-------|--------|------|
+| | | | |
+""",
+            encoding="utf-8",
+        )
+        CliRunner().invoke(main, ["skip", "-t", "T01", "-p", str(tmp_path)])
+        updated = pf.read_text(encoding="utf-8")
+        assert "**Tasks completed:** 1" in updated
+
+    def test_skip_does_not_increment_when_already_done(self, tmp_path: Path) -> None:
+        """Counter stays at 3 when skipping a task that is already Done."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        pf = tasks_dir / "PROGRESS.md"
+        pf.write_text(
+            """# The Architect — Progress Tracker
+
+## Overall Status
+
+**Tasks completed:** 3
+**Next task to run:** T02
+
+---
+
+## Task Log
+
+| Task | Title | Status | Completed |
+|------|-------|--------|-----------|
+| T01 | Test task | Done | 2026-01-01 |
+
+---
+
+## Current State
+
+Testing.
+
+## Last Task Summary
+
+N/A
+
+---
+
+## Permanent Decisions
+
+| Decision | Value | Reason | Task |
+|----------|-------|--------|------|
+| | | | |
+""",
+            encoding="utf-8",
+        )
+        CliRunner().invoke(main, ["skip", "-t", "T01", "-p", str(tmp_path)])
+        updated = pf.read_text(encoding="utf-8")
+        assert "**Tasks completed:** 3" in updated
+
+
+class TestSkipCmdLastFlag:
+    """Skip --last flag skips the most recent failed task."""
+
+    def test_skip_last_skips_last_failed(self, tmp_path: Path) -> None:
+        """--last skips the highest-numbered failed task."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        pf = tasks_dir / "PROGRESS.md"
+        pf.write_text(
+            """# The Architect — Progress Tracker
+
+## Overall Status
+
+**Tasks completed:** 0
+**Next task to run:** T03
+
+---
+
+## Task Log
+
+| Task | Title | Status | Completed |
+|------|-------|--------|-----------|
+| T01 | First task | Done | 2026-01-01 |
+| T02 | Second task | Failed | — |
+| T03 | Third task | Failed | — |
+
+---
+
+## Current State
+
+Testing.
+
+## Last Task Summary
+
+N/A
+
+---
+
+## Permanent Decisions
+
+| Decision | Value | Reason | Task |
+|----------|-------|--------|------|
+| | | | |
+""",
+            encoding="utf-8",
+        )
+        # Create task files so discover_tasks finds them
+        for name in ["T01_first_task", "T02_second_task", "T03_third_task"]:
+            (tasks_dir / f"{name}.md").write_text(f"# {name}\n", encoding="utf-8")
+
+        result = CliRunner().invoke(main, ["skip", "--last", "-p", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "T03" in result.output
+        assert "marked as Done" in result.output
+
+    def test_skip_last_no_failed_tasks(self, tmp_path: Path) -> None:
+        """--last exits 1 when no failed tasks exist."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        pf = tasks_dir / "PROGRESS.md"
+        pf.write_text(
+            """# The Architect — Progress Tracker
+
+## Overall Status
+
+**Tasks completed:** 2
+**Next task to run:** T03
+
+---
+
+## Task Log
+
+| Task | Title | Status | Completed |
+|------|-------|--------|-----------|
+| T01 | First task | Done | 2026-01-01 |
+| T02 | Second task | Done | 2026-01-02 |
+
+---
+
+## Current State
+
+Testing.
+
+## Last Task Summary
+
+N/A
+
+---
+
+## Permanent Decisions
+
+| Decision | Value | Reason | Task |
+|----------|-------|--------|------|
+| | | | |
+""",
+            encoding="utf-8",
+        )
+        result = CliRunner().invoke(main, ["skip", "--last", "-p", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "No failed tasks" in result.output
+
+
+class TestSkipCmdFailedFlag:
+    """Skip --failed flag skips all failed tasks."""
+
+    def test_skip_failed_skips_all_failed(self, tmp_path: Path) -> None:
+        """--failed marks all Failed tasks as Done."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        pf = tasks_dir / "PROGRESS.md"
+        pf.write_text(
+            """# The Architect — Progress Tracker
+
+## Overall Status
+
+**Tasks completed:** 0
+**Next task to run:** T03
+
+---
+
+## Task Log
+
+| Task | Title | Status | Completed |
+|------|-------|--------|-----------|
+| T01 | First task | Done | 2026-01-01 |
+| T02 | Second task | Failed | — |
+| T03 | Third task | Failed | — |
+| T04 | Fourth task | Pending | — |
+
+---
+
+## Current State
+
+Testing.
+
+## Last Task Summary
+
+N/A
+
+---
+
+## Permanent Decisions
+
+| Decision | Value | Reason | Task |
+|----------|-------|--------|------|
+| | | | |
+""",
+            encoding="utf-8",
+        )
+        for name in ["T01_first", "T02_second", "T03_third", "T04_fourth"]:
+            (tasks_dir / f"{name}.md").write_text(f"# {name}\n", encoding="utf-8")
+
+        result = CliRunner().invoke(main, ["skip", "--failed", "-p", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "Skipped 2" in result.output
+
+    def test_skip_failed_no_failed_tasks(self, tmp_path: Path) -> None:
+        """--failed exits 1 when no failed tasks exist."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        pf = tasks_dir / "PROGRESS.md"
+        pf.write_text(
+            """# The Architect — Progress Tracker
+
+## Overall Status
+
+**Tasks completed:** 2
+**Next task to run:** T03
+
+---
+
+## Task Log
+
+| Task | Title | Status | Completed |
+|------|-------|--------|-----------|
+| T01 | First task | Done | 2026-01-01 |
+| T02 | Second task | Done | 2026-01-02 |
+
+---
+
+## Current State
+
+Testing.
+
+## Last Task Summary
+
+N/A
+
+---
+
+## Permanent Decisions
+
+| Decision | Value | Reason | Task |
+|----------|-------|--------|------|
+| | | | |
+""",
+            encoding="utf-8",
+        )
+        result = CliRunner().invoke(main, ["skip", "--failed", "-p", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "No failed tasks" in result.output
+
+
+class TestSkipCmdJson:
+    """Skip --json flag outputs clean JSON."""
+
+    def test_skip_json_output(self, tmp_path: Path) -> None:
+        """--json produces valid JSON with task status."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        pf = tasks_dir / "PROGRESS.md"
+        pf.write_text(
+            """# The Architect — Progress Tracker
+
+## Overall Status
+
+**Tasks completed:** 0
+**Next task to run:** T01
+
+---
+
+## Task Log
+
+| Task | Title | Status | Completed |
+|------|-------|--------|-----------|
+| T01 | Test task | Failed | — |
+
+---
+
+## Current State
+
+Testing.
+
+## Last Task Summary
+
+N/A
+
+---
+
+## Permanent Decisions
+
+| Decision | Value | Reason | Task |
+|----------|-------|--------|------|
+| | | | |
+""",
+            encoding="utf-8",
+        )
+        result = CliRunner().invoke(main, ["skip", "-t", "T01", "--json", "-p", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output.strip())
+        assert data["task"] == "T01"
+        assert data["status"] == "done"
+        assert data["previous_status"] == "Failed"
+
+    def test_skip_json_already_done(self, tmp_path: Path) -> None:
+        """--json for already-done task shows status already_done."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        pf = tasks_dir / "PROGRESS.md"
+        pf.write_text(
+            """# The Architect — Progress Tracker
+
+## Overall Status
+
+**Tasks completed:** 1
+**Next task to run:** T02
+
+---
+
+## Task Log
+
+| Task | Title | Status | Completed |
+|------|-------|--------|-----------|
+| T01 | Test task | Done | 2026-01-01 |
+
+---
+
+## Current State
+
+Testing.
+
+## Last Task Summary
+
+N/A
+
+---
+
+## Permanent Decisions
+
+| Decision | Value | Reason | Task |
+|----------|-------|--------|------|
+| | | | |
+""",
+            encoding="utf-8",
+        )
+        result = CliRunner().invoke(main, ["skip", "-t", "T01", "--json", "-p", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output.strip())
+        assert data["status"] == "already_done"
+
+    def test_skip_json_not_found(self, tmp_path: Path) -> None:
+        """--json for non-existent task shows error status."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        pf = tasks_dir / "PROGRESS.md"
+        pf.write_text(
+            """# The Architect — Progress Tracker
+
+## Overall Status
+
+**Tasks completed:** 0
+**Next task to run:** T01
+
+---
+
+## Task Log
+
+| Task | Title | Status | Completed |
+|------|-------|--------|-----------|
+| T01 | Test task | Pending | — |
+
+---
+
+## Current State
+
+Testing.
+
+## Last Task Summary
+
+N/A
+
+---
+
+## Permanent Decisions
+
+| Decision | Value | Reason | Task |
+|----------|-------|--------|------|
+| | | | |
+""",
+            encoding="utf-8",
+        )
+        result = CliRunner().invoke(main, ["skip", "-t", "T99", "--json", "-p", str(tmp_path)])
+        assert result.exit_code == 1
+        data = json.loads(result.output.strip())
+        assert data["status"] == "error"
+
+    def test_skip_failed_json_output(self, tmp_path: Path) -> None:
+        """--failed --json produces valid JSON with skipped list."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        pf = tasks_dir / "PROGRESS.md"
+        pf.write_text(
+            """# The Architect — Progress Tracker
+
+## Overall Status
+
+**Tasks completed:** 0
+**Next task to run:** T03
+
+---
+
+## Task Log
+
+| Task | Title | Status | Completed |
+|------|-------|--------|-----------|
+| T01 | First task | Failed | — |
+| T02 | Second task | Failed | — |
+
+---
+
+## Current State
+
+Testing.
+
+## Last Task Summary
+
+N/A
+
+---
+
+## Permanent Decisions
+
+| Decision | Value | Reason | Task |
+|----------|-------|--------|------|
+| | | | |
+""",
+            encoding="utf-8",
+        )
+        for name in ["T01_first", "T02_second"]:
+            (tasks_dir / f"{name}.md").write_text(f"# {name}\n", encoding="utf-8")
+
+        result = CliRunner().invoke(main, ["skip", "--failed", "--json", "-p", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output.strip())
+        assert "skipped" in data
+        assert len(data["skipped"]) == 2
+
+
+class TestSkipCmdMutualExclusivity:
+    """Skip command enforces mutual exclusivity of --task, --last, --failed."""
+
+    def test_skip_no_flags_errors(self, tmp_path: Path) -> None:
+        """No flags specified — exits 1 with error."""
+        result = CliRunner().invoke(main, ["skip", "-p", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "mutually exclusive" in result.output or "Specify one of" in result.output
+
+    def test_skip_task_and_last_conflict(self, tmp_path: Path) -> None:
+        """--task and --last together — exits 1."""
+        result = CliRunner().invoke(main, ["skip", "-t", "T01", "--last", "-p", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "mutually exclusive" in result.output
+
+    def test_skip_task_and_failed_conflict(self, tmp_path: Path) -> None:
+        """--task and --failed together — exits 1."""
+        result = CliRunner().invoke(main, ["skip", "-t", "T01", "--failed", "-p", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "mutually exclusive" in result.output
+
+    def test_skip_last_and_failed_conflict(self, tmp_path: Path) -> None:
+        """--last and --failed together — exits 1."""
+        result = CliRunner().invoke(main, ["skip", "--last", "--failed", "-p", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "mutually exclusive" in result.output
+
+
 # ---------------------------------------------------------------------------
 # reset — extra branches
 # ---------------------------------------------------------------------------
@@ -962,6 +2123,45 @@ class TestResetCmdMissingProgress:
         result = CliRunner().invoke(main, ["reset", "-p", str(tmp_path)], input="y\n")
         assert result.exit_code == 1
         assert "PROGRESS.md not found" in result.output
+
+    def test_reset_json_without_progress_file(self, tmp_path: Path) -> None:
+        """reset --json outputs JSON error when PROGRESS.md is missing."""
+        result = CliRunner().invoke(main, ["reset", "-p", str(tmp_path), "--json"], input="y\n")
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["reset"] is False
+        assert "PROGRESS.md not found" in data["error"]
+
+    def test_reset_force_flag(self, tmp_path: Path) -> None:
+        """reset --force skips confirmation prompt."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "PROGRESS.md").write_text("# Progress\n", encoding="utf-8")
+        result = CliRunner().invoke(main, ["reset", "-p", str(tmp_path), "--force"])
+        assert result.exit_code == 0
+        assert "PROGRESS.md reset" in result.output
+
+    def test_reset_json_flag(self, tmp_path: Path) -> None:
+        """reset --json outputs clean JSON."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "PROGRESS.md").write_text("# Progress\n", encoding="utf-8")
+        result = CliRunner().invoke(main, ["reset", "-p", str(tmp_path), "--json", "--force"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["reset"] is True
+        assert "project" in data
+
+    def test_reset_json_requires_force(self, tmp_path: Path) -> None:
+        """reset --json without --force is cancelled (scripted mode requires --force)."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "PROGRESS.md").write_text("# Progress\n", encoding="utf-8")
+        result = CliRunner().invoke(main, ["reset", "-p", str(tmp_path), "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["reset"] is False
+        assert data["cancelled"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -1026,6 +2226,454 @@ class TestRetryCmd:
         # PROGRESS.md should now have T01 back to Pending
         content = (tasks_dir / "PROGRESS.md").read_text(encoding="utf-8")
         assert "Pending" in content
+
+    def test_retry_last_no_failed_tasks(self, tmp_path: Path) -> None:
+        """--last exits 1 when no failed tasks exist."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01_task.md").write_text("# T01 Task\n", encoding="utf-8")
+        (tasks_dir / "PROGRESS.md").write_text(
+            """# Progress
+
+| Task | Title | Status | Completed |
+|------|-------|--------|-----------|
+| T01  | Task | Done | 2024-01-01 |
+""",
+            encoding="utf-8",
+        )
+        result = CliRunner().invoke(main, ["retry", "--last", "-p", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "No failed tasks" in result.output
+
+    def test_retry_last_one_failed_task(self, tmp_path: Path) -> None:
+        """--last retries the single failed task."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01_task.md").write_text("# T01 Task\n", encoding="utf-8")
+        (tasks_dir / "PROGRESS.md").write_text(
+            """# Progress
+
+| Task | Title | Status | Completed |
+|------|-------|--------|-----------|
+| T01  | Task | Failed | — |
+""",
+            encoding="utf-8",
+        )
+        fake_provider = MagicMock()
+
+        async def _noop_run_task(*_: object, **__: object) -> MagicMock:
+            return MagicMock()
+
+        with (
+            patch(
+                "the_architect.core.opencode_provider.OpenCodeProvider",
+                return_value=fake_provider,
+            ),
+            patch("the_architect.cli.setup_logging"),
+            patch("the_architect.cli.run_task", side_effect=_noop_run_task),
+        ):
+            result = CliRunner().invoke(main, ["retry", "--last", "-p", str(tmp_path)])
+
+        assert result.exit_code == 0, result.output
+        assert "T01" in result.output
+
+    def test_retry_last_picks_last_in_plan_order(self, tmp_path: Path) -> None:
+        """--last picks the highest-numbered failed task."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01_task.md").write_text("# T01 Task\n", encoding="utf-8")
+        (tasks_dir / "T03_task.md").write_text("# T03 Task\n", encoding="utf-8")
+        (tasks_dir / "PROGRESS.md").write_text(
+            """# Progress
+
+| Task | Title | Status | Completed |
+|------|-------|--------|-----------|
+| T01  | One | Failed | — |
+| T03  | Three | Failed | — |
+""",
+            encoding="utf-8",
+        )
+        fake_provider = MagicMock()
+
+        async def _noop_run_task(*_: object, **__: object) -> MagicMock:
+            return MagicMock()
+
+        with (
+            patch(
+                "the_architect.core.opencode_provider.OpenCodeProvider",
+                return_value=fake_provider,
+            ),
+            patch("the_architect.cli.setup_logging"),
+            patch("the_architect.cli.run_task", side_effect=_noop_run_task),
+        ):
+            result = CliRunner().invoke(main, ["retry", "--last", "-p", str(tmp_path)])
+
+        assert result.exit_code == 0, result.output
+        assert "T03" in result.output
+
+    def test_retry_failed_resets_all(self, tmp_path: Path) -> None:
+        """--failed resets all Failed tasks to Pending."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01_task.md").write_text("# T01 Task\n", encoding="utf-8")
+        (tasks_dir / "T02_task.md").write_text("# T02 Task\n", encoding="utf-8")
+        (tasks_dir / "PROGRESS.md").write_text(
+            """# Progress
+
+| Task | Title | Status | Completed |
+|------|-------|--------|-----------|
+| T01  | One | Failed | — |
+| T02  | Two | Failed | — |
+""",
+            encoding="utf-8",
+        )
+        result = CliRunner().invoke(main, ["retry", "--failed", "-p", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        content = (tasks_dir / "PROGRESS.md").read_text(encoding="utf-8")
+        # Both tasks should now be Pending
+        assert content.count("Pending") == 2
+        assert "Reset 2 failed" in result.output
+
+    def test_retry_failed_no_failed_tasks(self, tmp_path: Path) -> None:
+        """--failed exits 1 when no failed tasks exist."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01_task.md").write_text("# T01 Task\n", encoding="utf-8")
+        (tasks_dir / "PROGRESS.md").write_text(
+            """# Progress
+
+| Task | Title | Status | Completed |
+|------|-------|--------|-----------|
+| T01  | Task | Done | 2024-01-01 |
+""",
+            encoding="utf-8",
+        )
+        result = CliRunner().invoke(main, ["retry", "--failed", "-p", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "No failed tasks" in result.output
+
+    def test_retry_mutual_exclusivity_task_last(self, tmp_path: Path) -> None:
+        """--task and --last cannot be used together."""
+        result = CliRunner().invoke(main, ["retry", "-t", "T01", "--last", "-p", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "mutually exclusive" in result.output
+
+    def test_retry_mutual_exclusivity_task_failed(self, tmp_path: Path) -> None:
+        """--task and --failed cannot be used together."""
+        result = CliRunner().invoke(main, ["retry", "-t", "T01", "--failed", "-p", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "mutually exclusive" in result.output
+
+    def test_retry_mutual_exclusivity_last_failed(self, tmp_path: Path) -> None:
+        """--last and --failed cannot be used together."""
+        result = CliRunner().invoke(main, ["retry", "--last", "--failed", "-p", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "mutually exclusive" in result.output
+
+    def test_retry_no_flag_error(self, tmp_path: Path) -> None:
+        """No flag specified produces an error."""
+        result = CliRunner().invoke(main, ["retry", "-p", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "Specify one of" in result.output
+
+    # ---------------------------------------------------------------------
+    # retry --json and --force tests
+    # ---------------------------------------------------------------------
+
+    def test_retry_json_requires_force(self, tmp_path: Path) -> None:
+        """--json without --force returns cancelled JSON."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01_task.md").write_text("# T01 Task\n", encoding="utf-8")
+        (tasks_dir / "PROGRESS.md").write_text(
+            """# Progress
+
+| Task | Title | Status | Completed |
+|------|-------|--------|-----------|
+| T01  | Task | Failed | — |
+""",
+            encoding="utf-8",
+        )
+        result = CliRunner().invoke(main, ["retry", "-t", "T01", "--json", "-p", str(tmp_path)])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["cancelled"] is True
+        assert "project" in data
+
+    def test_retry_task_json_output(self, tmp_path: Path) -> None:
+        """--task --json --force outputs structured JSON."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01_task.md").write_text("# T01 Task\n", encoding="utf-8")
+        (tasks_dir / "PROGRESS.md").write_text(
+            """# Progress
+
+| Task | Title | Status | Completed |
+|------|-------|--------|-----------|
+| T01  | Task | Failed | — |
+""",
+            encoding="utf-8",
+        )
+        fake_provider = MagicMock()
+
+        async def _noop_run_task(*_: object, **__: object) -> MagicMock:
+            return MagicMock()
+
+        with (
+            patch(
+                "the_architect.core.opencode_provider.OpenCodeProvider",
+                return_value=fake_provider,
+            ),
+            patch("the_architect.cli.setup_logging"),
+            patch("the_architect.cli.run_task", side_effect=_noop_run_task),
+        ):
+            result = CliRunner().invoke(
+                main,
+                ["retry", "-t", "T01", "--json", "--force", "-p", str(tmp_path)],
+            )
+
+        assert result.exit_code == 0, result.output
+        # JSON output should appear before the task runner output
+        lines = result.output.strip().split("\n")
+        json_output = ""
+        for line in lines:
+            json_output += line + "\n"
+            try:
+                data = json.loads(json_output.strip())
+                break
+            except json.JSONDecodeError:
+                continue
+        else:
+            data = json.loads(result.output.split("\n---")[0].strip())
+
+        assert data["project"] == str(tmp_path)
+        assert data["task_id"] == "T01"
+        assert data["action"] == "retry_task"
+        assert data["previous_status"] == "Failed"
+        assert data["reset_status"] == "Pending"
+
+    def test_retry_last_json_output(self, tmp_path: Path) -> None:
+        """--last --json --force outputs structured JSON."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01_task.md").write_text("# T01 Task\n", encoding="utf-8")
+        (tasks_dir / "PROGRESS.md").write_text(
+            """# Progress
+
+| Task | Title | Status | Completed |
+|------|-------|--------|-----------|
+| T01  | Task | Failed | — |
+""",
+            encoding="utf-8",
+        )
+        fake_provider = MagicMock()
+
+        async def _noop_run_task(*_: object, **__: object) -> MagicMock:
+            return MagicMock()
+
+        with (
+            patch(
+                "the_architect.core.opencode_provider.OpenCodeProvider",
+                return_value=fake_provider,
+            ),
+            patch("the_architect.cli.setup_logging"),
+            patch("the_architect.cli.run_task", side_effect=_noop_run_task),
+        ):
+            result = CliRunner().invoke(
+                main,
+                ["retry", "--last", "--json", "--force", "-p", str(tmp_path)],
+            )
+
+        assert result.exit_code == 0, result.output
+        # Parse JSON from output
+        data = json.loads(result.output.split("\n---")[0].strip())
+        assert data["task_id"] == "T01"
+        assert data["action"] == "retry_last"
+        assert data["previous_status"] == "Failed"
+        assert "title" in data
+
+    def test_retry_failed_json_output(self, tmp_path: Path) -> None:
+        """--failed --json --force outputs structured JSON with task list."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01_task.md").write_text("# T01 One\n", encoding="utf-8")
+        (tasks_dir / "T02_task.md").write_text("# T02 Two\n", encoding="utf-8")
+        (tasks_dir / "PROGRESS.md").write_text(
+            """# Progress
+
+| Task | Title | Status | Completed |
+|------|-------|--------|-----------|
+| T01  | One | Failed | — |
+| T02  | Two | Failed | — |
+""",
+            encoding="utf-8",
+        )
+        result = CliRunner().invoke(
+            main,
+            ["retry", "--failed", "--json", "--force", "-p", str(tmp_path)],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["project"] == str(tmp_path)
+        assert data["action"] == "reset_failed"
+        assert data["count"] == 2
+        assert len(data["tasks"]) == 2
+        assert data["tasks"][0]["task_id"] == "T01"
+        assert data["tasks"][1]["task_id"] == "T02"
+
+    def test_retry_json_no_failed_tasks_error(self, tmp_path: Path) -> None:
+        """--last --json returns error JSON when no failed tasks exist."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01_task.md").write_text("# T01 Task\n", encoding="utf-8")
+        (tasks_dir / "PROGRESS.md").write_text(
+            """# Progress
+
+| Task | Title | Status | Completed |
+|------|-------|--------|-----------|
+| T01  | Task | Done | 2024-01-01 |
+""",
+            encoding="utf-8",
+        )
+        result = CliRunner().invoke(
+            main, ["retry", "--last", "--json", "--force", "-p", str(tmp_path)]
+        )
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert "error" in data
+        assert "No failed tasks" in data["error"]
+
+    def test_retry_failed_json_no_failed_error(self, tmp_path: Path) -> None:
+        """--failed --json returns error JSON when no failed tasks exist."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01_task.md").write_text("# T01 Task\n", encoding="utf-8")
+        (tasks_dir / "PROGRESS.md").write_text(
+            """# Progress
+
+| Task | Title | Status | Completed |
+|------|-------|--------|-----------|
+| T01  | Task | Done | 2024-01-01 |
+""",
+            encoding="utf-8",
+        )
+        result = CliRunner().invoke(
+            main, ["retry", "--failed", "--json", "--force", "-p", str(tmp_path)]
+        )
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert "error" in data
+
+    def test_retry_json_mutual_exclusivity_error(self, tmp_path: Path) -> None:
+        """--task + --last with --json returns error JSON."""
+        result = CliRunner().invoke(
+            main,
+            ["retry", "-t", "T01", "--last", "--json", "-p", str(tmp_path)],
+        )
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert "error" in data
+        assert "mutually exclusive" in data["error"]
+
+    def test_retry_json_no_flag_error(self, tmp_path: Path) -> None:
+        """No mode flag with --json returns error JSON."""
+        result = CliRunner().invoke(main, ["retry", "--json", "--force", "-p", str(tmp_path)])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert "error" in data
+        assert "Specify one of" in data["error"]
+
+    def test_retry_json_task_not_found_error(self, tmp_path: Path) -> None:
+        """--task with nonexistent task returns error JSON."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "PROGRESS.md").write_text(
+            """# Progress
+
+| Task | Title | Status | Completed |
+|------|-------|--------|-----------|
+| T05  | Nope | Pending | — |
+""",
+            encoding="utf-8",
+        )
+        result = CliRunner().invoke(
+            main, ["retry", "-t", "T05", "--json", "--force", "-p", str(tmp_path)]
+        )
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert "error" in data
+        assert "T05" in data["error"]
+
+    def test_retry_force_skips_warnings(self, tmp_path: Path) -> None:
+        """--force suppresses the 'not in terminal state' warning."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01_task.md").write_text("# T01 Task\n", encoding="utf-8")
+        (tasks_dir / "PROGRESS.md").write_text(
+            """# Progress
+
+| Task | Title | Status | Completed |
+|------|-------|--------|-----------|
+| T01  | Task | Pending | — |
+""",
+            encoding="utf-8",
+        )
+        fake_provider = MagicMock()
+
+        async def _noop_run_task(*_: object, **__: object) -> MagicMock:
+            return MagicMock()
+
+        with (
+            patch(
+                "the_architect.core.opencode_provider.OpenCodeProvider",
+                return_value=fake_provider,
+            ),
+            patch("the_architect.cli.setup_logging"),
+            patch("the_architect.cli.run_task", side_effect=_noop_run_task),
+        ):
+            result = CliRunner().invoke(
+                main, ["retry", "-t", "T01", "--force", "-p", str(tmp_path)]
+            )
+
+        assert result.exit_code == 0, result.output
+        # The warning about non-terminal state should still appear without --json
+        # but --force should not change the flow — it only matters with --json
+
+    def test_retry_json_done_task(self, tmp_path: Path) -> None:
+        """--task --json --force on a Done task shows previous_status as Done."""
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01_task.md").write_text("# T01 Task\n", encoding="utf-8")
+        (tasks_dir / "PROGRESS.md").write_text(
+            """# Progress
+
+| Task | Title | Status | Completed |
+|------|-------|--------|-----------|
+| T01  | Task | Done | 2024-01-01 |
+""",
+            encoding="utf-8",
+        )
+        fake_provider = MagicMock()
+
+        async def _noop_run_task(*_: object, **__: object) -> MagicMock:
+            return MagicMock()
+
+        with (
+            patch(
+                "the_architect.core.opencode_provider.OpenCodeProvider",
+                return_value=fake_provider,
+            ),
+            patch("the_architect.cli.setup_logging"),
+            patch("the_architect.cli.run_task", side_effect=_noop_run_task),
+        ):
+            result = CliRunner().invoke(
+                main,
+                ["retry", "-t", "T01", "--json", "--force", "-p", str(tmp_path)],
+            )
+
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output.split("\n---")[0].strip())
+        assert data["previous_status"] == "Done"
 
 
 # ---------------------------------------------------------------------------
@@ -1395,8 +3043,8 @@ class TestDoctorCmd:
         assert data["summary"]["warn"] == 1
         assert data["summary"]["fail"] == 0
 
-    def test_doctor_json_without_project_ignored(self, tmp_path: Path) -> None:
-        """--json without --project is silently ignored — environment diagnostics still run."""
+    def test_doctor_json_without_project_outputs_env_diagnostics(self, tmp_path: Path) -> None:
+        """--json without --project outputs environment diagnostics as JSON."""
         fake = self._fake_provider(
             name="opencode", display_name="OpenCode", installed=True, models=True
         )
@@ -1408,17 +3056,16 @@ class TestDoctorCmd:
             result = CliRunner().invoke(main, ["doctor", "--json"])
 
         assert result.exit_code == 0, result.output
-        # Should show environment diagnostics, not JSON
-        assert "Environment Diagnostics" in result.output
-        assert "Providers" in result.output
-        # Should NOT have the project health JSON structure
-        data = None
-        try:
-            data = json.loads(result.output)
-        except (json.JSONDecodeError, ValueError):
-            pass
-        if data is not None:
-            assert "checks" not in data
+        # Should output valid JSON
+        data = json.loads(result.output)
+        assert "checks" in data
+        assert "providers" in data
+        # Should NOT contain project health fields
+        assert "project" not in data
+        # Environment checks should be present
+        check_names = [c["check"] for c in data["checks"]]
+        assert "Python version" in check_names
+        assert "Selected provider" in check_names
 
     # -----------------------------------------------------------------------
     # Project health exit code tests

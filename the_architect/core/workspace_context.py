@@ -79,7 +79,7 @@ def _run_git(
     return subprocess.run(
         ["git", *args],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         timeout=_GIT_TIMEOUT,
         cwd=str(project_dir),
     )

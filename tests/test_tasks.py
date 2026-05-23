@@ -8,12 +8,16 @@ from pathlib import Path
 from the_architect.core.tasks import (
     Task,
     TaskPlan,
+    TaskPriority,
     TaskStatus,
+    _extract_model,
+    _extract_priority,
     _extract_title,
     discover_tasks,
     duplicate_task_prefixes,
     is_retro_task,
     is_split_task,
+    priority_sort_key,
     task_base_prefix,
     task_number,
     task_prefix,
@@ -668,3 +672,460 @@ class TestTaskSortKey:
             key=task_sort_key,
         )
         assert [t.prefix for t in discovered] == [t.prefix for t in manually_sorted]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Per-task model assignment (Cycle 32, T01)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestExtractModel:
+    """Tests for _extract_model helper."""
+
+    def test_extracts_model_from_section(self, tmp_path: Path) -> None:
+        """Should extract model identifier from ## Model section."""
+        f = tmp_path / "T01_test.md"
+        f.write_text(
+            "# T01 — Test task\n\n## Model\nopenrouter/google/gemini-2.5-pro\n",
+            encoding="utf-8",
+        )
+        result = _extract_model(f)
+        assert result == "openrouter/google/gemini-2.5-pro"
+
+    def test_returns_none_when_section_missing(self, tmp_path: Path) -> None:
+        """Should return None when ## Model section is absent."""
+        f = tmp_path / "T01_test.md"
+        f.write_text("# T01 — Test task\n\n## Context\nSome context\n", encoding="utf-8")
+        result = _extract_model(f)
+        assert result is None
+
+    def test_returns_none_when_section_empty(self, tmp_path: Path) -> None:
+        """Should return None when ## Model section exists but is empty."""
+        f = tmp_path / "T01_test.md"
+        f.write_text(
+            "# T01 — Test task\n\n## Model\n## Context\nSome context\n",
+            encoding="utf-8",
+        )
+        result = _extract_model(f)
+        assert result is None
+
+    def test_returns_none_on_unreadable_file(self) -> None:
+        """Should return None when file cannot be read."""
+        result = _extract_model(Path("/nonexistent/file.md"))
+        assert result is None
+
+    def test_model_section_case_insensitive(self, tmp_path: Path) -> None:
+        """The ## Model header should be matched case-insensitively."""
+        f = tmp_path / "T01_test.md"
+        f.write_text(
+            "# T01 — Test\n\n## model\nopenrouter/anthropic/claude-sonnet-4-20250514\n",
+            encoding="utf-8",
+        )
+        result = _extract_model(f)
+        assert result == "openrouter/anthropic/claude-sonnet-4-20250514"
+
+    def test_stops_at_next_heading(self, tmp_path: Path) -> None:
+        """Parsing should stop at the next ## heading."""
+        f = tmp_path / "T01_test.md"
+        f.write_text(
+            "# T01 — Test\n\n"
+            "## Model\n"
+            "openrouter/google/gemini-2.5-pro\n"
+            "some extra text\n"
+            "## Context\n"
+            "More stuff\n",
+            encoding="utf-8",
+        )
+        result = _extract_model(f)
+        assert result == "openrouter/google/gemini-2.5-pro"
+
+
+class TestTaskModelField:
+    """Tests for the Task.model field."""
+
+    def test_task_model_defaults_to_none(self) -> None:
+        """Task.model should default to None."""
+        task = Task(
+            name="T01_test",
+            prefix="T01",
+            number=1,
+            path=Path("/fake/T01_test.md"),
+        )
+        assert task.model is None
+
+    def test_task_model_accepts_string(self) -> None:
+        """Task.model should accept a model identifier string."""
+        task = Task(
+            name="T01_test",
+            prefix="T01",
+            number=1,
+            path=Path("/fake/T01_test.md"),
+            model="openrouter/google/gemini-2.5-pro",
+        )
+        assert task.model == "openrouter/google/gemini-2.5-pro"
+
+
+class TestDiscoverTasksModel:
+    """Tests for discover_tasks populating Task.model from file."""
+
+    def test_discover_tasks_parses_model(self, tmp_path: Path) -> None:
+        """Should parse ## Model section and populate task.model."""
+        (tmp_path / "T01_test.md").write_text(
+            "# T01 — Test\n\n## Model\nopenrouter/google/gemini-2.5-pro\n",
+            encoding="utf-8",
+        )
+        tasks = discover_tasks(tmp_path)
+        assert len(tasks) == 1
+        assert tasks[0].model == "openrouter/google/gemini-2.5-pro"
+
+    def test_discover_tasks_model_none_when_missing(self, tmp_path: Path) -> None:
+        """Should default model to None when ## Model section is absent."""
+        (tmp_path / "T01_test.md").write_text(
+            "# T01 — Test\n\n## Context\nNo model section here.\n",
+            encoding="utf-8",
+        )
+        tasks = discover_tasks(tmp_path)
+        assert len(tasks) == 1
+        assert tasks[0].model is None
+
+    def test_discover_tasks_model_none_when_empty(self, tmp_path: Path) -> None:
+        """Should default model to None when ## Model section is present but empty."""
+        (tmp_path / "T01_test.md").write_text(
+            "# T01 — Test\n\n## Model\n## Context\nEmpty model.\n",
+            encoding="utf-8",
+        )
+        tasks = discover_tasks(tmp_path)
+        assert len(tasks) == 1
+        assert tasks[0].model is None
+
+    def test_discover_tasks_multiple_tasks_model_mixed(self, tmp_path: Path) -> None:
+        """Should correctly parse model for multiple tasks with mixed assignments."""
+        (tmp_path / "T01_expensive.md").write_text(
+            "# T01 — Complex\n\n## Model\nopenrouter/anthropic/claude-sonnet-4-20250514\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "T02_simple.md").write_text(
+            "# T02 — Simple\n\n## Context\nNo model specified.\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "T03_cheaper.md").write_text(
+            "# T03 — Quick\n\n## Model\nopenrouter/google/gemini-2.5-pro\n",
+            encoding="utf-8",
+        )
+        tasks = discover_tasks(tmp_path)
+        assert len(tasks) == 3
+        assert tasks[0].model == "openrouter/anthropic/claude-sonnet-4-20250514"
+        assert tasks[1].model is None
+        assert tasks[2].model == "openrouter/google/gemini-2.5-pro"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Task Priority — model, parser, sort key (Cycle 35, T01)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestTaskPriorityStrEnum:
+    """Tests for TaskPriority StrEnum validation."""
+
+    def test_valid_values(self) -> None:
+        """All four priority levels are valid."""
+        assert TaskPriority.CRITICAL == "critical"
+        assert TaskPriority.HIGH == "high"
+        assert TaskPriority.MEDIUM == "medium"
+        assert TaskPriority.LOW == "low"
+
+    def test_all_values_lowercase(self) -> None:
+        """All enum values are lowercase strings."""
+        for p in TaskPriority:
+            assert p.value == p.value.lower()
+
+    def test_member_count(self) -> None:
+        """Exactly four priority levels exist."""
+        assert len(TaskPriority) == 4
+
+    def test_value_comparison(self) -> None:
+        """Values can be compared as strings."""
+        assert TaskPriority.CRITICAL.value == "critical"
+        assert TaskPriority.HIGH.value == "high"
+
+    def test_iteration_order(self) -> None:
+        """Iteration yields members in definition order."""
+        values = [p.value for p in TaskPriority]
+        assert values == ["critical", "high", "medium", "low"]
+
+
+class TestExtractPriority:
+    """Tests for _extract_priority helper."""
+
+    def test_extracts_priority_critical(self, tmp_path: Path) -> None:
+        """Should extract 'critical' from ## Priority section."""
+        f = tmp_path / "T01_test.md"
+        f.write_text(
+            "# T01 — Test task\n\n## Priority\ncritical\n",
+            encoding="utf-8",
+        )
+        result = _extract_priority(f)
+        assert result == "critical"
+
+    def test_extracts_priority_high(self, tmp_path: Path) -> None:
+        """Should extract 'high' from ## Priority section."""
+        f = tmp_path / "T01_test.md"
+        f.write_text(
+            "# T01 — Test task\n\n## Priority\nhigh\n",
+            encoding="utf-8",
+        )
+        result = _extract_priority(f)
+        assert result == "high"
+
+    def test_extracts_priority_medium(self, tmp_path: Path) -> None:
+        """Should extract 'medium' from ## Priority section."""
+        f = tmp_path / "T01_test.md"
+        f.write_text(
+            "# T01 — Test task\n\n## Priority\nmedium\n",
+            encoding="utf-8",
+        )
+        result = _extract_priority(f)
+        assert result == "medium"
+
+    def test_extracts_priority_low(self, tmp_path: Path) -> None:
+        """Should extract 'low' from ## Priority section."""
+        f = tmp_path / "T01_test.md"
+        f.write_text(
+            "# T01 — Test task\n\n## Priority\nlow\n",
+            encoding="utf-8",
+        )
+        result = _extract_priority(f)
+        assert result == "low"
+
+    def test_returns_none_when_section_missing(self, tmp_path: Path) -> None:
+        """Should return None when ## Priority section is absent."""
+        f = tmp_path / "T01_test.md"
+        f.write_text(
+            "# T01 — Test task\n\n## Context\nSome context\n",
+            encoding="utf-8",
+        )
+        result = _extract_priority(f)
+        assert result is None
+
+    def test_returns_none_when_section_empty(self, tmp_path: Path) -> None:
+        """Should return None when ## Priority section exists but is empty."""
+        f = tmp_path / "T01_test.md"
+        f.write_text(
+            "# T01 — Test task\n\n## Priority\n## Context\nSome context\n",
+            encoding="utf-8",
+        )
+        result = _extract_priority(f)
+        assert result is None
+
+    def test_returns_none_on_unreadable_file(self) -> None:
+        """Should return None when file cannot be read."""
+        result = _extract_priority(Path("/nonexistent/file.md"))
+        assert result is None
+
+    def test_priority_section_case_insensitive_header(self, tmp_path: Path) -> None:
+        """The ## Priority header should be matched case-insensitively."""
+        f = tmp_path / "T01_test.md"
+        f.write_text(
+            "# T01 — Test\n\n## priority\ncritical\n",
+            encoding="utf-8",
+        )
+        result = _extract_priority(f)
+        assert result == "critical"
+
+    def test_priority_value_case_insensitive(self, tmp_path: Path) -> None:
+        """Priority values should be matched case-insensitively."""
+        f = tmp_path / "T01_test.md"
+        f.write_text(
+            "# T01 — Test\n\n## Priority\nCritical\n",
+            encoding="utf-8",
+        )
+        result = _extract_priority(f)
+        assert result == "critical"
+
+    def test_priority_value_uppercase(self, tmp_path: Path) -> None:
+        """Uppercase priority values should be normalized to lowercase."""
+        f = tmp_path / "T01_test.md"
+        f.write_text(
+            "# T01 — Test\n\n## Priority\nHIGH\n",
+            encoding="utf-8",
+        )
+        result = _extract_priority(f)
+        assert result == "high"
+
+    def test_priority_value_mixed_case(self, tmp_path: Path) -> None:
+        """Mixed case priority values should be normalized to lowercase."""
+        f = tmp_path / "T01_test.md"
+        f.write_text(
+            "# T01 — Test\n\n## Priority\nLoW\n",
+            encoding="utf-8",
+        )
+        result = _extract_priority(f)
+        assert result == "low"
+
+    def test_unrecognized_priority_returns_none(self, tmp_path: Path) -> None:
+        """An unrecognized priority value should return None."""
+        f = tmp_path / "T01_test.md"
+        f.write_text(
+            "# T01 — Test\n\n## Priority\nurgent\n",
+            encoding="utf-8",
+        )
+        result = _extract_priority(f)
+        assert result is None
+
+    def test_stops_at_next_heading(self, tmp_path: Path) -> None:
+        """Parsing should stop at the next ## heading."""
+        f = tmp_path / "T01_test.md"
+        f.write_text(
+            "# T01 — Test\n\n## Priority\ncritical\nsome extra text\n## Context\nMore stuff\n",
+            encoding="utf-8",
+        )
+        result = _extract_priority(f)
+        assert result == "critical"
+
+
+class TestTaskPriorityField:
+    """Tests for the Task.priority field."""
+
+    def test_task_priority_defaults_to_none(self) -> None:
+        """Task.priority should default to None."""
+        task = Task(
+            name="T01_test",
+            prefix="T01",
+            number=1,
+            path=Path("/fake/T01_test.md"),
+        )
+        assert task.priority is None
+
+    def test_task_priority_accepts_string(self) -> None:
+        """Task.priority should accept a priority string."""
+        task = Task(
+            name="T01_test",
+            prefix="T01",
+            number=1,
+            path=Path("/fake/T01_test.md"),
+            priority="critical",
+        )
+        assert task.priority == "critical"
+
+
+class TestDiscoverTasksPriority:
+    """Tests for discover_tasks populating Task.priority from file."""
+
+    def test_discover_tasks_parses_priority(self, tmp_path: Path) -> None:
+        """Should parse ## Priority section and populate task.priority."""
+        (tmp_path / "T01_test.md").write_text(
+            "# T01 — Test\n\n## Priority\ncritical\n",
+            encoding="utf-8",
+        )
+        tasks = discover_tasks(tmp_path)
+        assert len(tasks) == 1
+        assert tasks[0].priority == "critical"
+
+    def test_discover_tasks_priority_none_when_missing(self, tmp_path: Path) -> None:
+        """Should default priority to None when ## Priority section is absent."""
+        (tmp_path / "T01_test.md").write_text(
+            "# T01 — Test\n\n## Context\nNo priority section here.\n",
+            encoding="utf-8",
+        )
+        tasks = discover_tasks(tmp_path)
+        assert len(tasks) == 1
+        assert tasks[0].priority is None
+
+    def test_discover_tasks_priority_none_when_empty(self, tmp_path: Path) -> None:
+        """Should default priority to None when ## Priority section is present but empty."""
+        (tmp_path / "T01_test.md").write_text(
+            "# T01 — Test\n\n## Priority\n## Context\nEmpty priority.\n",
+            encoding="utf-8",
+        )
+        tasks = discover_tasks(tmp_path)
+        assert len(tasks) == 1
+        assert tasks[0].priority is None
+
+    def test_discover_tasks_multiple_tasks_priority_mixed(self, tmp_path: Path) -> None:
+        """Should correctly parse priority for multiple tasks with mixed assignments."""
+        (tmp_path / "T01_urgent.md").write_text(
+            "# T01 — Urgent\n\n## Priority\ncritical\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "T02_normal.md").write_text(
+            "# T02 — Normal\n\n## Context\nNo priority specified.\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "T03_low.md").write_text(
+            "# T03 — Low priority\n\n## Priority\nlow\n",
+            encoding="utf-8",
+        )
+        tasks = discover_tasks(tmp_path)
+        assert len(tasks) == 3
+        assert tasks[0].priority == "critical"
+        assert tasks[1].priority is None
+        assert tasks[2].priority == "low"
+
+
+class TestPrioritySortKey:
+    """Tests for priority_sort_key function."""
+
+    def test_critical_has_lowest_rank(self) -> None:
+        """Critical priority should have rank 0 (scheduled first)."""
+        task = Task(
+            name="T01_test",
+            prefix="T01",
+            number=1,
+            path=Path("/fake/T01_test.md"),
+            priority="critical",
+        )
+        assert priority_sort_key(task) == 0
+
+    def test_high_has_rank_one(self) -> None:
+        """High priority should have rank 1."""
+        task = Task(
+            name="T01_test",
+            prefix="T01",
+            number=1,
+            path=Path("/fake/T01_test.md"),
+            priority="high",
+        )
+        assert priority_sort_key(task) == 1
+
+    def test_medium_has_rank_two(self) -> None:
+        """Medium priority should have rank 2."""
+        task = Task(
+            name="T01_test",
+            prefix="T01",
+            number=1,
+            path=Path("/fake/T01_test.md"),
+            priority="medium",
+        )
+        assert priority_sort_key(task) == 2
+
+    def test_none_has_rank_two(self) -> None:
+        """None priority (default) should have rank 2 (same as medium)."""
+        task = Task(
+            name="T01_test",
+            prefix="T01",
+            number=1,
+            path=Path("/fake/T01_test.md"),
+        )
+        assert priority_sort_key(task) == 2
+
+    def test_low_has_highest_rank(self) -> None:
+        """Low priority should have rank 3 (scheduled last)."""
+        task = Task(
+            name="T01_test",
+            prefix="T01",
+            number=1,
+            path=Path("/fake/T01_test.md"),
+            priority="low",
+        )
+        assert priority_sort_key(task) == 3
+
+    def test_priority_ordering(self) -> None:
+        """Tasks should sort by priority: critical < high < medium < low."""
+        tasks = [
+            Task(name="T04_low", prefix="T04", number=4, path=Path("/x"), priority="low"),
+            Task(name="T01_critical", prefix="T01", number=1, path=Path("/x"), priority="critical"),
+            Task(name="T02_high", prefix="T02", number=2, path=Path("/x"), priority="high"),
+            Task(name="T03_medium", prefix="T03", number=3, path=Path("/x"), priority=None),
+        ]
+        tasks.sort(key=priority_sort_key)
+        assert [t.priority for t in tasks] == ["critical", "high", None, "low"]

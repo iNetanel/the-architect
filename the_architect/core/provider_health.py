@@ -92,14 +92,29 @@ async def check_provider_health(
 
     process: asyncio.subprocess.Process | None = None
     try:
+        # Respect provider's instruction delivery mechanism — providers like
+        # OpenCode and Claude Code now read instructions from stdin.
+        _use_stdin = getattr(provider, "instruction_via_stdin", False)
+        _stdin_mode = asyncio.subprocess.PIPE if _use_stdin else None
         process = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=str(project_dir.resolve()),
             env=env,
-            stdin=None,
+            stdin=_stdin_mode,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+
+        # Write health prompt to stdin when provider reads from stdin pipe.
+        if _use_stdin and process.stdin is not None:
+            try:
+                process.stdin.write(_HEALTH_PROMPT.encode("utf-8"))
+                await process.stdin.drain()
+                process.stdin.close()
+                await process.stdin.wait_closed()
+            except Exception as stdin_exc:
+                logger.debug(f"Health check stdin write failed: {stdin_exc!r}")
+
         stdout_bytes, stderr_bytes = await asyncio.wait_for(
             process.communicate(), timeout=timeout_seconds
         )

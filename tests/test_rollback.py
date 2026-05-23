@@ -274,15 +274,17 @@ class TestGetFileContentAtCommit:
             content = _get_file_content_at_commit(tmp_path, "abc123", "main.py")
         assert content is None
 
-    def test_returns_none_on_unicode_decode_error(self, tmp_path: Path) -> None:
-        """Should return None when content is not valid UTF-8."""
+    def test_returns_replaced_on_invalid_utf8(self, tmp_path: Path) -> None:
+        """Should return replacement characters for invalid UTF-8 content."""
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = b"\xff\xfe\x00\x01"
 
         with patch("subprocess.run", return_value=mock_result):
             content = _get_file_content_at_commit(tmp_path, "abc123", "binary.bin")
-        assert content is None
+        # errors="replace" produces U+FFFD replacement characters instead of raising
+        assert content is not None
+        assert "\ufffd" in content
 
     def test_passes_correct_args(self, tmp_path: Path) -> None:
         """Should call git show with commit:file_path."""

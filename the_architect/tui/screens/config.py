@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from loguru import logger
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
@@ -82,8 +83,8 @@ class ConfigApp(App[None]):
         # works immediately without needing Tab first.
         try:
             self.query_one(DataTable).focus()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"ConfigApp DataTable focus failed: {exc!r}")
 
     def _rows(self) -> list[tuple[str, str]]:
         c = self._config
@@ -102,6 +103,7 @@ class ConfigApp(App[None]):
             ("persistent", str(c.persistent)),
             ("token_budget_per_hour", str(c.token_budget_per_hour)),
             ("token_budget_per_run", str(c.token_budget_per_run)),
+            ("task_timeout", str(c.task_timeout)),
             ("integrity", str(c.integrity)),
             (
                 "circuit_no_progress_threshold",
@@ -114,6 +116,7 @@ class ConfigApp(App[None]):
             ("cooldown_detection", str(c.cooldown_detection)),
             ("notify_on_complete", str(c.notify_on_complete)),
             ("notify_on_fail", str(c.notify_on_fail)),
+            ("validation_gate", str(c.validation_gate)),
         ]
         return rows
 

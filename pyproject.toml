@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "the-architect"
-version = "1.3.1"
+version = "1.4.0"
 description = "An autonomous development lifecycle layer for agentic AI coding tools"
 readme = "README.md"
 license = "Apache-2.0"
@@ -109,4 +109,16 @@ filterwarnings = [
     # Textual Header widget has an async on_mount that is not always
     # awaited in headless test harnesses — this is a Textual internal.
     "ignore:coroutine 'Header._on_mount.*' was never awaited:RuntimeWarning",
+    # Textual's call_from_thread creates internal run_callback coroutines
+    # that are garbage collected without being awaited during test teardown
+    # in the headless test harness — this is a Textual internal, not a bug.
+    "ignore:coroutine 'App.call_from_thread.<locals>.run_callback' was never awaited:RuntimeWarning",
+    # Textual's App.run creates an internal run_app coroutine that is garbage
+    # collected without being awaited during test teardown when TUI tests have
+    # exercised the app lifecycle — this is a Textual internal, not a bug.
+    "ignore:coroutine 'App.run.<locals>.run_app' was never awaited:RuntimeWarning",
+    # unittest.mock AsyncMock creates internal _execute_mock_call coroutines
+    # that are garbage collected without being awaited during full suite runs
+    # due to GC timing — this is a Python stdlib internal, not a bug.
+    "ignore:coroutine 'AsyncMockMixin._execute_mock_call' was never awaited:RuntimeWarning",
 ]

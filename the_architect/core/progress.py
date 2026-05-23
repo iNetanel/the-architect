@@ -609,3 +609,56 @@ def get_next_task(progress_file: Path | str) -> str:
         return match.group(1)
 
     return "T00"
+
+
+def find_failed_tasks(
+    progress_file: Path | str,
+    tasks_dir: Path | str,
+) -> list[Task]:
+    """Return Task objects for every task marked Failed in PROGRESS.md.
+
+    Reads PROGRESS.md to find which task prefixes carry a Failed status,
+    then discovers the corresponding Task objects from the tasks directory.
+    Results are sorted by plan order so the last element is the most
+    recently planned failed task.
+
+    Returns an empty list when PROGRESS.md is missing, has no Failed tasks,
+    or the tasks directory cannot be read.
+
+    Args:
+        progress_file: Path to PROGRESS.md.
+        tasks_dir: Path to the tasks/ directory containing task files.
+
+    Returns:
+        List of Task objects with Failed status, sorted by plan order.
+
+    Examples:
+        >>> tasks = find_failed_tasks("tasks/PROGRESS.md", "tasks/")
+        >>> len(tasks)
+        1
+        >>> tasks[0].prefix
+        'T03'
+    """
+    if isinstance(progress_file, str):
+        progress_file = Path(progress_file)
+    if isinstance(tasks_dir, str):
+        tasks_dir = Path(tasks_dir)
+
+    # Get failed prefixes from PROGRESS.md
+    state = read_progress(progress_file)
+    if not state.failed_tasks:
+        return []
+
+    # Discover all task files
+    from the_architect.core.tasks import discover_tasks, task_sort_key
+
+    all_tasks = discover_tasks(tasks_dir)
+    if not all_tasks:
+        return []
+
+    failed_prefixes = set(state.failed_tasks)
+    failed_tasks = [t for t in all_tasks if t.prefix in failed_prefixes]
+
+    # Sort by plan order so the last element is the highest-numbered failed task
+    failed_tasks.sort(key=task_sort_key)
+    return failed_tasks

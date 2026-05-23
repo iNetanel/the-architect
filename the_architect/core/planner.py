@@ -200,6 +200,8 @@ def _summarize_progress_historical(content: str) -> str:
 def gather_project_context(
     project_dir: Path,
     provider: ArchitectProvider | None = None,
+    *,
+    include_history: bool = True,
 ) -> str:
     """Build a context string describing current project state.
 
@@ -207,9 +209,15 @@ def gather_project_context(
     - File tree (filtered: no __pycache__, .git, node_modules, .venv)
     - Project rules file (``AGENTS.md`` for OpenCode, ``CLAUDE.md`` for
       Claude Code) — adapts to the selected provider
-    - PROGRESS.md content if exists
+    - PROGRESS.md content if exists (only when ``include_history`` is True)
     - docs/ file names and first 80 lines of each
-    - tasks/ existing task names
+    - tasks/ existing task names (only when ``include_history`` is True)
+
+    Previous plan history (PROGRESS.md summary, leftover task files,
+    archive summary) is only included when ``include_history`` is True.
+    This is useful for replanning scenarios (infinite loop, reassessment,
+    retrospective) where knowledge of prior attempts matters. Fresh
+    planning skips this history to reduce noise.
 
     Symlinks pointing outside the project directory are excluded to
     prevent the agent from accessing files outside the working folder.
@@ -220,6 +228,9 @@ def gather_project_context(
             project-rules file is read (``AGENTS.md`` for OpenCode,
             ``CLAUDE.md`` for Claude Code).  When ``None``, both files
             are checked and the first one found is used.
+        include_history: When True (default), include previous plan history
+            (PROGRESS.md summary, leftover tasks, archive). Set to False
+            for fresh planning to reduce prompt noise.
 
     Returns:
         A context string describing the project state.
@@ -342,17 +353,19 @@ def gather_project_context(
     # it should continue the old plan. We extract only completed tasks and
     # permanent decisions — useful context that does NOT include active state
     # like "Next task to run" or "Current State".
-    progress_md = project_dir / "tasks" / "PROGRESS.md"
-    if progress_md.exists():
-        try:
-            content = progress_md.read_text(encoding="utf-8")
-            summary = _summarize_progress_historical(content)
-            add_part(
-                "## Previous Plan History (context only — do NOT continue this plan)",
-                summary,
-            )
-        except OSError as e:
-            logger.warning(f"Failed to read PROGRESS.md: {e}")
+    # Only included when include_history is True (replanning scenarios).
+    if include_history:
+        progress_md = project_dir / "tasks" / "PROGRESS.md"
+        if progress_md.exists():
+            try:
+                content = progress_md.read_text(encoding="utf-8")
+                summary = _summarize_progress_historical(content)
+                add_part(
+                    "## Previous Plan History (context only — do NOT continue this plan)",
+                    summary,
+                )
+            except OSError as e:
+                logger.warning(f"Failed to read PROGRESS.md: {e}")
 
     # Documentation directories. Support both common names; this is deliberately
     # shallow so very large docs trees do not dominate the planning prompt.
@@ -376,69 +389,71 @@ def gather_project_context(
     # tasks/ status — show current task files with a note that they may be
     # leftovers from a previous run (archiving happens at plan-start, so files
     # visible here are from the most recent completed or interrupted session).
-    tasks_dir = project_dir / "tasks"
-    if tasks_dir.exists() and tasks_dir.is_dir():
-        task_lines = [
-            "tasks/ — files present (may be leftover from the previous run; "
-            "treat as historical context only):"
-        ]
-        current_tasks = [
-            f
-            for f in sorted(tasks_dir.iterdir())
-            if f.is_file()
-            and f.suffix.lower() == ".md"
-            and not f.name.startswith("architect_eval_")
-        ]
-        if current_tasks:
-            for task_file in current_tasks:
-                task_lines.append(f"- {task_file.stem}")
-        else:
-            task_lines.append("(no task files present)")
+    # Only included when include_history is True (replanning scenarios).
+    if include_history:
+        tasks_dir = project_dir / "tasks"
+        if tasks_dir.exists() and tasks_dir.is_dir():
+            task_lines = [
+                "tasks/ — files present (may be leftover from the previous run; "
+                "treat as historical context only):"
+            ]
+            current_tasks = [
+                f
+                for f in sorted(tasks_dir.iterdir())
+                if f.is_file()
+                and f.suffix.lower() == ".md"
+                and not f.name.startswith("architect_eval_")
+            ]
+            if current_tasks:
+                for task_file in current_tasks:
+                    task_lines.append(f"- {task_file.stem}")
+            else:
+                task_lines.append("(no task files present)")
 
-        # Show archive summary — each timestamped folder is one past execution session
-        archive_dir = tasks_dir / "archive"
-        if archive_dir.exists() and archive_dir.is_dir():
-            archive_sessions = sorted(
-                [d for d in archive_dir.iterdir() if d.is_dir()],
-                key=lambda d: d.name,
-            )
-            if archive_sessions:
-                task_lines.append("")
-                task_lines.append(
-                    "tasks/archive/ — completed past execution sessions "
-                    "(already executed, do NOT re-plan):"
+            # Show archive summary — each timestamped folder is one past execution session
+            archive_dir = tasks_dir / "archive"
+            if archive_dir.exists() and archive_dir.is_dir():
+                archive_sessions = sorted(
+                    [d for d in archive_dir.iterdir() if d.is_dir()],
+                    key=lambda d: d.name,
                 )
-                for session_dir in archive_sessions:
-                    session_tasks = [
-                        f.stem
-                        for f in sorted(session_dir.iterdir())
-                        if f.is_file()
-                        and f.suffix.lower() == ".md"
-                        and f.name != "INSTRUCTIONS.md"
-                        and not f.name.startswith("architect_eval_")
-                    ]
-                    goal_hint = ""
-                    instructions = session_dir / "INSTRUCTIONS.md"
-                    if instructions.exists():
-                        try:
-                            first_lines = instructions.read_text(encoding="utf-8").splitlines()
-                            # Extract goal from ## Goal section
-                            in_goal = False
-                            for ln in first_lines:
-                                if ln.strip() == "## Goal":
-                                    in_goal = True
-                                    continue
-                                if in_goal and ln.startswith("## "):
-                                    break
-                                if in_goal and ln.strip():
-                                    goal_hint = f' — "{ln.strip()[:80]}"'
-                                    break
-                        except OSError:
-                            pass
-                    tasks_str = ", ".join(session_tasks) if session_tasks else "no tasks"
-                    task_lines.append(f"- {session_dir.name}{goal_hint}: [{tasks_str}]")
+                if archive_sessions:
+                    task_lines.append("")
+                    task_lines.append(
+                        "tasks/archive/ — completed past execution sessions "
+                        "(already executed, do NOT re-plan):"
+                    )
+                    for session_dir in archive_sessions:
+                        session_tasks = [
+                            f.stem
+                            for f in sorted(session_dir.iterdir())
+                            if f.is_file()
+                            and f.suffix.lower() == ".md"
+                            and f.name != "INSTRUCTIONS.md"
+                            and not f.name.startswith("architect_eval_")
+                        ]
+                        goal_hint = ""
+                        instructions = session_dir / "INSTRUCTIONS.md"
+                        if instructions.exists():
+                            try:
+                                first_lines = instructions.read_text(encoding="utf-8").splitlines()
+                                # Extract goal from ## Goal section
+                                in_goal = False
+                                for ln in first_lines:
+                                    if ln.strip() == "## Goal":
+                                        in_goal = True
+                                        continue
+                                    if in_goal and ln.startswith("## "):
+                                        break
+                                    if in_goal and ln.strip():
+                                        goal_hint = f' — "{ln.strip()[:80]}"'
+                                        break
+                            except OSError:
+                                pass
+                        tasks_str = ", ".join(session_tasks) if session_tasks else "no tasks"
+                        task_lines.append(f"- {session_dir.name}{goal_hint}: [{tasks_str}]")
 
-        add_part("## Tasks", "\n".join(task_lines))
+            add_part("## Tasks", "\n".join(task_lines))
 
     return "\n\n".join(parts)
 
@@ -485,12 +500,16 @@ def build_planning_instruction(
     Includes an explicit project-root boundary so the architect never
     creates files outside the working folder.
 
+    Large files (ARCHITECT.md, large context) are referenced by path rather
+    than embedded inline to prevent E2BIG crashes. Small dynamic content
+    (structure report, user context files, workspace state) stays inline.
+
     The instruction is structured with context in priority order:
-        1. ARCHITECT.md (persistent project intelligence)
-        2. Structured project intelligence (validated machine-readable cache)
-        3. Structure report (auto-detected project structure)
-        4. Additional context files (user-provided)
-        5. Project context (file tree, PROGRESS.md history)
+        1. ARCHITECT.md (path reference — persistent project intelligence)
+        2. Structured project intelligence (inline if <2KB, path ref otherwise)
+        3. Structure report (auto-detected project structure, inline)
+        4. Additional context files (user-provided, inline)
+        5. Project context (inline if <5KB, path ref otherwise)
         6. Workspace state (git branch, uncommitted changes, recent commits)
         7. User's goal
 
@@ -521,26 +540,32 @@ def build_planning_instruction(
     ]
 
     # 1. ARCHITECT.md — persistent project intelligence (highest priority context)
+    # Reference by path instead of embedding content to prevent E2BIG crashes.
     if request.architect_md_content:
         lines.extend(
             [
-                "=== ARCHITECT.md — Persistent Project Intelligence ===",
-                request.architect_md_content,
+                "Read",
+                f"{project_root}/ARCHITECT.md for persistent project intelligence.",
                 "",
             ]
         )
 
     # 2. Structured project intelligence — compact validated cache.
+    # Keep inline if small; reference by path if large to prevent E2BIG crashes.
     if request.structured_intelligence_content:
-        lines.extend(
-            [
-                "=== STRUCTURED PROJECT INTELLIGENCE ===",
-                request.structured_intelligence_content,
-                "",
-            ]
-        )
+        intel_path = str(request.project_dir / ".architect" / "intelligence.json")
+        if len(request.structured_intelligence_content) > 2000:
+            lines.extend([f"Read {intel_path} for structured project intelligence.", ""])
+        else:
+            lines.extend(
+                [
+                    "=== STRUCTURED PROJECT INTELLIGENCE ===",
+                    request.structured_intelligence_content,
+                    "",
+                ]
+            )
 
-    # 3. Project structure report
+    # 3. Project structure report — small auto-detected summary, keep inline.
     if request.structure_report:
         lines.extend(
             [
@@ -550,7 +575,7 @@ def build_planning_instruction(
             ]
         )
 
-    # 4. Additional context files (user-provided via --context)
+    # 4. Additional context files (user-provided via --context) — keep inline.
     if request.context_content:
         lines.extend(
             [
@@ -561,13 +586,24 @@ def build_planning_instruction(
         )
 
     # 5. Project context (file tree, PROGRESS.md history, etc.)
-    lines.extend(
-        [
-            "=== PROJECT CONTEXT ===",
-            context,
-            "",
-        ]
-    )
+    # Reference by path if large to prevent E2BIG crashes.
+    progress_path = str(request.project_dir / "tasks" / "PROGRESS.md")
+    if len(context) > 5000:
+        lines.extend(
+            [
+                "=== PROJECT CONTEXT ===",
+                f"Read {progress_path} for task progress history.",
+                "",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "=== PROJECT CONTEXT ===",
+                context,
+                "",
+            ]
+        )
 
     # 6. Workspace state (git branch, uncommitted changes, recent commits)
     # Only inject when workspace context is available and the project is a git repo.
@@ -672,7 +708,9 @@ def build_planning_instruction(
             "those files belong to the user.",
         ]
     )
-    return "\n".join(lines)
+    result = "\n".join(lines)
+
+    return result
 
 
 _LIFECYCLE_CONTRACT = """
@@ -1255,7 +1293,11 @@ async def run_planner(
     ensure_provider_setup(provider, project_dir, config)
 
     # Build the instruction with project context embedded
-    context = gather_project_context(project_dir, provider=provider)
+    # Determine if this is a replan scenario (needs previous plan history)
+    # Fresh planning: new goal, no previous failures — skip history
+    # Replanning: infinite loop, reassessment, retrospective — include history
+    is_replan = preserve_goal
+    context = gather_project_context(project_dir, provider=provider, include_history=is_replan)
     # Gather workspace state for planning context — errors in git detection
     # are handled gracefully (returns WorkspaceContext with is_git=False).
     ws_context = gather_workspace_context(project_dir)

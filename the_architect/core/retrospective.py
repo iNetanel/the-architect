@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 
 from the_architect.config import ArchitectConfig
 from the_architect.core.baseline import detect_changes, read_baseline
-from the_architect.core.planner import _rescue_stray_tasks, _summarize_progress_historical
+from the_architect.core.planner import _rescue_stray_tasks
 from the_architect.core.progress import reconcile_progress_with_task_files, task_is_done
 from the_architect.core.provider_setup import (
     ensure_provider_setup,
@@ -192,15 +192,24 @@ def _next_retro_task_slots(tasks_dir: Path, failed_prefixes: list[str]) -> dict[
 # Baseline evidence gathering
 # ---------------------------------------------------------------------------
 
+_MAX_DETAILED_BASELINES = 10  # Only detail the most recent baselines
+_MAX_BASELINE_EVIDENCE_BYTES = 50 * 1024  # 50KB cap to prevent E2BIG
+
 
 def _gather_baseline_evidence(project_dir: Path) -> str | None:
     """Read workspace baselines and produce a review-context section.
 
-    Discovers JSON baseline files in ``.architect/baselines/``, runs
-    :func:`baseline.detect_changes` for each, and formats a per-task
-    summary of created/modified/deleted files.  Returns ``None`` when
-    the directory is missing or empty so that the caller can skip adding
-    a baseline section to the review context.
+    Only includes detailed output for the most recent baselines (up to 10)
+    to prevent E2BIG crashes when the instruction is passed as a CLI
+    argument. Older baselines are summarized in a single line. Total
+    output is capped at 50KB.
+
+    Discovers JSON baseline files in ``.architect/baselines/``, sorted by
+    modification time (newest first), runs :func:`baseline.detect_changes`
+    for each detailed baseline, and formats a per-task summary of
+    created/modified/deleted files.  Returns ``None`` when the directory
+    is missing or empty so that the caller can skip adding a baseline
+    section to the review context.
 
     Errors during baseline reading or change detection are logged as
     warnings and the offending file is silently skipped.
@@ -216,12 +225,21 @@ def _gather_baseline_evidence(project_dir: Path) -> str | None:
     if not baselines_dir.is_dir():
         return None
 
-    json_files = sorted(baselines_dir.glob("*.json"))
+    # Sort by modification time, newest first
+    json_files = sorted(
+        baselines_dir.glob("*.json"),
+        key=lambda f: f.stat().st_mtime,
+        reverse=True,
+    )
     if not json_files:
         return None
 
     lines: list[str] = []
-    for json_file in json_files:
+    total_baselines = len(json_files)
+    detailed_files = json_files[:_MAX_DETAILED_BASELINES]
+    older_count = total_baselines - _MAX_DETAILED_BASELINES
+
+    for json_file in detailed_files:
         try:
             baseline = read_baseline(json_file)
         except (OSError, ValueError) as exc:
@@ -263,10 +281,24 @@ def _gather_baseline_evidence(project_dir: Path) -> str | None:
                 lines.append(f"  - {p}")
         lines.append("")
 
+    if older_count > 0:
+        lines.append(f"... plus {older_count} older baseline(s) (detailed output truncated)")
+        lines.append("")
+
     if not lines:
         return None
 
-    return "\n".join(lines)
+    result = "\n".join(lines)
+
+    # Cap total output at 50KB to prevent E2BIG when passed as CLI argument.
+    # Reserve space for the truncation suffix itself.
+    _trunc_suffix = "\n... (truncated — output exceeded size limit)"
+    _suffix_bytes = len(_trunc_suffix.encode("utf-8"))
+    if len(result.encode("utf-8")) > _MAX_BASELINE_EVIDENCE_BYTES:
+        cut = _MAX_BASELINE_EVIDENCE_BYTES - _suffix_bytes
+        result = result[:cut].rsplit("\n", 1)[0] + _trunc_suffix
+
+    return result if result.strip() else None
 
 
 # ---------------------------------------------------------------------------
@@ -277,12 +309,16 @@ def _gather_baseline_evidence(project_dir: Path) -> str | None:
 def _gather_review_context(project_dir: Path, original_goal: str) -> str:
     """Build a context string describing what the reviewer should assess.
 
+    Uses path references for large files (PROGRESS.md, task files) to prevent
+    E2BIG crashes. Small summaries and inline data stay embedded.
+
     Includes:
-    - Original planning goal
-    - PROGRESS.md historical summary (completed tasks, decisions)
-    - Current PROGRESS.md state (what's done, what failed)
-    - List of all task files and their headings
-    - Recent file changes (file tree)
+    - Original planning goal (inline — small)
+    - PROGRESS.md path reference (large file)
+    - Task files directory reference (multiple files)
+    - File tree (inline — small summary)
+    - Eval snapshot warnings (inline — small)
+    - Baseline evidence (inline — small summaries)
 
     Args:
         project_dir: The project root directory.
@@ -292,59 +328,36 @@ def _gather_review_context(project_dir: Path, original_goal: str) -> str:
         A context string for the reviewer agent.
     """
     parts: list[str] = []
-    total_chars = 0
-    max_chars = 12000  # Reviewer needs more context than planner
 
-    def add_part(header: str, content: str) -> None:
-        nonlocal total_chars
-        if total_chars + len(header) + len(content) + 10 > max_chars:
-            return
-        parts.append(f"{header}\n{content}")
-        total_chars += len(header) + len(content)
+    # Original goal — inline (small)
+    parts.append(f"## Original Goal\n{original_goal}")
 
-    # Original goal
-    add_part("## Original Goal", original_goal)
+    # ARCHITECT.md — reference by path for project context
+    architect_md = project_dir / "ARCHITECT.md"
+    if architect_md.exists():
+        parts.append(
+            f"## Project Intelligence\nRead {architect_md} for persistent project intelligence."
+        )
 
-    # PROGRESS.md — full current state (reviewer needs to see what failed)
+    # PROGRESS.md — reference by path (can be large)
     progress_md = project_dir / "tasks" / "PROGRESS.md"
     if progress_md.exists():
-        try:
-            content = progress_md.read_text(encoding="utf-8")
-            add_part("## Current PROGRESS.md (full content)", content)
-        except OSError as e:
-            logger.warning(f"Failed to read PROGRESS.md: {e}")
+        parts.append(
+            f"## Current PROGRESS.md\n"
+            f"Read {progress_md} for task progress, status, and completion details."
+        )
 
-    # Historical summary (completed tasks, permanent decisions)
-    if progress_md.exists():
-        try:
-            content = progress_md.read_text(encoding="utf-8")
-            summary = _summarize_progress_historical(content)
-            add_part("## Previous Plan History (context only)", summary)
-        except OSError as e:
-            logger.warning(f"Failed to read PROGRESS.md for history: {e}")
-
-    # Task files — list with headings
+    # Task files — reference directory (multiple files, can be large)
     tasks_dir = project_dir / "tasks"
     if tasks_dir.exists() and tasks_dir.is_dir():
-        task_lines = ["Existing task files:"]
-        for task_file in sorted(tasks_dir.iterdir()):
-            if task_file.name.startswith("architect_eval_"):
-                continue
-            if task_file.is_file() and task_file.suffix.lower() == ".md":
-                task_lines.append(f"- {task_file.name}")
-                # Read first line (heading) for context
-                try:
-                    first_line = task_file.read_text(encoding="utf-8").split("\n", 1)[0].strip()
-                    if first_line.startswith("#"):
-                        task_lines.append(f"  → {first_line}")
-                except OSError:
-                    pass
-        add_part("## Task Files", "\n".join(task_lines))
+        parts.append(f"## Task Files\nRead task files in {tasks_dir}/ for pending task details.")
 
-    # File tree — filtered
+    # File tree — inline (small summary, capped to prevent E2BIG)
+    _MAX_TREE_ENTRIES = 2000
     tree_lines = ["File tree:"]
     skip_dirs = {"__pycache__", ".git", "node_modules", ".venv", ".architect", ".pytest_cache"}
     resolved_root = project_dir.resolve()
+    tree_count = 0
     for path in sorted(project_dir.rglob("*")):
         if any(skip in path.parts for skip in skip_dirs):
             continue
@@ -356,10 +369,14 @@ def _gather_review_context(project_dir: Path, original_goal: str) -> str:
                     continue
             except (OSError, ValueError):
                 continue
+        tree_count += 1
+        if tree_count > _MAX_TREE_ENTRIES:
+            tree_lines.append(f"... ({tree_count - _MAX_TREE_ENTRIES} more files omitted)")
+            break
         rel = path.relative_to(project_dir)
         indent = "  " * (len(rel.parts) - 1)
         tree_lines.append(f"{indent}{rel.name}")
-    add_part("## File Tree", "\n".join(tree_lines))
+    parts.append("## File Tree\n" + "\n".join(tree_lines))
 
     eval_files = _find_eval_snapshot_files(project_dir)
     if eval_files:
@@ -387,12 +404,12 @@ def _gather_review_context(project_dir: Path, original_goal: str) -> str:
                 f"- {rel} -> original: {original_name} "
                 f"(snapshot: {snapshot_size}B, current: {original_size}B, {pct}% of snapshot)"
             )
-        add_part("## Leftover Eval Snapshot Files", "\n".join(eval_lines))
+        parts.append("## Leftover Eval Snapshot Files\n" + "\n".join(eval_lines))
 
-    # Baseline evidence — per-task file change summaries
+    # Baseline evidence — per-task file change summaries (inline — small)
     baseline_evidence = _gather_baseline_evidence(project_dir)
     if baseline_evidence:
-        add_part("## Task Baseline Evidence", baseline_evidence)
+        parts.append(f"## Task Baseline Evidence\n{baseline_evidence}")
 
     return "\n\n".join(parts)
 
@@ -791,7 +808,6 @@ async def run_task_reassessment(
 
     pending_tasks = discover_tasks(tasks_dir)
     before_contents: dict[str, str] = {}
-    task_sections: list[str] = []
     for task in pending_tasks:
         if task_is_done(project_dir / "tasks" / "PROGRESS.md", task.prefix):
             continue
@@ -800,22 +816,10 @@ async def run_task_reassessment(
         except OSError:
             continue
         before_contents[task.name] = text
-        task_sections.append(f"## {task.path.name}\n{text}")
 
-    try:
-        progress_content = (project_dir / "tasks" / "PROGRESS.md").read_text(encoding="utf-8")
-    except OSError:
-        progress_content = ""
-
-    # Load ARCHITECT.md so the reassessment agent has full project memory:
-    # permanent decisions, constraints, and lessons learned.
-    architect_md_content = ""
-    try:
-        from the_architect.core.architect_md import read_architect_md
-
-        architect_md_content = read_architect_md(project_dir) or ""
-    except Exception:
-        pass  # Non-fatal — reassessment proceeds without it
+    # Load ARCHITECT.md existence for path reference (content not embedded)
+    architect_md_path = project_dir / "ARCHITECT.md"
+    has_architect_md = architect_md_path.exists()
 
     eval_warning = ""
     if eval_files:
@@ -851,6 +855,9 @@ async def run_task_reassessment(
         )
         eval_warning = "\n".join(eval_lines)
 
+    # Build instruction using path references for large files to prevent E2BIG crashes.
+    # ARCHITECT.md (up to 40KB), PROGRESS.md, and all pending task files are referenced
+    # by path — the provider AI CLI has file system access to read them.
     instruction = "\n".join(
         [
             f"PROJECT ROOT: {project_dir}",
@@ -858,17 +865,13 @@ async def run_task_reassessment(
             f"Task status: {task_status}",
             f"Force reassessment: {'yes' if force else 'no'}",
             *([eval_warning, "---", ""] if eval_warning else []),
-            *(
-                [
-                    "=== ARCHITECT.md — Persistent Project Intelligence ===",
-                    architect_md_content,
-                    "---",
-                    "",
-                ]
-                if architect_md_content
-                else []
-            ),
-            "Read PROGRESS.md and pending task files only.",
+            "",
+            f"Read {architect_md_path} for persistent project intelligence."
+            if has_architect_md
+            else "ARCHITECT.md does not exist yet — no persistent memory available.",
+            f"Read {project_dir}/tasks/PROGRESS.md for current task progress.",
+            f"Read pending task files in {tasks_dir}/ for details.",
+            "",
             "Only update pending task files in tasks/ when the completed task materially "
             "changes future work.",
             "Do not modify completed tasks. Do not rewrite the whole plan. Preserve "
@@ -897,10 +900,6 @@ async def run_task_reassessment(
             f"Task: {completed_task}",
             "=== Outcome Summary ===",
             outcome_summary,
-            "=== Current PROGRESS.md ===",
-            progress_content,
-            "=== Pending Task Files ===",
-            "\n\n".join(task_sections),
             "If no changes are needed, make no edits.",
         ]
     )

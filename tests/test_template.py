@@ -716,6 +716,139 @@ class TestTemplateCLI:
         assert result.exit_code == 1
         assert "not found" in result.output
 
+    # -- template create --json ----------------------------------------------
+
+    def test_create_json_basic(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        result = cli_runner.invoke(
+            main,
+            [
+                "template",
+                "create",
+                "-p",
+                str(tmp_path),
+                "bugfix",
+                "-g",
+                "Fix {issue}",
+                "-d",
+                "Bug fix",
+                "--json",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["project"] == str(tmp_path)
+        assert payload["action"] == "created"
+        assert payload["template"]["name"] == "bugfix"
+        assert payload["template"]["goal_text"] == "Fix {issue}"
+        assert payload["template"]["variables"] == ["issue"]
+
+    def test_create_json_with_config(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        result = cli_runner.invoke(
+            main,
+            [
+                "template",
+                "create",
+                "-p",
+                str(tmp_path),
+                "sprint",
+                "-g",
+                "Sprint {goal}",
+                "-d",
+                "Sprint",
+                "-c",
+                "max_retries=5",
+                "--json",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["template"]["config_overrides"]["max_retries"] == 5
+        assert "created" in result.output or "created" in payload["action"]
+
+    def test_create_json_duplicate_error(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        cli_runner.invoke(
+            main,
+            ["template", "create", "-p", str(tmp_path), "bugfix", "-g", "Fix {issue}"],
+        )
+        result = cli_runner.invoke(
+            main,
+            [
+                "template",
+                "create",
+                "-p",
+                str(tmp_path),
+                "bugfix",
+                "-g",
+                "Fix {bug}",
+                "--json",
+            ],
+        )
+        assert result.exit_code == 1
+        payload = json.loads(result.output)
+        assert "error" in payload
+        assert "project" in payload
+        assert "already exists" in payload["error"]
+
+    def test_create_json_suppresses_rich(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        result = cli_runner.invoke(
+            main,
+            [
+                "template",
+                "create",
+                "-p",
+                str(tmp_path),
+                "plain",
+                "-g",
+                "A goal",
+                "--json",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        # JSON output should not contain Rich markup
+        assert "[green]" not in result.output
+        assert "[bold]" not in result.output
+        payload = json.loads(result.output)
+        assert payload["action"] == "created"
+
+    # -- template delete --json ----------------------------------------------
+
+    def test_delete_json_existing(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        create_template(tmp_path, "bugfix", "Fix {issue}", "Bug fix")
+        result = cli_runner.invoke(
+            main,
+            ["template", "delete", "-p", str(tmp_path), "bugfix", "--json"],
+        )
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["project"] == str(tmp_path)
+        assert payload["action"] == "deleted"
+        assert payload["template_name"] == "bugfix"
+        assert show_template(tmp_path, "bugfix") is None
+
+    def test_delete_json_missing(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        result = cli_runner.invoke(
+            main,
+            ["template", "delete", "-p", str(tmp_path), "nonexistent", "--json"],
+        )
+        assert result.exit_code == 1
+        payload = json.loads(result.output)
+        assert "error" in payload
+        assert "project" in payload
+        assert "not found" in payload["error"]
+
+    def test_delete_json_suppresses_rich(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        create_template(tmp_path, "bugfix", "Fix {issue}", "Bug fix")
+        result = cli_runner.invoke(
+            main,
+            ["template", "delete", "-p", str(tmp_path), "bugfix", "--json"],
+        )
+        assert result.exit_code == 0, result.output
+        # JSON output should not contain Rich markup
+        assert "[green]" not in result.output
+        assert "[bold]" not in result.output
+        payload = json.loads(result.output)
+        assert payload["action"] == "deleted"
+
     # -- template run --------------------------------------------------------
 
     def test_run_missing_template(self, cli_runner: CliRunner, tmp_path: Path) -> None:

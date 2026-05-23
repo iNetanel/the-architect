@@ -728,3 +728,169 @@ class TestPresetCLI:
         data = json.loads(r.output)
         assert len(data["presets"]) == 1
         assert data["presets"][0]["name"] == "short"
+
+    # -- preset create --json -------------------------------------------------
+
+    def test_create_json_basic(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        result = cli_runner.invoke(
+            main,
+            ["preset", "create", "-p", str(tmp_path), "sprint", "-d", "Fast iteration", "--json"],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["project"] == str(tmp_path)
+        assert data["action"] == "created"
+        assert data["preset"]["name"] == "sprint"
+        assert data["preset"]["description"] == "Fast iteration"
+
+    def test_create_json_with_fields(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        result = cli_runner.invoke(
+            main,
+            [
+                "preset",
+                "create",
+                "-p",
+                str(tmp_path),
+                "sprint",
+                "-f",
+                "max_retries=5",
+                "-f",
+                "integrity=false",
+                "--json",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["action"] == "created"
+        assert data["preset"]["config_overrides"]["max_retries"] == 5
+        assert data["preset"]["config_overrides"]["integrity"] is False
+
+    def test_create_json_suppresses_rich_output(
+        self, cli_runner: CliRunner, tmp_path: Path
+    ) -> None:
+        result = cli_runner.invoke(
+            main,
+            ["preset", "create", "-p", str(tmp_path), "test", "--json"],
+        )
+        assert result.exit_code == 0, result.output
+        # Output should be valid JSON only — no Rich markup
+        data = json.loads(result.output)
+        assert "preset" in data
+        assert "[green]" not in result.output
+
+    def test_create_json_update(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        cli_runner.invoke(
+            main,
+            ["preset", "create", "-p", str(tmp_path), "sprint", "-d", "v1"],
+        )
+        result = cli_runner.invoke(
+            main,
+            ["preset", "create", "-p", str(tmp_path), "sprint", "-d", "v2", "--json"],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["action"] == "updated"
+        assert data["preset"]["description"] == "v2"
+
+    def test_create_json_invalid_field(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        result = cli_runner.invoke(
+            main,
+            ["preset", "create", "-p", str(tmp_path), "bad", "-f", "no-equals", "--json"],
+        )
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert "error" in data
+        assert "KEY=VALUE" in data["error"]
+
+    def test_create_json_unknown_field(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        result = cli_runner.invoke(
+            main,
+            ["preset", "create", "-p", str(tmp_path), "x", "-f", "nonexistent=1", "--json"],
+        )
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert "error" in data
+        assert "unknown config field" in data["error"]
+
+    # -- preset apply --json --------------------------------------------------
+
+    def test_apply_json_basic(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        save_preset(tmp_path, "sprint", "Fast", {"max_retries": 5})
+        result = cli_runner.invoke(
+            main,
+            ["preset", "apply", "-p", str(tmp_path), "sprint", "--json"],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["project"] == str(tmp_path)
+        assert data["preset"] == "sprint"
+        assert data["fields_applied"] == 1
+        assert "config_file" in data
+
+    def test_apply_json_suppresses_rich_output(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        save_preset(tmp_path, "sprint", "Fast", {"max_retries": 5})
+        result = cli_runner.invoke(
+            main,
+            ["preset", "apply", "-p", str(tmp_path), "sprint", "--json"],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert "preset" in data
+        assert "[green]" not in result.output
+
+    def test_apply_json_missing_preset(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        result = cli_runner.invoke(
+            main,
+            ["preset", "apply", "-p", str(tmp_path), "nonexistent", "--json"],
+        )
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert "error" in data
+        assert "not found" in data["error"]
+
+    def test_apply_json_no_overrides(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        save_preset(tmp_path, "empty", "no fields", {})
+        result = cli_runner.invoke(
+            main,
+            ["preset", "apply", "-p", str(tmp_path), "empty", "--json"],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["fields_applied"] == 0
+        assert data["config_file"] is None
+
+    # -- preset delete --json -------------------------------------------------
+
+    def test_delete_json_basic(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        save_preset(tmp_path, "sprint", "Fast", {"max_retries": 5})
+        result = cli_runner.invoke(
+            main,
+            ["preset", "delete", "-p", str(tmp_path), "sprint", "--json"],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["project"] == str(tmp_path)
+        assert data["preset"] == "sprint"
+
+    def test_delete_json_suppresses_rich_output(
+        self, cli_runner: CliRunner, tmp_path: Path
+    ) -> None:
+        save_preset(tmp_path, "sprint", "Fast", {"max_retries": 5})
+        result = cli_runner.invoke(
+            main,
+            ["preset", "delete", "-p", str(tmp_path), "sprint", "--json"],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert "preset" in data
+        assert "[green]" not in result.output
+
+    def test_delete_json_missing_preset(self, cli_runner: CliRunner, tmp_path: Path) -> None:
+        result = cli_runner.invoke(
+            main,
+            ["preset", "delete", "-p", str(tmp_path), "nonexistent", "--json"],
+        )
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert "error" in data
+        assert "not found" in data["error"]

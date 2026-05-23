@@ -18,6 +18,19 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
+from the_architect.core.free_models import (
+    is_model_not_found_event as _is_model_not_found_event,
+)
+from the_architect.core.free_models import (
+    is_model_not_found_text as _is_model_not_found_text,
+)
+from the_architect.core.free_models import (
+    is_rate_limit_event as _is_rate_limit_event,
+)
+from the_architect.core.free_models import (
+    is_rate_limit_text as _is_rate_limit_text,
+)
+
 if TYPE_CHECKING:
     from the_architect.config import ArchitectConfig
     from the_architect.core.provider import ParsedEvent
@@ -75,7 +88,7 @@ def _get_default_agent_from_debug_config(project_dir: Path) -> str:
         result = subprocess.run(
             ["opencode", "debug", "config"],
             capture_output=True,
-            text=True,
+            encoding="utf-8",
             timeout=15,
             cwd=str(project_dir),
         )
@@ -150,7 +163,7 @@ class OpenCodeProvider:
             result = subprocess.run(
                 ["opencode", "--version"],
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
                 timeout=10,
             )
             if result.returncode == 0:
@@ -170,7 +183,7 @@ class OpenCodeProvider:
             result = subprocess.run(
                 ["opencode", "models"],
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
                 timeout=15,
             )
             if result.returncode != 0:
@@ -195,7 +208,7 @@ class OpenCodeProvider:
             result = subprocess.run(
                 ["opencode", "models"],
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
                 timeout=15,
             )
             if result.returncode != 0:
@@ -233,7 +246,7 @@ class OpenCodeProvider:
             result = subprocess.run(
                 ["opencode", "agent", "list"],
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
                 timeout=15,
                 cwd=str(project_dir),
             )
@@ -258,7 +271,7 @@ class OpenCodeProvider:
             result = subprocess.run(
                 ["opencode", "debug", "config"],
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
                 timeout=15,
                 cwd=str(project_dir),
             )
@@ -346,7 +359,7 @@ class OpenCodeProvider:
             result = subprocess.run(
                 ["opencode", "debug", "config"],
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
                 timeout=15,
                 cwd=str(project_dir),
             )
@@ -571,7 +584,15 @@ class OpenCodeProvider:
 
     @property
     def instruction_via_stdin(self) -> bool:
-        """OpenCode receives its instruction as a command-line argument."""
+        """OpenCode receives its instruction as a command-line argument.
+
+        OpenCode's ``run`` subcommand does not support reading the instruction
+        from stdin — it requires the instruction as a positional argument after
+        ``--``.  E2BIG (argument list too long) is prevented by capping the
+        retrospective baseline evidence at 50KB and the file tree at 2000
+        entries in :func:`the_architect.core.retrospective._gather_baseline_evidence`
+        and :func:`the_architect.core.retrospective._gather_review_context`.
+        """
         return False
 
     def build_command(
@@ -584,9 +605,10 @@ class OpenCodeProvider:
 
         Uses ``--format json`` so opencode emits structured JSON events
         that The Architect can parse for token usage and display rendering.
+        The instruction IS included in the command list after ``--``.
 
         Args:
-            instruction: The instruction string to pass to opencode run.
+            instruction: The instruction string — appended to the command.
             model_override: Optional model name to pass via --model flag.
             agent_override: Optional agent name to pass via --agent flag.
 
@@ -752,13 +774,17 @@ class OpenCodeProvider:
         if etype == "error":
             msg = event.get("message", event.get("error", ""))
             display_lines.append(f"Error: {msg}")
-            # Rate-limit detection
-            from the_architect.core.free_models import is_model_not_found_event, is_rate_limit_event
-
-            if is_rate_limit_event(line):
+            # Rate-limit detection via structured event parsing
+            if _is_rate_limit_event(line):
                 rate_limit = True
-            if is_model_not_found_event(line):
+            if _is_model_not_found_event(line):
                 model_not_found = True
+
+        # Detect rate-limit / model-not-found in any remaining display text
+        if not rate_limit and display_lines:
+            combined = " ".join(display_lines)
+            rate_limit = _is_rate_limit_text(combined)
+            model_not_found = _is_model_not_found_text(combined)
 
         return ParsedEvent(
             event_type=etype,
@@ -836,7 +862,7 @@ class OpenCodeProvider:
                 headers={"Accept": "application/json"},
             )
             with urllib.request.urlopen(req, timeout=5) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+                data = json.loads(resp.read().decode("utf-8", errors="replace"))
                 latest = data.get("version", "")
                 if not latest:
                     return ""

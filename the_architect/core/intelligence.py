@@ -79,17 +79,18 @@ def build_intelligence_instruction(
     project_dir: Path,
     structure_report: StructureReport,
     project_context: str,
-    architect_md_content: str,
     reasons: list[str],
     structured_intelligence_content: str = "",
 ) -> str:
     """Build the instruction sent to the project intelligence curator.
 
+    Uses path references for large files (ARCHITECT.md, large context) to prevent
+    E2BIG crashes. The provider AI CLI has file system access to read them.
+
     Args:
         project_dir: Project root.
         structure_report: Deterministic structure report.
         project_context: Bounded project context from the normal planner gatherer.
-        architect_md_content: Current durable memory content.
         reasons: Quality-gate reasons that triggered the pass.
         structured_intelligence_content: Validated deterministic structured intelligence summary.
 
@@ -98,6 +99,26 @@ def build_intelligence_instruction(
     """
     reason_block = "\n".join(f"- {reason}" for reason in reasons) or "- Manual refresh requested."
     structure_prompt = format_structure_for_prompt(structure_report)
+
+    # Reference ARCHITECT.md by path (can be up to 40KB)
+    architect_path = project_dir / "ARCHITECT.md"
+
+    # Structured intelligence — inline if small, path ref if large
+    intel_path = project_dir / ".architect" / "intelligence.json"
+    if structured_intelligence_content and len(structured_intelligence_content) > 2000:
+        intel_section = f"Read {intel_path} for structured project intelligence."
+    elif structured_intelligence_content:
+        intel_section = structured_intelligence_content
+    else:
+        intel_section = "No validated structured intelligence cache is available."
+
+    # Project context — inline if small, path ref if large
+    progress_path = project_dir / "tasks" / "PROGRESS.md"
+    if len(project_context) > 5000:
+        context_section = f"Read {progress_path} for task progress history."
+    else:
+        context_section = project_context
+
     return f"""# Project Intelligence Refresh
 
 Project root: `{project_dir}`
@@ -112,9 +133,7 @@ accurate durable project memory. Do not add current goal, task, or run details.
 
 ## Current ARCHITECT.md
 
-```md
-{architect_md_content}
-```
+Read `{architect_path}` for existing project intelligence.
 
 ## Deterministic Structure Report
 
@@ -122,11 +141,11 @@ accurate durable project memory. Do not add current goal, task, or run details.
 
 ## Structured Project Intelligence
 
-{structured_intelligence_content or "No validated structured intelligence cache is available."}
+{intel_section}
 
 ## Bounded Project Context
 
-{project_context}
+{context_section}
 
 Remember: edit only `ARCHITECT.md`; do not create task files or implementation changes.
 If no durable project knowledge or conflict is found, leave `ARCHITECT.md` unchanged.
@@ -179,7 +198,6 @@ async def refresh_project_intelligence(
         project_dir=project_dir,
         structure_report=structure_report,
         project_context=project_context,
-        architect_md_content=architect_md_content,
         reasons=assessment.reasons,
         structured_intelligence_content=structured_intelligence_content,
     )

@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from the_architect.core.circuit import CircuitBreaker
     from the_architect.core.presets import Preset
     from the_architect.core.project_health import HealthCheck
+    from the_architect.core.resume_verification import ResumeVerificationResult
     from the_architect.core.templates import GoalTemplate
 
 from datetime import UTC
@@ -47,7 +48,14 @@ from rich.markup import escape
 
 from the_architect import __full_version__, __version__
 from the_architect.config import ArchitectConfig, load_config, write_config
+from the_architect.core.cost_analytics import CostAnalytics
 from the_architect.core.estimate_cost import EstimateResult
+from the_architect.core.hooks import (
+    HookEvent,
+    HookResult,
+    execute_hooks_for_event,
+    load_hooks,
+)
 from the_architect.core.monitor_state import MonitorStateWriter
 from the_architect.core.planner import (
     GOAL_FILE_NAME,
@@ -57,9 +65,9 @@ from the_architect.core.planner import (
     run_planner,
 )
 from the_architect.core.progress import (
+    find_failed_tasks,
     reconcile_progress_with_task_files,
     reconcile_task_status,
-    replace_task_status,
     task_is_done,
     task_is_resolved,
     task_status,
@@ -115,6 +123,7 @@ console = Console()
 GOAL_DISPLAY_LIMIT = 400
 _PERSISTENT_MAX_RETRIES = 30
 _PERSISTENT_RETROSPECTIVE_ROUNDS = 3
+_PERSISTENT_FIXUP_ATTEMPTS = 5
 _INFINITE_LOOP_RETROSPECTIVE_ROUNDS = 2
 
 
@@ -133,6 +142,58 @@ def _truncate_goal_for_display(goal: str, limit: int = GOAL_DISPLAY_LIMIT) -> st
     if len(normalized) <= limit:
         return normalized
     return normalized[:limit] + "..."
+
+
+async def _fire_hooks(
+    project: Path,
+    event: HookEvent,
+    context: dict[str, str] | None = None,
+    renderer: object | None = None,
+) -> list[HookResult]:
+    """Fire all enabled hooks for *event* in *project*.
+
+    Non-blocking, non-fatal — hook failures are logged but never
+    propagate to the caller.  Follows the notification silent-failure
+    pattern from ``notifications.py``.
+
+    Args:
+        project: The project root directory.
+        event: The lifecycle event to fire hooks for.
+        context: Optional environment variables to inject into the subprocess.
+        renderer: Optional TUI renderer for pushing hook events to
+            the diagnostics tab.
+
+    Returns:
+        List of HookResult objects (one per matching enabled hook).
+    """
+    try:
+        hooks = load_hooks(project)
+        if not hooks:
+            return []
+        results = await execute_hooks_for_event(hooks, event, context=context)
+        for r in results:
+            if r.exit_code != 0:
+                logger.warning(f"Hook '{event}' failed (exit {r.exit_code}): {r.command!r}")
+            else:
+                logger.info(f"Hook '{event}' completed: {r.command!r}")
+            # Push hook execution event to the TUI diagnostics tab
+            if renderer is not None:
+                try:
+                    renderer.push_event_line(  # type: ignore[attr-defined]
+                        "hooks",
+                        {
+                            "event": str(r.event),
+                            "command": r.command,
+                            "exit_code": str(r.exit_code),
+                            "duration": f"{r.duration_seconds:.1f}s",
+                        },
+                    )
+                except Exception:
+                    pass
+        return results
+    except Exception as exc:
+        logger.debug(f"Hook execution failed (non-fatal): {exc!r}")
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -263,6 +324,9 @@ def _apply_persistent_mode(config: ArchitectConfig, enabled: bool | None = None)
     if config.persistent:
         config.max_retries = _PERSISTENT_MAX_RETRIES
         config.retrospective_rounds = _PERSISTENT_RETROSPECTIVE_ROUNDS
+        # Also increase fixup_attempts for more resilient gate recovery
+        if "fixup_attempts" not in config.validation_gate:
+            config.validation_gate["fixup_attempts"] = _PERSISTENT_FIXUP_ATTEMPTS
 
 
 def _infinite_loop_active(config: ArchitectConfig) -> bool:
@@ -1681,6 +1745,7 @@ def _prompt_resume_screen(
     pending_tasks: list[Task],
     config: ArchitectConfig,
     provider: ArchitectProvider | None = None,
+    verification_results: list[ResumeVerificationResult] | None = None,
 ) -> dict[str, bool | int | str]:
     """Show a resume screen when pending tasks exist from a previous run.
 
@@ -1696,6 +1761,9 @@ def _prompt_resume_screen(
         config: Current ArchitectConfig (used for pre-filling settings).
         provider: The active AI CLI provider.  Used to determine which
             options are available.
+        verification_results: Optional verification results showing which
+            completed tasks are still valid. Passed to the TUI resume
+            screen for display.
 
     Returns:
         Dictionary with keys:
@@ -1716,6 +1784,7 @@ def _prompt_resume_screen(
                 pending_tasks=pending_tasks,
                 config=config,
                 show_free=show_free_tui,
+                verification_results=verification_results,
             )
         except SystemExit:
             raise
@@ -2923,6 +2992,7 @@ async def _run_tasks_raw(
     original_goal: str = "",
     model_override: str | None = None,
     use_tui: bool = False,
+    verify_resume: bool = True,
 ) -> tuple[bool, list[TaskResult], float]:
     """Run all tasks with provider output going directly to the terminal.
 
@@ -2937,6 +3007,11 @@ async def _run_tasks_raw(
         free_rotator: Optional FreeModelRotator for --free mode.
         monitor_writer: Optional MonitorStateWriter for dashboard state updates.
         provider: The AI CLI provider to use.  Defaults to auto-detection.
+        original_goal: Original planning goal text for the TUI display.
+        model_override: Architect model override for replanning.
+        use_tui: Whether the Textual TUI is active.
+        verify_resume: When ``True`` (default), verify completed tasks
+            against their baselines before resuming.
 
     Returns:
         Tuple of (all_succeeded, results, total_duration).
@@ -3320,6 +3395,7 @@ async def _run_tasks_raw(
                     "prefix": t.prefix,
                     "title": t.title or t.name,
                     "status": _tui_task_statuses.get(t.prefix, "pending"),
+                    "priority": t.priority or "medium",
                     **_tui_task_details.get(t.prefix, {}),
                 }
                 for t in plan.tasks
@@ -3403,6 +3479,7 @@ async def _run_tasks_raw(
                 "Circuit cooldown": f"{config.circuit_cooldown_minutes}m",
                 "Token budget/hour": str(config.token_budget_per_hour or "unlimited"),
                 "Token budget/run": str(config.token_budget_per_run or "unlimited"),
+                "Task timeout": str(config.task_timeout or "unlimited"),
                 "Tasks in run": str(len(plan.tasks)),
             }
 
@@ -3685,6 +3762,12 @@ async def _run_tasks_raw(
             _td = on_task_done
             _tf = on_task_failed
 
+        # ── Pre-run hooks ────────────────────────────────────────────────
+        _hook_renderer: object | None = None
+        if _tui_session.app is not None:
+            _hook_renderer = _tui_session.renderer
+        await _fire_hooks(project, HookEvent.pre_run, renderer=_hook_renderer)
+
         success = await run_all(
             plan=plan,
             config=config,
@@ -3700,6 +3783,7 @@ async def _run_tasks_raw(
             provider=provider,
             on_first_output=None,
             renderer=_tui_session.renderer,
+            verify_resume=verify_resume,
         )
 
     # Clear overlay ref once the main app has torn down.
@@ -3989,6 +4073,8 @@ def _render_dry_run_summary(
         console.print(f"  Token budget/hour: [bold]{config.token_budget_per_hour}[/bold]")
     if config.token_budget_per_run > 0:
         console.print(f"  Token budget/run: [bold]{config.token_budget_per_run}[/bold]")
+    if config.task_timeout > 0:
+        console.print(f"  Task timeout: [bold]{config.task_timeout}s[/bold]")
     console.print()
 
     # Footer
@@ -4093,6 +4179,8 @@ def _format_dry_run_json(
         config_out["token_budget_per_hour"] = config.token_budget_per_hour
     if config.token_budget_per_run > 0:
         config_out["token_budget_per_run"] = config.token_budget_per_run
+    if config.task_timeout > 0:
+        config_out["task_timeout"] = config.task_timeout
 
     result: dict[str, object] = {
         "tasks": tasks_out,
@@ -4224,6 +4312,13 @@ def _format_dry_run_json(
     default=False,
     help="Output dry-run summary as structured JSON (only effective with --dry-run)",
 )
+@click.option(
+    "--no-verify-resume",
+    "no_verify_resume",
+    is_flag=True,
+    default=False,
+    help="Disable automatic resume verification (skip baseline comparison)",
+)
 def main(
     ctx: click.Context,
     project: Path | None,
@@ -4242,6 +4337,7 @@ def main(
     no_tui: bool,
     dry_run: bool,
     as_json: bool,
+    no_verify_resume: bool,
 ) -> None:
     """The Architect — fire-and-forget autonomous development."""
     _setup_loguru()
@@ -4785,6 +4881,10 @@ def main(
                     config.integrity = bool(modes.get("integrity", config.integrity))
                     if modes.get("token_budget_per_hour"):
                         config.token_budget_per_hour = modes["token_budget_per_hour"]
+                    # ── Validation Gate ────────────────────────
+                    vg_mode = modes.get("validation_gate")
+                    if isinstance(vg_mode, dict) and vg_mode:
+                        config.validation_gate = vg_mode
 
             if persistent:
                 _apply_persistent_mode(config, True)
@@ -4805,6 +4905,7 @@ def main(
                         "persistent": config.persistent,
                         "integrity": config.integrity,
                         "token_budget_per_hour": config.token_budget_per_hour,
+                        "validation_gate": config.validation_gate,
                         "last_scope": scope_text,
                         "architect_model": architect_model,
                     },
@@ -4849,6 +4950,7 @@ def main(
                         _return_after_planning=infinite_loop_enabled and plan_local["v"],
                         dry_run=dry_run,
                         as_json=as_json,
+                        verify_resume=not no_verify_resume,
                     )
                 except SystemExit as exc:
                     logger.info(
@@ -5080,6 +5182,7 @@ def _run_main(
     _return_after_planning: bool = False,
     dry_run: bool = False,
     as_json: bool = False,
+    verify_resume: bool = True,
 ) -> None:
     """Main flow: planning, execution, and retrospective review.
 
@@ -5129,6 +5232,9 @@ def _run_main(
         dry_run: Dry-run mode — run the planner, display the plan summary,
             and exit without executing any tasks.
         as_json: Output dry-run summary as structured JSON instead of Rich tables.
+        verify_resume: When ``True`` (default), verify completed tasks against
+            their baselines before resuming a partially-finished run.
+            Set to ``False`` via ``--no-verify-resume`` to disable.
     """
     # Use the pre-loaded config when available (interactive prompts and
     # opencode checks already ran in main() before the alternate screen).
@@ -5200,6 +5306,10 @@ def _run_main(
                 config.integrity = bool(modes.get("integrity", config.integrity))
                 if modes.get("token_budget_per_hour"):
                     config.token_budget_per_hour = modes["token_budget_per_hour"]
+                # ── Validation Gate ────────────────────────
+                vg_mode = modes.get("validation_gate")
+                if isinstance(vg_mode, dict) and vg_mode:
+                    config.validation_gate = vg_mode
 
         if persistent:
             _apply_persistent_mode(config, True)
@@ -5218,6 +5328,7 @@ def _run_main(
                     "persistent": config.persistent,
                     "integrity": config.integrity,
                     "token_budget_per_hour": config.token_budget_per_hour,
+                    "validation_gate": config.validation_gate,
                     "last_scope": scope_text,
                     "architect_model": architect_model,
                 },
@@ -5327,6 +5438,34 @@ def _run_main(
         and not from_task
         and not _infinite_loop_active(config)
     ):
+        # ── Pre-verification: check completed tasks before resume screen ──
+        # Verification runs before the screen so results can be displayed
+        # to the user. The runner will skip already-verified tasks.
+        _verify_results: list[ResumeVerificationResult] | None = None
+        if verify_resume:
+            _done_tasks = [t for t in tasks if t.status.value == "done"]
+            if _done_tasks:
+                try:
+                    from the_architect.core.resume_verification import (
+                        verify_all_completed_tasks,
+                    )
+                    from the_architect.core.tasks import TaskPlan
+
+                    _plan = TaskPlan(tasks=tasks)
+                    _verify_results = verify_all_completed_tasks(_plan, config)
+                    _vc = sum(1 for r in _verify_results if r.status == "valid")
+                    _sc = sum(1 for r in _verify_results if r.status == "stale")
+                    _mc = sum(1 for r in _verify_results if r.status == "missing")
+                    logger.info(
+                        "Pre-verification: %d valid, %d stale, %d missing",
+                        _vc,
+                        _sc,
+                        _mc,
+                    )
+                except Exception as _exc:
+                    logger.warning("Pre-verification failed — proceeding without it: {_exc!r}")
+                    _verify_results = None
+
         any_mode_flag = persistent or free_mode
         if not any_mode_flag:
             if (use_tui or _tui_mode_enabled()) and provider is not None:
@@ -5348,6 +5487,7 @@ def _run_main(
                     persistent=persistent,
                     pending_tasks=pending,
                     action="execute",
+                    verification_results=_verify_results,
                 )
                 if pre_run is None:
                     raise SystemExit(0)
@@ -5395,7 +5535,12 @@ def _run_main(
                                 f"{exc!r} — keeping current provider"
                             )
             else:
-                resume = _prompt_resume_screen(pending, config, provider=provider)
+                resume = _prompt_resume_screen(
+                    pending,
+                    config,
+                    provider=provider,
+                    verification_results=_verify_results,
+                )
                 # Clear the resume-screen UI before the next content renders.
                 # _prompt_resume_screen uses full_screen=False so its rendered
                 # text stays in the scroll buffer.  Without this clear the
@@ -5581,6 +5726,7 @@ def _run_main(
                 original_goal=original_goal,
                 model_override=architect_model or None,
                 use_tui=use_tui,
+                verify_resume=verify_resume,
             )
         )
     except RuntimeError as e:
@@ -5761,6 +5907,7 @@ def _run_main(
                         original_goal=original_goal,
                         model_override=architect_model or None,
                         use_tui=use_tui,
+                        verify_resume=verify_resume,
                     )
                 )
             except RuntimeError as e:
@@ -5902,6 +6049,17 @@ def _run_main(
             )
         except Exception as _notif_exc:
             logger.debug(f"Run completion notification failed (non-fatal): {_notif_exc!r}")
+
+        # ── Post-run hooks ────────────────────────────────────────────────
+        try:
+            asyncio.run(
+                _fire_hooks(
+                    project,
+                    HookEvent.post_run_success if success else HookEvent.post_run_failure,
+                )
+            )
+        except Exception as _hook_exc:
+            logger.debug(f"Post-run hook failed (non-fatal): {_hook_exc!r}")
     except Exception as exc:
         # Summary generation must not crash the process — log and continue.
         logger.error(f"Error generating final summary: {exc!r}")
@@ -5918,6 +6076,26 @@ def _run_main(
 # ---------------------------------------------------------------------------
 
 
+def _format_priority_cell(priority: str | None) -> str:
+    """Return a Rich markup string for a task priority value.
+
+    Args:
+        priority: The priority string or ``None`` (defaults to medium).
+
+    Returns:
+        A Rich markup string with color-coded priority indicator.
+    """
+    effective = priority if priority else "medium"
+    if effective == "critical":
+        return "[red]● Critical[/red]"
+    if effective == "high":
+        return "[yellow]● High[/yellow]"
+    if effective == "medium":
+        return "[dim]○ Medium[/dim]"
+    # low
+    return "[dim]○ Low[/dim]"
+
+
 def _format_list_json(
     project: Path,
     tasks: list[Task],
@@ -5932,7 +6110,7 @@ def _format_list_json(
 
     Returns:
         JSON string with project path and tasks array containing
-        prefix, title, status, and depends_on per task.
+        prefix, title, status, depends_on, and priority per task.
     """
     tasks_out: list[dict[str, object]] = []
     for task in tasks:
@@ -5943,6 +6121,7 @@ def _format_list_json(
                 "title": task.title or task.name,
                 "status": status,
                 "depends_on": task.depends_on,
+                "priority": task.priority if task.priority else "medium",
             }
         )
     result: dict[str, object] = {
@@ -6014,6 +6193,7 @@ def list_cmd(project: Path | None, use_tui: bool, as_json: bool) -> None:
     table = Table(box=box.SIMPLE, show_header=True, header_style="dim", padding=(0, 1))
     table.add_column("Task", width=8)
     table.add_column("Title")
+    table.add_column("Priority", width=14)
     table.add_column("Deps", width=16)
     table.add_column("Status", width=10)
 
@@ -6030,12 +6210,15 @@ def list_cmd(project: Path | None, use_tui: bool, as_json: bool) -> None:
         else:
             status_cell = "[dim]○ Pending[/dim]"
 
+        # Format priority display
+        priority_cell = _format_priority_cell(task.priority)
+
         # Format dependency display
         if task.depends_on:
             deps_cell = "→ " + ", ".join(task.depends_on)
         else:
             deps_cell = "—"
-        table.add_row(task.prefix, task.title or task.name, deps_cell, status_cell)
+        table.add_row(task.prefix, task.title or task.name, priority_cell, deps_cell, status_cell)
 
     console.print()
     console.print(table)
@@ -6055,7 +6238,7 @@ def _format_deps_json(
 
     Returns:
         JSON string with project path and tasks array containing
-        prefix, title, status, depends_on, and depended_by per task.
+        prefix, title, status, depends_on, depended_by, and priority per task.
     """
     # Build reverse dependency map: prefix -> list of prefixes that depend on it
     depended_by_map: dict[str, list[str]] = {}
@@ -6073,6 +6256,7 @@ def _format_deps_json(
                 "status": status,
                 "depends_on": task.depends_on,
                 "depended_by": depended_by_map.get(task.prefix, []),
+                "priority": task.priority if task.priority else "medium",
             }
         )
     result: dict[str, object] = {
@@ -6090,12 +6274,18 @@ def _format_deps_json(
     default=None,
 )
 @click.option(
+    "--tui",
+    "use_tui",
+    is_flag=True,
+    help="Render the dependency graph in the Textual TUI",
+)
+@click.option(
     "--json",
     "as_json",
     is_flag=True,
     help="Output as machine-readable JSON",
 )
-def deps_cmd(project: Path | None, as_json: bool) -> None:
+def deps_cmd(project: Path | None, use_tui: bool, as_json: bool) -> None:
     """Show the task dependency graph.
 
     Displays each task with its dependencies (tasks it depends on) and
@@ -6104,6 +6294,20 @@ def deps_cmd(project: Path | None, as_json: bool) -> None:
     """
     _setup_loguru()
     proj = (project or Path.cwd()).resolve()
+
+    # Mutual exclusion: --json cannot be combined with --tui
+    if as_json and use_tui:
+        console.print("[red]Error: --json and --tui are mutually exclusive.[/red]")
+        raise SystemExit(1)
+
+    if use_tui or (not as_json and _tui_mode_enabled()):
+        try:
+            from the_architect.tui.screens import run_deps_screen
+
+            run_deps_screen(project=proj)
+            return
+        except Exception as exc:
+            logger.debug(f"TUI deps screen failed, falling back to rich: {exc!r}")
 
     config = load_config(proj)
     tasks_dir = proj / config.tasks_dir.name
@@ -6135,6 +6339,7 @@ def deps_cmd(project: Path | None, as_json: bool) -> None:
     table = Table(box=box.SIMPLE, show_header=True, header_style="dim", padding=(0, 1))
     table.add_column("Task", width=8)
     table.add_column("Title")
+    table.add_column("Priority", width=14)
     table.add_column("Depends On", width=16)
     table.add_column("Depended By", width=16)
     table.add_column("Status", width=10)
@@ -6152,6 +6357,9 @@ def deps_cmd(project: Path | None, as_json: bool) -> None:
         else:
             status_cell = "[dim]○ Pending[/dim]"
 
+        # Format priority display
+        priority_cell = _format_priority_cell(task.priority)
+
         # Format dependency display
         if task.depends_on:
             deps_cell = "→ " + ", ".join(task.depends_on)
@@ -6165,21 +6373,56 @@ def deps_cmd(project: Path | None, as_json: bool) -> None:
         else:
             dependents_cell = "—"
 
-        table.add_row(task.prefix, task.title or task.name, deps_cell, dependents_cell, status_cell)
+        table.add_row(
+            task.prefix,
+            task.title or task.name,
+            priority_cell,
+            deps_cell,
+            dependents_cell,
+            status_cell,
+        )
 
     console.print()
     console.print(table)
 
 
 @main.command()
-@click.option("--task", "-t", required=True, help="Task prefix to retry (e.g. T03)")
+@click.option("--task", "-t", default=None, help="Task prefix to retry (e.g. T03)")
+@click.option("--last", "last", is_flag=True, default=False, help="Retry the last failed task")
+@click.option(
+    "--failed",
+    "reset_failed",
+    is_flag=True,
+    default=False,
+    help="Reset all failed tasks to Pending (does not run them)",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Output in JSON format for scripted workflows",
+)
+@click.option(
+    "--yes",
+    "--force",
+    "force",
+    is_flag=True,
+    help="Skip confirmation prompt (required with --json)",
+)
 @click.option(
     "--project",
     "-p",
     type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
     default=None,
 )
-def retry(task: str, project: Path | None) -> None:
+def retry(
+    task: str | None,
+    last: bool,
+    reset_failed: bool,
+    as_json: bool,
+    force: bool,
+    project: Path | None,
+) -> None:
     """Retry a specific task (reset its terminal status and re-run).
 
     Handles both Done and Failed rows — flipping either back to Pending
@@ -6187,37 +6430,201 @@ def retry(task: str, project: Path | None) -> None:
     escape hatch when a task has been marked Failed by the runner's
     retry exhaustion and the user wants to try again after fixing an
     external issue (e.g. restoring network access, fixing credentials).
+
+    Use --last to retry the most recent failed task.  Use --failed to
+    reset all failed tasks to Pending so the next run picks them up.
     """
     _setup_loguru()
+
+    task_obj: Task | None = None
+    task_prefix: str | None = None
+    previous_status: str | None = None
+
+    # Validate mutual exclusivity
+    flags_used = sum([task is not None, last, reset_failed])
+    if flags_used > 1:
+        if as_json:
+            click.echo(
+                json.dumps(
+                    {
+                        "project": str(project or Path.cwd()),
+                        "error": "--task, --last, and --failed are mutually exclusive",
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            console.print("[red]Error: --task, --last, and --failed are mutually exclusive.[/red]")
+        raise SystemExit(1)
+
+    # --json requires --force — no interactive retry in scripted mode
+    if as_json and not force:
+        click.echo(json.dumps({"project": str(project or Path.cwd()), "cancelled": True}, indent=2))
+        return
+
     proj = (project or Path.cwd()).resolve()
     config = load_config(proj)
     progress_file = config.progress_file
-
-    if not task_is_resolved(progress_file, task):
-        console.print(f"[dim]Task {task} is not in a terminal state — running now.[/dim]")
-
-    # Reset in PROGRESS.md if it was Done, Failed, or Blocked.  Use the
-    # authoritative reconciler so we don't have to know the old status.
-    if progress_file.exists():
-        current = task_status(progress_file, task)
-        if current in ("Done", "Failed", "Blocked"):
-            if reconcile_task_status(progress_file, task, "Pending", completed="—"):
-                console.print(f"[dim]Reset {task} ({current} → Pending).[/dim]")
-
     tasks_dir = proj / config.tasks_dir.name
-    all_tasks = discover_tasks(tasks_dir)
-    task_obj = next((t for t in all_tasks if t.prefix.upper() == task.upper()), None)
 
-    if not task_obj:
-        console.print(f"[red]Task {task} not found in tasks/.[/red]")
+    # --- Handle --last: retry the most recent failed task ---
+    if last:
+        from the_architect.core.progress import find_failed_tasks
+
+        failed = find_failed_tasks(progress_file, tasks_dir)
+        if not failed:
+            if as_json:
+                click.echo(
+                    json.dumps({"project": str(proj), "error": "No failed tasks found"}, indent=2)
+                )
+            else:
+                console.print("[yellow]No failed tasks found.[/yellow]")
+            raise SystemExit(1)
+        target_task = failed[-1]  # last in plan order
+        previous_status = "Failed"
+        task_prefix = target_task.prefix
+        task_obj = target_task
+        if as_json:
+            click.echo(
+                json.dumps(
+                    {
+                        "project": str(proj),
+                        "task_id": task_prefix,
+                        "title": target_task.title,
+                        "action": "retry_last",
+                        "previous_status": previous_status,
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            console.print(
+                f"[dim]Retrying last failed task: {task_prefix} ({target_task.title})[/dim]"
+            )
+
+    # --- Handle --failed: reset all failed tasks to Pending ---
+    elif reset_failed:
+        from the_architect.core.progress import find_failed_tasks
+
+        failed = find_failed_tasks(progress_file, tasks_dir)
+        if not failed:
+            if as_json:
+                click.echo(
+                    json.dumps(
+                        {"project": str(proj), "error": "No failed tasks to reset"}, indent=2
+                    )
+                )
+            else:
+                console.print("[yellow]No failed tasks to reset.[/yellow]")
+            raise SystemExit(1)
+        reset_count = 0
+        for t in failed:
+            if reconcile_task_status(progress_file, t.prefix, "Pending", completed="—"):
+                reset_count += 1
+        if as_json:
+            click.echo(
+                json.dumps(
+                    {
+                        "project": str(proj),
+                        "action": "reset_failed",
+                        "count": reset_count,
+                        "tasks": [{"task_id": t.prefix, "title": t.title} for t in failed],
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            console.print(f"[dim]Reset {reset_count} failed task(s) to Pending.[/dim]")
+            for t in failed:
+                console.print(f"  [dim]  {t.prefix} — {t.title}[/dim]")
+            console.print("[dim]Run [bold]architect[/bold] to execute the reset tasks.[/dim]")
+        raise SystemExit(0)
+
+    # --- Handle --task: retry a specific task (existing behavior) ---
+    elif task is not None:
+        task_prefix = task
+        if not task_is_resolved(progress_file, task_prefix):
+            if as_json:
+                pass  # suppressed — will be in JSON output
+            else:
+                console.print(
+                    f"[dim]Task {task_prefix} is not in a terminal state — running now.[/dim]"
+                )
+
+        # Reset in PROGRESS.md if it was Done, Failed, or Blocked.
+        if progress_file.exists():
+            current = task_status(progress_file, task_prefix)
+            if current in ("Done", "Failed", "Blocked"):
+                previous_status = current
+                if reconcile_task_status(progress_file, task_prefix, "Pending", completed="—"):
+                    if as_json:
+                        pass  # suppressed — will be in JSON output
+                    else:
+                        console.print(f"[dim]Reset {task_prefix} ({current} → Pending).[/dim]")
+
+        all_tasks = discover_tasks(tasks_dir)
+        task_obj = next((t for t in all_tasks if t.prefix.upper() == task_prefix.upper()), None)
+
+        if not task_obj:
+            if as_json:
+                click.echo(
+                    json.dumps(
+                        {
+                            "project": str(proj),
+                            "task_id": task_prefix,
+                            "error": f"Task {task_prefix} not found in tasks/",
+                        },
+                        indent=2,
+                    )
+                )
+            else:
+                console.print(f"[red]Task {task_prefix} not found in tasks/.[/red]")
+            raise SystemExit(1)
+
+        if as_json:
+            click.echo(
+                json.dumps(
+                    {
+                        "project": str(proj),
+                        "task_id": task_prefix,
+                        "title": task_obj.title,
+                        "action": "retry_task",
+                        "previous_status": previous_status or "Pending",
+                        "reset_status": "Pending",
+                    },
+                    indent=2,
+                )
+            )
+
+    else:
+        if as_json:
+            click.echo(
+                json.dumps(
+                    {
+                        "project": str(proj),
+                        "error": "Specify one of --task, --last, or --failed",
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            console.print("[red]Error: Specify one of --task, --last, or --failed.[/red]")
         raise SystemExit(1)
 
     from the_architect.core.provider import ProviderNotFoundError, detect_provider
 
+    # At this point task_obj is guaranteed set (other branches exit early)
+    assert task_obj is not None
+
     try:
         _run_provider = detect_provider("auto")
     except ProviderNotFoundError:
-        console.print("[red]Error: No supported AI CLI found.[/red]")
+        if as_json:
+            click.echo(
+                json.dumps({"project": str(proj), "error": "No supported AI CLI found"}, indent=2)
+            )
+        else:
+            console.print("[red]Error: No supported AI CLI found.[/red]")
         raise SystemExit(1)
     ensure_provider_setup(_run_provider, proj, config)
     setup_logging(config.log_dir)
@@ -6225,35 +6632,219 @@ def retry(task: str, project: Path | None) -> None:
 
 
 @main.command()
-@click.option("--task", "-t", required=True, help="Task prefix to skip (e.g. T03)")
+@click.option("--task", "-t", default=None, help="Task prefix to skip (e.g. T03)")
+@click.option(
+    "--last", "skip_last", is_flag=True, help="Skip the last failed task (highest plan order)"
+)
+@click.option(
+    "--failed",
+    "skip_failed",
+    is_flag=True,
+    help="Skip all failed tasks (mark all Failed → Done)",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Output in JSON format for scripted workflows",
+)
 @click.option(
     "--project",
     "-p",
     type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
     default=None,
 )
-def skip(task: str, project: Path | None) -> None:
-    """Mark a task as Done without running it."""
+def skip(
+    task: str | None,
+    skip_last: bool,
+    skip_failed: bool,
+    as_json: bool,
+    project: Path | None,
+) -> None:
+    """Mark a task as Done without running it.
+
+    Use --task to skip a specific task.  Use --last to skip the most recent
+    failed task.  Use --failed to skip all failed tasks at once.
+
+    Supports all terminal statuses (Pending, Failed, Blocked, Skipped) —
+    any of them can be transitioned to Done.
+    """
     _setup_loguru()
+
+    # Validate mutual exclusivity
+    flags_used = sum([task is not None, skip_last, skip_failed])
+    if flags_used > 1:
+        console.print("[red]Error: --task, --last, and --failed are mutually exclusive.[/red]")
+        raise SystemExit(1)
+    if flags_used == 0:
+        console.print("[red]Error: Specify one of --task, --last, or --failed.[/red]")
+        raise SystemExit(1)
+
     proj = (project or Path.cwd()).resolve()
     config = load_config(proj)
     progress_file = config.progress_file
+    tasks_dir = proj / config.tasks_dir.name
 
     if not progress_file.exists():
         console.print("[red]PROGRESS.md not found.[/red]")
         console.print("[dim]Run [bold]architect --plan[/bold] first to create tasks.[/dim]")
         raise SystemExit(1)
 
-    content = progress_file.read_text(encoding="utf-8")
-    updated = replace_task_status(content, task, "Pending", "Done")
-    if updated != content:
-        progress_file.write_text(updated, encoding="utf-8")
-        console.print(f"[#7cc800]✓ Task {task} marked as Done.[/#7cc800]")
-    elif task_is_done(progress_file, task):
-        console.print(f"[dim]Task {task} is already Done.[/dim]")
-    else:
-        console.print(f"[red]Task {task} not found in PROGRESS.md.[/red]")
+    # --- Handle --last: skip the last failed task ---
+    if skip_last:
+        failed = find_failed_tasks(progress_file, tasks_dir)
+        if not failed:
+            console.print("[yellow]No failed tasks found.[/yellow]")
+            raise SystemExit(1)
+        target_task = failed[-1]  # last in plan order
+        task_prefix = target_task.prefix
+        _skip_single_task(progress_file, task_prefix, as_json)
+        raise SystemExit(0)
+
+    # --- Handle --failed: skip all failed tasks ---
+    if skip_failed:
+        failed = find_failed_tasks(progress_file, tasks_dir)
+        if not failed:
+            console.print("[yellow]No failed tasks to skip.[/yellow]")
+            raise SystemExit(1)
+        skipped: list[str] = []
+        today = __import__("datetime").date.today().isoformat()
+        for t in failed:
+            if reconcile_task_status(progress_file, t.prefix, "Done", completed=today):
+                skipped.append(t.prefix)
+                _increment_tasks_completed(progress_file)
+        if as_json:
+            click.echo(json.dumps({"skipped": skipped, "project": str(proj)}))
+        else:
+            console.print(f"[dim]Skipped {len(skipped)} failed task(s):[/dim]")
+            for prefix in skipped:
+                console.print(f"  [dim]  {prefix}[/dim]")
+        raise SystemExit(0)
+
+    # --- Handle --task: skip a specific task ---
+    assert task is not None
+    _skip_single_task(progress_file, task, as_json)
+
+
+def _skip_single_task(
+    progress_file: Path,
+    task_prefix: str,
+    as_json: bool,
+) -> bool:
+    """Mark a single task as Done in PROGRESS.md, incrementing the counter.
+
+    Handles all terminal statuses (Pending, Failed, Blocked, Skipped) plus
+    already-Done tasks.  Increments ``**Tasks completed:** N`` when the task
+    was not already Done.
+
+    Args:
+        progress_file: Path to PROGRESS.md.
+        task_prefix: Task prefix to skip, e.g. ``"T03"``.
+        as_json: If True, output JSON instead of Rich console output.
+
+    Returns:
+        True if the task was marked Done (was not already Done).
+    """
+    # Check if already Done
+    if task_is_done(progress_file, task_prefix):
+        if as_json:
+            click.echo(
+                json.dumps(
+                    {
+                        "task": task_prefix,
+                        "status": "already_done",
+                        "message": f"Task {task_prefix} is already Done",
+                    }
+                )
+            )
+        else:
+            console.print(f"[dim]Task {task_prefix} is already Done.[/dim]")
+        return False
+
+    # Check if the row exists (any status)
+    current = task_status(progress_file, task_prefix)
+    if current is None:
+        if as_json:
+            click.echo(
+                json.dumps(
+                    {
+                        "task": task_prefix,
+                        "status": "error",
+                        "message": f"Task {task_prefix} not found in PROGRESS.md",
+                    }
+                )
+            )
+        else:
+            console.print(f"[red]Task {task_prefix} not found in PROGRESS.md.[/red]")
         raise SystemExit(1)
+
+    # Use reconcile_task_status to handle any status → Done transition
+    today = __import__("datetime").date.today().isoformat()
+    if not reconcile_task_status(progress_file, task_prefix, "Done", completed=today):
+        if as_json:
+            click.echo(
+                json.dumps(
+                    {
+                        "task": task_prefix,
+                        "status": "error",
+                        "message": f"Could not update PROGRESS.md for task {task_prefix}",
+                    }
+                )
+            )
+        else:
+            console.print(f"[red]Could not update PROGRESS.md for task {task_prefix}.[/red]")
+        raise SystemExit(1)
+
+    # Increment the "Tasks completed" counter
+    _increment_tasks_completed(progress_file)
+
+    if as_json:
+        click.echo(
+            json.dumps(
+                {
+                    "task": task_prefix,
+                    "status": "done",
+                    "previous_status": current,
+                    "message": f"Task {task_prefix} marked as Done",
+                }
+            )
+        )
+    else:
+        if current:
+            console.print(
+                f"[#7cc800]✓ Task {task_prefix} marked as Done ({current} → Done).[/#7cc800]"
+            )
+        else:
+            console.print(f"[#7cc800]✓ Task {task_prefix} marked as Done.[/#7cc800]")
+
+    return True
+
+
+def _increment_tasks_completed(progress_file: Path) -> None:
+    """Increment the ``**Tasks completed:** N`` counter in PROGRESS.md.
+
+    Reads the file, finds the counter line, increments it by 1, and writes
+    back.  If the line is missing, it is added after ``## Overall Status``.
+
+    Args:
+        progress_file: Path to PROGRESS.md.
+    """
+    content = progress_file.read_text(encoding="utf-8")
+
+    # Try to find and increment the existing counter
+    counter_pattern = re.compile(r"(\*\*Tasks completed:\*\*\s*)(\d+)")
+    match = counter_pattern.search(content)
+    if match:
+        new_count = int(match.group(2)) + 1
+        updated = counter_pattern.sub(rf"\g<1>{new_count}", content, count=1)
+        progress_file.write_text(updated, encoding="utf-8")
+        return
+
+    # Fallback: add the counter line if missing (should not happen in practice)
+    header_pattern = re.compile(r"(## Overall Status\s*\n)")
+    if header_pattern.search(content):
+        updated = header_pattern.sub(r"\g<1>\n**Tasks completed:** 1\n", content, count=1)
+        progress_file.write_text(updated, encoding="utf-8")
 
 
 @main.command()
@@ -6263,7 +6854,20 @@ def skip(task: str, project: Path | None) -> None:
     type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
     default=None,
 )
-def reset(project: Path | None) -> None:
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Output as machine-readable JSON",
+)
+@click.option(
+    "--yes",
+    "--force",
+    "force",
+    is_flag=True,
+    help="Skip confirmation prompt (use with caution)",
+)
+def reset(project: Path | None, as_json: bool, force: bool) -> None:
     """Reset PROGRESS.md to initial state."""
     _setup_loguru()
     from the_architect.core.progress import PROGRESS_TEMPLATE
@@ -6273,22 +6877,41 @@ def reset(project: Path | None) -> None:
     progress_file = config.progress_file
 
     if not progress_file.exists():
-        console.print("[red]PROGRESS.md not found.[/red]")
-        console.print("[dim]Run [bold]architect --plan[/bold] first to create tasks.[/dim]")
+        if as_json:
+            click.echo(
+                json.dumps(
+                    {"project": str(proj), "reset": False, "error": "PROGRESS.md not found"},
+                    indent=2,
+                )
+            )
+        else:
+            console.print("[red]PROGRESS.md not found.[/red]")
+            console.print("[dim]Run [bold]architect --plan[/bold] first to create tasks.[/dim]")
         raise SystemExit(1)
 
-    if click.confirm("This will reset PROGRESS.md to initial state. Continue?"):
-        content = PROGRESS_TEMPLATE.format(
-            tasks_completed=0,
-            next_task="T00",
-            task_rows="",
-            current_state="Reset at user's request.",
-            last_summary="",
-        )
-        progress_file.write_text(content, encoding="utf-8")
-        console.print("[#7cc800]✓ PROGRESS.md reset.[/#7cc800]")
+    if not force:
+        if as_json:
+            # JSON mode requires --force — no interactive prompt in scripted mode
+            click.echo(
+                json.dumps({"project": str(proj), "reset": False, "cancelled": True}, indent=2)
+            )
+            return
+        if not click.confirm("This will reset PROGRESS.md to initial state. Continue?"):
+            console.print("[dim]Cancelled.[/dim]")
+            return
+
+    content = PROGRESS_TEMPLATE.format(
+        tasks_completed=0,
+        next_task="T00",
+        task_rows="",
+        current_state="Reset at user's request.",
+        last_summary="",
+    )
+    progress_file.write_text(content, encoding="utf-8")
+    if as_json:
+        click.echo(json.dumps({"project": str(proj), "reset": True}, indent=2))
     else:
-        console.print("[dim]Cancelled.[/dim]")
+        console.print("[#7cc800]✓ PROGRESS.md reset.[/#7cc800]")
 
 
 @main.command()
@@ -6298,7 +6921,20 @@ def reset(project: Path | None) -> None:
     type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
     default=None,
 )
-def cancel(project: Path | None) -> None:
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Output as machine-readable JSON",
+)
+@click.option(
+    "--yes",
+    "--force",
+    "force",
+    is_flag=True,
+    help="Skip confirmation prompt (use with caution)",
+)
+def cancel(project: Path | None, as_json: bool, force: bool) -> None:
     """Remove a stale lock file so the next run is not blocked.
 
     The Architect writes a lock file at .architect/runner.lock when it starts.
@@ -6306,8 +6942,17 @@ def cancel(project: Path | None) -> None:
     up, the lock file remains and blocks the next run.
 
     This command removes the lock file so you can run architect again.
+    It also cleans up the monitor state file so ``architect monitor --watch``
+    does not show stale data.
+
     It does NOT kill any running process — use Ctrl+C or your OS tools
     for that.
+
+    \b
+    Examples:
+      architect cancel
+      architect cancel --force    # skip confirmation if PID is still alive
+      architect cancel --json     # machine-readable output
     """
     _setup_loguru()
     import os
@@ -6316,8 +6961,13 @@ def cancel(project: Path | None) -> None:
     lock_path = proj / ".architect" / "runner.lock"
 
     if not lock_path.exists():
-        console.print("[dim]No lock file found — nothing to cancel.[/dim]")
-        console.print(f"[dim](looked in {lock_path})[/dim]")
+        if as_json:
+            click.echo(
+                json.dumps({"project": str(proj), "lock_file": "not_found", "cancelled": False})
+            )
+        else:
+            console.print("[dim]No lock file found — nothing to cancel.[/dim]")
+            console.print(f"[dim](looked in {lock_path})[/dim]")
         return
 
     # Read PID from lock file
@@ -6340,48 +6990,175 @@ def cancel(project: Path | None) -> None:
             # both indicate the process is gone.
             process_alive = False
 
-    # Show what we found
+    # Handle PID-alive confirmation
+    pid_action = "none"
     if pid is not None and process_alive:
-        console.print(f"[yellow]⚠  The Architect is still running (PID {pid}).[/yellow]")
-        console.print()
-        import signal
-
-        if click.confirm(f"  Stop PID {pid}?", default=False):
-            try:
-                # SIGTERM is the standard cross-platform signal for requesting
-                # graceful shutdown.  On POSIX it gives the process a chance
-                # to clean up; on Windows os.kill(SIGTERM) calls
-                # TerminateProcess which is immediate — both are correct for
-                # the intent of "stop this stale architect process".
-                os.kill(pid, signal.SIGTERM)
-                console.print(f"[dim]Sent termination signal to PID {pid}.[/dim]")
-            except (ProcessLookupError, PermissionError) as sig_err:
-                console.print(f"[yellow]Could not terminate process: {sig_err}[/yellow]")
-        else:
-            console.print(
-                "[dim]Process left running. Use Ctrl+C in the original terminal to stop it.[/dim]"
+        if as_json:
+            click.echo(
+                json.dumps(
+                    {
+                        "project": str(proj),
+                        "lock_file": "found",
+                        "pid": pid,
+                        "pid_alive": True,
+                        "cancelled": False,
+                        "message": "Process still running — use --force to skip confirmation",
+                    }
+                )
             )
-        console.print()
-    elif pid is not None:
-        console.print(f"[dim]Stale lock found (PID {pid} is no longer running).[/dim]")
-    else:
-        console.print("[dim]Lock file found but PID could not be read — removing.[/dim]")
+            return
+        if not force:
+            console.print(f"[yellow]⚠  The Architect is still running (PID {pid}).[/yellow]")
+            console.print()
+            if not click.confirm(f"  Stop PID {pid}?", default=False):
+                console.print(
+                    "[dim]Process left running. Use Ctrl+C in the original terminal.[/dim]"
+                )
+                console.print("[dim]Lock file not removed.[/dim]")
+                return
+        # --force or user confirmed — send SIGTERM
+        try:
+            import signal
+
+            os.kill(pid, signal.SIGTERM)
+            pid_action = "signalled"
+            if not as_json:
+                console.print(f"[dim]Sent termination signal to PID {pid}.[/dim]")
+                console.print()
+        except (ProcessLookupError, PermissionError) as sig_err:
+            if not as_json:
+                console.print(f"[yellow]Could not terminate process: {sig_err}[/yellow]")
+
+    if not as_json:
+        if pid is not None and process_alive and pid_action == "none":
+            console.print(f"[dim]Stale lock found (PID {pid} is no longer running).[/dim]")
+        elif pid is not None and not process_alive and pid_action == "none":
+            console.print(f"[dim]Stale lock found (PID {pid} is no longer running).[/dim]")
+        elif pid is None and pid_action == "none":
+            console.print("[dim]Lock file found but PID could not be read — removing.[/dim]")
 
     # Remove the lock
     try:
         lock_path.unlink()
-        console.print("[#7cc800]✓ Lock removed.[/#7cc800]")
-        console.print("[dim]You can now run [bold]architect[/bold] again.[/dim]")
     except OSError as e:
-        console.print(f"[red]Failed to remove lock file: {e}[/red]")
+        if as_json:
+            click.echo(
+                json.dumps(
+                    {
+                        "project": str(proj),
+                        "lock_file": "error",
+                        "error": str(e),
+                        "cancelled": False,
+                    }
+                )
+            )
+        else:
+            console.print(f"[red]Failed to remove lock file: {e}[/red]")
         raise SystemExit(1)
+
+    # Clean up monitor state — write a cancelled state so monitor --watch exits
+    try:
+        from the_architect.core.monitor_state import (
+            RUN_STATUS_FAILED,
+            write_monitor_state,
+        )
+
+        # Read existing monitor state to preserve historical data
+        existing_state: dict[str, Any] | None = None
+        try:
+            from the_architect.core.monitor_state import read_monitor_state
+
+            existing_state = read_monitor_state(proj)
+        except Exception:
+            pass
+
+        state: dict[str, Any] = {
+            "status": RUN_STATUS_FAILED,
+            "project_name": proj.name,
+            "cancelled": True,
+            "cancelled_at": __import__("datetime", fromlist=["UTC", "datetime"])
+            .datetime.now(tz=__import__("datetime", fromlist=["UTC", "datetime"]).UTC)
+            .isoformat(),
+        }
+        # Preserve existing fields if available
+        if existing_state and isinstance(existing_state, dict):
+            for key in (
+                "run_started_at",
+                "current_task_id",
+                "current_task_title",
+                "tasks",
+                "tokens",
+                "circuit_breaker",
+            ):
+                if key in existing_state:
+                    state[key] = existing_state[key]
+
+        write_monitor_state(proj, state)
+    except Exception:
+        # Monitor state cleanup is best-effort — never fail the cancel because of it
+        pass
+
+    if as_json:
+        click.echo(
+            json.dumps(
+                {
+                    "project": str(proj),
+                    "lock_file": "removed",
+                    "pid": pid,
+                    "pid_action": pid_action,
+                    "monitor_state": "cleaned",
+                    "cancelled": True,
+                }
+            )
+        )
+    else:
+        console.print("[#7cc800]✓ Lock removed.[/#7cc800]")
+        console.print("[dim]Monitor state cleaned.[/dim]")
+        console.print("[dim]You can now run [bold]architect[/bold] again.[/dim]")
+
+
+def _get_last_run_summary(project: Path) -> dict[str, Any] | None:
+    """Load the most recent run record from the token ledger.
+
+    Returns a dict with keys: date, goal, tasks_done, tasks_total,
+    tokens, cost, outcome. Returns ``None`` when the ledger is empty
+    or unreadable.  All errors are caught silently — the ledger is
+    optional infrastructure.
+
+    Args:
+        project: The project root directory.
+
+    Returns:
+        A summary dict or ``None``.
+    """
+    try:
+        ledger = load_ledger(project)
+        if not ledger.records:
+            return None
+        record = ledger.records[-1]
+        goal = record.goal_summary or ""
+        if len(goal) > 60:
+            goal = goal[:57] + "..."
+        return {
+            "date": record.timestamp[:10],
+            "goal": goal,
+            "tasks_done": sum(1 for t in record.task_breakdown if t.status == "done"),
+            "tasks_total": record.task_count,
+            "tokens": record.total_tokens,
+            "cost": record.total_cost_estimate,
+            "outcome": record.outcome,
+        }
+    except Exception as exc:
+        logger.debug(f"Could not load last run summary: {exc!r}")
+        return None
 
 
 def _format_status_json(project: Path, config: ArchitectConfig) -> str:
     """Gather status data and return deterministic JSON string.
 
     Mirrors the same data displayed by the Rich ``status`` output:
-    lock state, task list, circuit breakers, token budget, and log files.
+    lock state, task list, circuit breakers, token budget, log files,
+    and last run summary.
     Handles missing files gracefully — no exceptions for absent directories.
     """
     result: dict[str, Any] = {
@@ -6394,6 +7171,7 @@ def _format_status_json(project: Path, config: ArchitectConfig) -> str:
         "token_budget": None,
         "log_dir": None,
         "log_files": None,
+        "last_run": None,
     }
 
     # ── Lock file ────────────────────────────────────────────────────────
@@ -6463,6 +7241,8 @@ def _format_status_json(project: Path, config: ArchitectConfig) -> str:
         token_budget_info["per_hour"] = config.token_budget_per_hour
     if config.token_budget_per_run > 0:
         token_budget_info["per_run"] = config.token_budget_per_run
+    if config.task_timeout > 0:
+        token_budget_info["task_timeout"] = config.task_timeout
     if token_budget_info:
         result["token_budget"] = token_budget_info
 
@@ -6484,6 +7264,11 @@ def _format_status_json(project: Path, config: ArchitectConfig) -> str:
                 result["log_files"] = file_list
         except OSError:
             pass
+
+    # ── Last run summary ─────────────────────────────────────────────────
+    last_run = _get_last_run_summary(project)
+    if last_run is not None:
+        result["last_run"] = last_run
 
     return json.dumps(result, indent=2, sort_keys=True)
 
@@ -6513,6 +7298,7 @@ def status_cmd(project: Path | None, use_tui: bool, as_json: bool) -> None:
     Displays:
     - Active lock file (is a run in progress?)
     - Task list with Done/Pending status
+    - Last run summary from token ledger (date, goal, tasks, tokens, cost, outcome)
     - Circuit breaker state per task
     - Token budget usage (if configured)
     - Log directory location
@@ -6607,6 +7393,24 @@ def status_cmd(project: Path | None, use_tui: bool, as_json: bool) -> None:
 
     console.print()
 
+    # ── Last run summary ─────────────────────────────────────────────────
+    last_run = _get_last_run_summary(proj)
+    if last_run is not None:
+        outcome = last_run["outcome"]
+        if outcome == "success":
+            outcome_str = "[#7cc800]✓ Success[/#7cc800]"
+        else:
+            outcome_str = "[red]✗ Failed[/red]"
+        console.print("[bold]Last Run[/bold]")
+        console.print(f"  [dim]Date:[/dim]  {last_run['date']}  [dim]Outcome:[/dim]  {outcome_str}")
+        console.print(f"  [dim]Goal:[/dim]  {last_run['goal']}")
+        console.print(
+            f"  [dim]Tasks:[/dim]  {last_run['tasks_done']}/{last_run['tasks_total']}  "
+            f"[dim]Tokens:[/dim]  {last_run['tokens']:,}  "
+            f"[dim]Cost:[/dim]  ${last_run['cost']:.4f}"
+        )
+        console.print()
+
     # ── Circuit breaker ──────────────────────────────────────────────────
     circuit_file = proj / ".architect" / "circuit.json"
     if circuit_file.exists():
@@ -6642,7 +7446,16 @@ def status_cmd(project: Path | None, use_tui: bool, as_json: bool) -> None:
             f"[dim]Token budget/run:[/dim]  {config.token_budget_per_run:,} tokens/run  "
             "[dim](cumulative — stops run when exceeded)[/dim]"
         )
-    if config.token_budget_per_hour > 0 or config.token_budget_per_run > 0:
+    if config.task_timeout > 0:
+        console.print(
+            f"[dim]Task timeout:[/dim]  {config.task_timeout}s/task  "
+            "[dim](kills task subprocess on wall-clock timeout)[/dim]"
+        )
+    if (
+        config.token_budget_per_hour > 0
+        or config.token_budget_per_run > 0
+        or config.task_timeout > 0
+    ):
         console.print()
 
     # ── Logs ─────────────────────────────────────────────────────────────
@@ -7052,6 +7865,7 @@ def _format_budget_json(
         "budget": {
             "per_hour": config.token_budget_per_hour,
             "per_run": config.token_budget_per_run,
+            "task_timeout": config.task_timeout,
         },
         "ledger": {
             "total_tokens": total_tokens,
@@ -7106,6 +7920,11 @@ def _render_budget_table(
         console.print(f"  Per-run limit:   [bold]{_fmt_tokens(per_run)} tokens[/bold]")
     else:
         console.print("  Per-run limit:   [dim]unlimited[/dim]")
+
+    if config.task_timeout > 0:
+        console.print(f"  Task timeout:    [bold]{config.task_timeout}s[/bold]")
+    else:
+        console.print("  Task timeout:    [dim]unlimited[/dim]")
 
     console.print()
 
@@ -7384,6 +8203,298 @@ def budget_cmd(project: Path | None, as_json: bool) -> None:
         return
 
     _render_budget_table(config, ledger)
+
+
+# ---------------------------------------------------------------------------
+# Cost analytics command
+# ---------------------------------------------------------------------------
+
+
+def _format_cost_json(analytics: CostAnalytics) -> str:
+    """Return the cost analytics as structured JSON for machine consumption.
+
+    Args:
+        analytics: A CostAnalytics instance from the aggregation module.
+
+    Returns:
+        JSON string containing total cost, tokens, run count, model breakdown,
+        top expensive tasks, and daily spending.
+    """
+    model_breakdown_list: list[dict[str, object]] = []
+    for model_name, summary in analytics.model_breakdown.items():
+        model_breakdown_list.append(
+            {
+                "model": model_name,
+                "total_cost": summary.total_cost,
+                "total_tokens": summary.total_tokens,
+                "run_count": summary.run_count,
+                "avg_cost_per_run": summary.avg_cost_per_run,
+            }
+        )
+    model_breakdown_list.sort(key=lambda x: x["total_cost"], reverse=True)  # type: ignore[arg-type, return-value]
+
+    top_tasks_list: list[dict[str, object]] = []
+    for task in analytics.top_expensive_tasks:
+        top_tasks_list.append(
+            {
+                "run_id": task.run_id,
+                "task_id": task.task_id,
+                "title": task.title,
+                "cost_estimate": task.cost_estimate,
+                "model": task.model,
+                "tokens": task.tokens,
+            }
+        )
+
+    daily_list: list[dict[str, object]] = []
+    for entry in analytics.daily_spending:
+        daily_list.append(
+            {
+                "date": entry.date,
+                "cost": entry.cost,
+                "tokens": entry.tokens,
+                "runs": entry.runs,
+            }
+        )
+
+    result: dict[str, object] = {
+        "total_cost": analytics.total_cost,
+        "total_tokens": analytics.total_tokens,
+        "run_count": analytics.run_count,
+        "model_breakdown": model_breakdown_list,
+        "top_expensive_tasks": top_tasks_list,
+        "daily_spending": daily_list,
+    }
+
+    return json.dumps(result, indent=2)
+
+
+def _render_cost_table(
+    analytics: CostAnalytics,
+    since: str | None = None,
+    until: str | None = None,
+    model: str | None = None,
+) -> None:
+    """Render the cost analytics as Rich tables.
+
+    Args:
+        analytics: A CostAnalytics instance from the aggregation module.
+        since: Inclusive start date filter (for display context).
+        until: Exclusive end date filter (for display context).
+        model: Model filter (for display context).
+    """
+    from rich import box
+    from rich.table import Table
+
+    from the_architect.core.success import _fmt_tokens
+
+    console.print()
+    console.print(
+        f"[bold {ARCHITECT_GREEN}]The Architect[/bold {ARCHITECT_GREEN}]  "
+        "[dim]Cross-run Cost Analytics[/dim]"
+    )
+    console.print()
+
+    # ── Filter context ───────────────────────────────────────────────────
+    filters: list[str] = []
+    if since:
+        filters.append(f"since {since}")
+    if until:
+        filters.append(f"until {until}")
+    if model:
+        filters.append(f"model {model}")
+    if filters:
+        console.print(f"[dim]Filters: {', '.join(filters)}[/dim]")
+        console.print()
+
+    # ── Summary section ──────────────────────────────────────────────────
+    console.print("[bold]Summary[/bold]")
+    console.print(f"  Total cost:    [bold]{_fmt_cost(analytics.total_cost)}[/bold]")
+    console.print(f"  Total tokens:  {_fmt_tokens(analytics.total_tokens)}")
+    console.print(f"  Runs:          {analytics.run_count}")
+    console.print()
+
+    # ── Model breakdown ──────────────────────────────────────────────────
+    if analytics.model_breakdown:
+        console.print("[bold]Model Breakdown[/bold]")
+        table = Table(box=box.SIMPLE, show_header=True, header_style="dim", padding=(0, 1))
+        table.add_column("Model", no_wrap=False)
+        table.add_column("Cost", justify="right", width=9)
+        table.add_column("Tokens", justify="right", width=10)
+        table.add_column("Runs", justify="right", width=5)
+        table.add_column("Avg/Run", justify="right", width=9)
+
+        sorted_models = sorted(
+            analytics.model_breakdown.items(),
+            key=lambda item: item[1].total_cost,
+            reverse=True,
+        )
+        for model_name, summary in sorted_models:
+            short_model = model_name
+            for prefix in ("anthropic/", "openai/", "google/"):
+                if short_model.startswith(prefix):
+                    short_model = short_model[len(prefix) :]
+                    break
+            table.add_row(
+                short_model,
+                _fmt_cost(summary.total_cost),
+                _fmt_tokens(summary.total_tokens),
+                str(summary.run_count),
+                _fmt_cost(summary.avg_cost_per_run),
+            )
+        console.print(table)
+        console.print()
+
+    # ── Top expensive tasks ──────────────────────────────────────────────
+    if analytics.top_expensive_tasks:
+        console.print("[bold]Top Expensive Tasks[/bold]")
+        table = Table(box=box.SIMPLE, show_header=True, header_style="dim", padding=(0, 1))
+        table.add_column("Task", no_wrap=True, width=8)
+        table.add_column("Title", no_wrap=False)
+        table.add_column("Model", no_wrap=False)
+        table.add_column("Cost", justify="right", width=9)
+        table.add_column("Tokens", justify="right", width=10)
+
+        for task in analytics.top_expensive_tasks:
+            short_model = task.model
+            for prefix in ("anthropic/", "openai/", "google/"):
+                if short_model.startswith(prefix):
+                    short_model = short_model[len(prefix) :]
+                    break
+            title = task.title or task.task_id
+            table.add_row(
+                task.task_id,
+                title,
+                short_model,
+                _fmt_cost(task.cost_estimate),
+                _fmt_tokens(task.tokens),
+            )
+        console.print(table)
+        console.print()
+
+    # ── Daily spending ───────────────────────────────────────────────────
+    if analytics.daily_spending:
+        console.print("[bold]Daily Spending[/bold]")
+        table = Table(box=box.SIMPLE, show_header=True, header_style="dim", padding=(0, 1))
+        table.add_column("Date", no_wrap=True, width=12)
+        table.add_column("Cost", justify="right", width=9)
+        table.add_column("Tokens", justify="right", width=10)
+        table.add_column("Runs", justify="right", width=5)
+
+        for entry in analytics.daily_spending:
+            table.add_row(
+                entry.date,
+                _fmt_cost(entry.cost),
+                _fmt_tokens(entry.tokens),
+                str(entry.runs),
+            )
+        console.print(table)
+        console.print()
+
+
+@main.command(name="cost")
+@click.option(
+    "--project",
+    "-p",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+    default=None,
+    help="Project directory (default: current working directory)",
+)
+@click.option(
+    "--since",
+    "-s",
+    default=None,
+    help="Inclusive start date filter (ISO format, e.g. 2026-05-01)",
+)
+@click.option(
+    "--until",
+    "-u",
+    default=None,
+    help="Exclusive end date filter (ISO format, e.g. 2026-06-01)",
+)
+@click.option(
+    "--model",
+    "-m",
+    default=None,
+    help="Filter by model name (e.g. claude-sonnet-4)",
+)
+@click.option(
+    "--top",
+    "-n",
+    type=click.INT,
+    default=10,
+    help="Number of top expensive tasks to show (default: 10)",
+)
+@click.option(
+    "--tui",
+    "use_tui",
+    is_flag=True,
+    help="Render cost analytics in the Textual TUI",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Output as machine-readable JSON",
+)
+def cost_cmd(
+    project: Path | None,
+    since: str | None,
+    until: str | None,
+    model: str | None,
+    top: int,
+    use_tui: bool,
+    as_json: bool,
+) -> None:
+    """Show cross-run cost analytics from the token ledger.
+
+    Aggregates historical run data into total spending, per-model breakdown,
+    top expensive tasks, and daily spending trends.  Use --since/--until to
+    narrow the date range, --model to filter by a specific model.
+    """
+    from the_architect.core.cost_analytics import aggregate_costs
+
+    _setup_loguru()
+
+    proj = (project or Path.cwd()).resolve()
+
+    # Mutual exclusion: --tui cannot be combined with filter flags
+    if use_tui and (as_json or since or until or model):
+        console.print(
+            "[red]Error: --tui cannot be combined with --json, --since, --until, or --model.[/red]"
+        )
+        raise SystemExit(1)
+
+    if use_tui or _tui_mode_enabled():
+        try:
+            from the_architect.tui.screens import run_cost_screen
+
+            run_cost_screen(project=proj)
+            return
+        except Exception as exc:
+            logger.debug(f"TUI cost screen failed, falling back to rich: {exc!r}")
+
+    ledger = load_ledger(proj)
+
+    analytics: CostAnalytics = aggregate_costs(
+        ledger,
+        since=since,
+        until=until,
+        model=model,
+        top_n=top,
+    )
+
+    if as_json:
+        click.echo(_format_cost_json(analytics))
+        return
+
+    if analytics.run_count == 0:
+        console.print()
+        console.print("[dim]No cost data available.[/dim]")
+        console.print()
+        return
+
+    _render_cost_table(analytics, since=since, until=until, model=model)
 
 
 @main.command(name="init")
@@ -7679,6 +8790,7 @@ def config_cmd(project: Path | None, set_values: tuple[str, ...], use_tui: bool)
                                    leftovers as corruption signals (default: true)
       token_budget_per_hour        Max tokens per hour, 0=unlimited (default: 0)
        token_budget_per_run         Max tokens per run, 0=unlimited (default: 0)
+       task_timeout                 Max wall-clock seconds per task, 0=unlimited (default: 0)
 
     \b
     Circuit breaker options:
@@ -7697,6 +8809,7 @@ def config_cmd(project: Path | None, set_values: tuple[str, ...], use_tui: bool)
       architect config --set retry_model_2="openrouter/google/gemini-2.5-pro"
       architect config --set token_budget_per_hour=500000
        architect config --set token_budget_per_run=1000000
+       architect config --set task_timeout=300
       architect config --set circuit_no_progress_threshold=5
     """
     _setup_loguru()
@@ -7790,6 +8903,7 @@ def config_cmd(project: Path | None, set_values: tuple[str, ...], use_tui: bool)
         ("persistent", config.persistent),
         ("token_budget_per_hour", config.token_budget_per_hour),
         ("token_budget_per_run", config.token_budget_per_run),
+        ("task_timeout", config.task_timeout),
         ("integrity", config.integrity),
     ]
 
@@ -8081,7 +9195,13 @@ def version() -> None:
     "as_json",
     is_flag=True,
     default=False,
-    help="Output project health checks as structured JSON (requires --project).",
+    help="Output as machine-readable JSON.",
+)
+@click.option(
+    "--tui",
+    "use_tui",
+    is_flag=True,
+    help="Render project health checks in the Textual TUI (requires --project).",
 )
 def doctor_cmd(
     live: bool,
@@ -8089,14 +9209,27 @@ def doctor_cmd(
     project: bool,
     project_path: Path | None,
     as_json: bool,
+    use_tui: bool,
 ) -> None:
     """Run static pre-flight diagnostics, optionally with a live provider health probe."""
     from rich.table import Table
 
     from the_architect.config import load_config
 
-    # --json only applies when --project is also set
-    effective_json = as_json and project
+    # --json for environment diagnostics (without --project) or project health (with --project)
+    effective_json = as_json
+
+    # Mutual exclusion: --tui cannot be combined with --json
+    if use_tui and as_json:
+        console.print("[red]Error: --tui cannot be combined with --json.[/red]")
+        raise SystemExit(1)
+
+    # --tui requires --project (environment diagnostics remain CLI-only)
+    if use_tui and not project:
+        console.print(
+            "[red]Error: --tui requires --project. Environment diagnostics are CLI-only.[/red]"
+        )
+        raise SystemExit(1)
 
     checks: list[tuple[str, str, str]] = []
     any_failed = False
@@ -8197,6 +9330,10 @@ def doctor_cmd(
         console.print("[bold]Providers[/bold]")
         console.print(provider_table)
         console.print()
+    elif not project:
+        # JSON output for environment diagnostics (non-project mode)
+        click.echo(_format_env_diagnostics_json(checks, provider_rows))
+        raise SystemExit(1 if any_failed else 0)
 
     # Project health checks (opt-in)
     project_failed = False
@@ -8210,6 +9347,16 @@ def doctor_cmd(
             click.echo(_format_project_health_json(proj, health_checks))
             has_fail = any(c.status == "fail" for c in health_checks)
             raise SystemExit(1 if has_fail else 0)
+
+        if use_tui or _tui_mode_enabled():
+            try:
+                from the_architect.tui.screens import run_doctor_screen
+
+                run_doctor_screen(project=proj)
+                return
+            except Exception as exc:
+                console.print(f"[red]TUI launch failed: {exc}[/red]")
+                raise SystemExit(1)
 
         console.print()
         console.print("[bold]Project Health[/bold]")
@@ -8283,6 +9430,48 @@ def doctor_cmd(
         raise SystemExit(1)
     console.print("[green]All checks passed.[/green]")
     raise SystemExit(0)
+
+
+def _format_env_diagnostics_json(
+    checks: list[tuple[str, str, str]],
+    provider_rows: list[tuple[str, str, str]],
+) -> str:
+    """Return environment diagnostics as structured JSON.
+
+    Args:
+        checks: List of (name, status, detail) tuples for environment checks.
+        provider_rows: List of (name, status, detail) tuples for provider checks.
+
+    Returns:
+        JSON string with checks array and providers array.
+    """
+    checks_out: list[dict[str, str]] = []
+    for name, status, detail in checks:
+        checks_out.append(
+            {
+                "check": name,
+                "status": "pass" if status == "✓" else ("fail" if status == "✗" else "skip"),
+                "detail": detail,
+            }
+        )
+
+    providers_out: list[dict[str, str]] = []
+    for name, status, detail in provider_rows:
+        providers_out.append(
+            {
+                "provider": name,
+                "status": "pass" if status == "✓" else ("fail" if status == "✗" else "skip"),
+                "detail": detail,
+            }
+        )
+
+    return json.dumps(
+        {
+            "checks": checks_out,
+            "providers": providers_out,
+        },
+        indent=2,
+    )
 
 
 def _format_project_health_json(
@@ -9050,10 +10239,16 @@ def _monitor_watch_loop(
         # Write a final newline to ensure the last JSON line is complete
         raise KeyboardInterrupt
 
-    # Install signal handler for clean Ctrl+C exit
+    # Install signal handler for clean Ctrl+C exit.
+    # Guarded: signal.signal() can fail in restricted environments
+    # (e.g. non-main thread, some CI runners). SIGINT itself is
+    # cross-platform (POSIX + Windows), but registration may not be.
     import signal
 
-    signal.signal(signal.SIGINT, _sigint_handler)
+    try:
+        signal.signal(signal.SIGINT, _sigint_handler)
+    except (ValueError, OSError):
+        pass
 
     try:
         while True:
@@ -9508,11 +10703,18 @@ def _resolve_project(project: Path | None) -> Path:
         "Config field override (repeatable). Example: --field max-retries=5 --field free-mode=true"
     ),
 )
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Output as machine-readable JSON",
+)
 def preset_create(
     project: Path | None,
     name: str,
     description: str,
     fields: tuple[str, ...],
+    as_json: bool,
 ) -> None:
     """Create or update a named configuration preset.
 
@@ -9535,7 +10737,15 @@ def preset_create(
     config_overrides: dict[str, object] = {}
     for raw in fields:
         if "=" not in raw:
-            console.print(f"[red]Error: field must be KEY=VALUE, got: {raw}[/red]")
+            if as_json:
+                click.echo(
+                    json.dumps(
+                        {"project": str(proj), "error": f"field must be KEY=VALUE, got: {raw}"},
+                        indent=2,
+                    )
+                )
+            else:
+                console.print(f"[red]Error: field must be KEY=VALUE, got: {raw}[/red]")
             raise SystemExit(1)
         key, value = raw.split("=", 1)
         key = key.strip()
@@ -9562,15 +10772,28 @@ def preset_create(
     writable_fields = valid_fields - path_fields
     for key in config_overrides:
         if key not in writable_fields:
-            console.print(
-                f"[red]Error: unknown config field '{key}'. "
-                f"Valid fields: {sorted(writable_fields)}[/red]"
-            )
+            if as_json:
+                click.echo(
+                    json.dumps(
+                        {"project": str(proj), "error": f"unknown config field '{key}'"},
+                        indent=2,
+                    )
+                )
+            else:
+                console.print(
+                    f"[red]Error: unknown config field '{key}'. "
+                    f"Valid fields: {sorted(writable_fields)}[/red]"
+                )
             raise SystemExit(1)
 
     preset = save_preset(proj, name, description, config_overrides)
     is_update = preset.created_at != preset.updated_at
     action = "updated" if is_update else "created"
+
+    if as_json:
+        click.echo(_format_preset_create_json(preset, str(proj), action))
+        return
+
     console.print(
         f"[green]Preset [bold]{preset.name}[/bold] {action}.[/green]  "
         f"Fields: {len(preset.config_overrides)}"
@@ -9657,6 +10880,48 @@ def _format_preset_show_json(preset_data: object | None, project: str) -> str:
     return json.dumps({"project": project, "preset": preset_data}, indent=2)
 
 
+def _format_preset_create_json(preset_data: object, project: str, action: str) -> str:
+    """Serialise preset create result for ``--json`` output."""
+    from the_architect.core.presets import Preset
+
+    if isinstance(preset_data, Preset):
+        preset_data = preset_data.model_dump()
+    return json.dumps(
+        {
+            "project": project,
+            "preset": preset_data,
+            "action": action,
+        },
+        indent=2,
+    )
+
+
+def _format_preset_apply_json(
+    name: str, project: str, config_file: str | None, fields_count: int
+) -> str:
+    """Serialise preset apply result for ``--json`` output."""
+    return json.dumps(
+        {
+            "project": project,
+            "preset": name,
+            "config_file": config_file,
+            "fields_applied": fields_count,
+        },
+        indent=2,
+    )
+
+
+def _format_preset_delete_json(name: str, project: str) -> str:
+    """Serialise preset delete result for ``--json`` output."""
+    return json.dumps(
+        {
+            "project": project,
+            "preset": name,
+        },
+        indent=2,
+    )
+
+
 @preset_cmd.command(name="show")
 @_PROJECT_OPT
 @click.argument("name")
@@ -9709,7 +10974,13 @@ def preset_show(project: Path | None, name: str, as_json: bool) -> None:
 @preset_cmd.command(name="apply")
 @_PROJECT_OPT
 @click.argument("name")
-def preset_apply(project: Path | None, name: str) -> None:
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Output as machine-readable JSON",
+)
+def preset_apply(project: Path | None, name: str, as_json: bool) -> None:
     """Apply a preset — merge its config overrides into architect.toml.
 
     Reads the named preset and merges its ``config_overrides`` into the
@@ -9723,11 +10994,19 @@ def preset_apply(project: Path | None, name: str) -> None:
 
     preset = get_preset(proj, name)
     if not preset:
-        console.print(f"[red]Error: preset '{name}' not found.[/red]")
+        if as_json:
+            click.echo(
+                json.dumps({"project": str(proj), "error": f"preset '{name}' not found"}, indent=2)
+            )
+        else:
+            console.print(f"[red]Error: preset '{name}' not found.[/red]")
         raise SystemExit(1)
 
     if not preset.config_overrides:
-        console.print(f"[yellow]Preset '{name}' has no config overrides to apply.[/yellow]")
+        if as_json:
+            click.echo(_format_preset_apply_json(name, str(proj), None, 0))
+        else:
+            console.print(f"[yellow]Preset '{name}' has no config overrides to apply.[/yellow]")
         return
 
     # Cast values to the types expected by write_config (str/int/bool/float)
@@ -9739,6 +11018,13 @@ def preset_apply(project: Path | None, name: str) -> None:
             typed_overrides[key] = str(val)
 
     config_file = write_config(proj, typed_overrides)
+
+    if as_json:
+        click.echo(
+            _format_preset_apply_json(name, str(proj), str(config_file), len(typed_overrides))
+        )
+        return
+
     console.print(
         f"[green]Applied preset [bold]{name}[/bold].[/green]  "
         f"Wrote {len(typed_overrides)} field(s) to {config_file}"
@@ -9751,7 +11037,13 @@ def preset_apply(project: Path | None, name: str) -> None:
 @preset_cmd.command(name="delete")
 @_PROJECT_OPT
 @click.argument("name")
-def preset_delete(project: Path | None, name: str) -> None:
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Output as machine-readable JSON",
+)
+def preset_delete(project: Path | None, name: str, as_json: bool) -> None:
     """Delete a saved preset.
 
     Permanently removes the named preset from ``.architect/presets.json``.
@@ -9763,9 +11055,20 @@ def preset_delete(project: Path | None, name: str) -> None:
 
     deleted = delete_preset(proj, name)
     if deleted:
-        console.print(f"[green]Preset [bold]{name}[/bold] deleted.[/green]")
+        if as_json:
+            click.echo(_format_preset_delete_json(name, str(proj)))
+        else:
+            console.print(f"[green]Preset [bold]{name}[/bold] deleted.[/green]")
     else:
-        console.print(f"[red]Error: preset '{name}' not found.[/red]")
+        if as_json:
+            click.echo(
+                json.dumps(
+                    {"project": str(proj), "error": f"preset '{name}' not found"},
+                    indent=2,
+                )
+            )
+        else:
+            console.print(f"[red]Error: preset '{name}' not found.[/red]")
         raise SystemExit(1)
 
 
@@ -10189,12 +11492,19 @@ def template_cmd(ctx: click.Context) -> None:
         "--config free-mode=true"
     ),
 )
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Output as machine-readable JSON",
+)
 def template_create(
     project: Path | None,
     name: str,
     goal: str,
     description: str,
     fields: tuple[str, ...],
+    as_json: bool,
 ) -> None:
     """Create a named goal template.
 
@@ -10251,8 +11561,15 @@ def template_create(
     try:
         template = create_template(proj, name, goal, description, config_overrides)
     except ValueError as exc:
-        console.print(f"[red]Error: {exc}[/red]")
+        if as_json:
+            click.echo(json.dumps({"project": str(proj), "error": str(exc)}, indent=2))
+        else:
+            console.print(f"[red]Error: {exc}[/red]")
         raise SystemExit(1)
+
+    if as_json:
+        click.echo(_format_template_create_json(template, str(proj)))
+        return
 
     console.print(
         f"[green]Template [bold]{template.name}[/bold] created.[/green]  "
@@ -10261,6 +11578,14 @@ def template_create(
 
 
 # -- template list -----------------------------------------------------------
+
+
+def _format_template_create_json(template: GoalTemplate, project: str) -> str:
+    """Serialise a created template for ``--json`` output."""
+    return json.dumps(
+        {"project": project, "action": "created", "template": template.model_dump()},
+        indent=2,
+    )
 
 
 def _format_template_list_json(templates: list[GoalTemplate], project: str) -> str:
@@ -10511,10 +11836,24 @@ def template_run(
 # -- template delete ---------------------------------------------------------
 
 
+def _format_template_delete_json(name: str, project: str) -> str:
+    """Serialise a deleted template for ``--json`` output."""
+    return json.dumps(
+        {"project": project, "action": "deleted", "template_name": name},
+        indent=2,
+    )
+
+
 @template_cmd.command(name="delete")
 @_PROJECT_OPT
 @click.argument("name")
-def template_delete(project: Path | None, name: str) -> None:
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Output as machine-readable JSON",
+)
+def template_delete(project: Path | None, name: str, as_json: bool) -> None:
     """Delete a saved template.
 
     Permanently removes the named template from ``.architect/templates.json``.
@@ -10526,18 +11865,420 @@ def template_delete(project: Path | None, name: str) -> None:
 
     deleted = delete_template(proj, name)
     if deleted:
+        if as_json:
+            click.echo(_format_template_delete_json(name, str(proj)))
+            return
         console.print(f"[green]Template [bold]{name}[/bold] deleted.[/green]")
     else:
-        console.print(f"[red]Error: template '{name}' not found.[/red]")
+        if as_json:
+            click.echo(
+                json.dumps(
+                    {"project": str(proj), "error": f"template '{name}' not found"},
+                    indent=2,
+                )
+            )
+        else:
+            console.print(f"[red]Error: template '{name}' not found.[/red]")
         raise SystemExit(1)
 
 
 # ---------------------------------------------------------------------------
-# Register preset command group
+# Hooks command group — lifecycle hooks management
+# ---------------------------------------------------------------------------
+
+
+def _format_hooks_list_json(hooks_data: list[dict[str, object]], project: str) -> str:
+    """Serialise hooks list for ``--json`` output.
+
+    Args:
+        hooks_data: List of hook dicts (from HookConfig.model_dump()).
+        project: Resolved project path string.
+
+    Returns:
+        JSON string with hooks array.
+    """
+    return json.dumps(
+        {
+            "project": project,
+            "hooks": hooks_data,
+        },
+        indent=2,
+    )
+
+
+def _format_hooks_run_json(
+    results: list[dict[str, object]],
+    project: str,
+    event: str,
+) -> str:
+    """Serialise hooks run results for ``--json`` output.
+
+    Args:
+        results: List of HookResult dicts.
+        project: Resolved project path string.
+        event: The lifecycle event that was triggered.
+
+    Returns:
+        JSON string with run results.
+    """
+    return json.dumps(
+        {
+            "project": project,
+            "event": event,
+            "results": results,
+        },
+        indent=2,
+    )
+
+
+def _format_hooks_add_json(
+    hook_data: dict[str, object],
+    project: str,
+    index: int,
+) -> str:
+    """Serialise hooks add result for ``--json`` output.
+
+    Args:
+        hook_data: Hook dict (from HookConfig.model_dump()).
+        project: Resolved project path string.
+        index: Zero-based index of the added hook.
+
+    Returns:
+        JSON string with add result.
+    """
+    return json.dumps(
+        {
+            "project": project,
+            "action": "added",
+            "index": index,
+            "hook": hook_data,
+        },
+        indent=2,
+    )
+
+
+def _format_hooks_remove_json(
+    hook_data: dict[str, object],
+    project: str,
+    index: int,
+) -> str:
+    """Serialise hooks remove result for ``--json`` output.
+
+    Args:
+        hook_data: Hook dict (from HookConfig.model_dump()).
+        project: Resolved project path string.
+        index: Zero-based index of the removed hook.
+
+    Returns:
+        JSON string with remove result.
+    """
+    return json.dumps(
+        {
+            "project": project,
+            "action": "removed",
+            "index": index,
+            "hook": hook_data,
+        },
+        indent=2,
+    )
+
+
+@click.group(name="hooks")
+@click.pass_context
+def hooks_cmd(ctx: click.Context) -> None:
+    """Manage lifecycle hooks — shell commands at run lifecycle points.
+
+    Hooks are stored per-project in ``.architect/hooks.json``.
+    Supported events: pre_run, post_task, post_run_success, post_run_failure.
+
+    \b
+    Examples:
+      architect hooks list
+      architect hooks add --event pre_run --command "echo starting"
+      architect hooks remove --index 0
+      architect hooks run --event pre_run
+    """
+    pass
+
+
+# -- hooks list --------------------------------------------------------------
+
+
+@hooks_cmd.command(name="list")
+@_PROJECT_OPT
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Output as machine-readable JSON",
+)
+def hooks_list(project: Path | None, as_json: bool) -> None:
+    """List all configured lifecycle hooks.
+
+    Shows a table of hook index, event, command, enabled status, and timeout.
+    """
+    _setup_loguru()
+    from the_architect.core.hooks import list_hooks
+
+    proj = _resolve_project(project)
+    hooks = list_hooks(proj)
+
+    if as_json:
+        click.echo(_format_hooks_list_json([h.model_dump() for h in hooks], str(proj)))
+        return
+
+    if not hooks:
+        console.print("[dim]No hooks configured.[/dim]")
+        console.print(
+            "[dim]Use [bold]architect hooks add -e <event> -c <cmd>[/bold] to add one.[/dim]"
+        )
+        return
+
+    from rich.table import Table
+
+    table = Table(show_header=True, header_style="bold", box=None)
+    table.add_column("Index", justify="right", style="dim")
+    table.add_column("Event", style="cyan")
+    table.add_column("Command", style="green")
+    table.add_column("Enabled", justify="center")
+    table.add_column("Timeout", justify="right")
+
+    for idx, hook in enumerate(hooks):
+        enabled_str = "[green]on[/green]" if hook.enabled else "[red]off[/red]"
+        table.add_row(
+            str(idx),
+            hook.event.value,
+            hook.command,
+            enabled_str,
+            f"{hook.timeout}s",
+        )
+
+    console.print()
+    console.print(
+        f"[bold {ARCHITECT_GREEN}]The Architect — Hooks[/bold {ARCHITECT_GREEN}]  [dim]{proj}[/dim]"
+    )
+    console.print()
+    console.print(table)
+
+
+# -- hooks add ---------------------------------------------------------------
+
+
+@hooks_cmd.command(name="add")
+@_PROJECT_OPT
+@click.option(
+    "--event",
+    "-e",
+    type=click.Choice(["pre_run", "post_task", "post_run_success", "post_run_failure"]),
+    required=True,
+    help="Lifecycle event that triggers this hook",
+)
+@click.option(
+    "--command",
+    "-c",
+    required=True,
+    help="Shell command to execute when the event fires",
+)
+@click.option(
+    "--timeout",
+    "-t",
+    type=click.INT,
+    default=30,
+    help="Maximum seconds for command execution (default: 30)",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Output as machine-readable JSON",
+)
+def hooks_add(
+    project: Path | None,
+    event: str,
+    command: str,
+    timeout: int,
+    as_json: bool,
+) -> None:
+    """Add a new lifecycle hook.
+
+    Creates a hook that fires a shell command when the specified lifecycle
+    event occurs. Hooks are stored per-project in ``.architect/hooks.json``.
+    """
+    _setup_loguru()
+    from the_architect.core.hooks import HookConfig, HookEvent, add_hook, list_hooks
+
+    proj = _resolve_project(project)
+
+    hook = HookConfig(
+        event=HookEvent(event),
+        command=command,
+        timeout=timeout,
+    )
+    added = add_hook(proj, hook)
+    idx = len(list_hooks(proj)) - 1
+
+    if as_json:
+        click.echo(_format_hooks_add_json(added.model_dump(), str(proj), idx))
+        return
+
+    console.print()
+    console.print(f"[green]Hook added.[/green]  Index: [cyan]{idx}[/cyan]")
+    console.print(f"  Event:   [cyan]{added.event.value}[/cyan]")
+    console.print(f"  Command: [green]{added.command}[/green]")
+    console.print(f"  Timeout: [dim]{added.timeout}s[/dim]")
+
+
+# -- hooks remove ------------------------------------------------------------
+
+
+@hooks_cmd.command(name="remove")
+@_PROJECT_OPT
+@click.option(
+    "--index",
+    "-i",
+    type=click.INT,
+    required=True,
+    help="Zero-based index of the hook to remove (use 'list' to see indices)",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Output as machine-readable JSON",
+)
+def hooks_remove(
+    project: Path | None,
+    index: int,
+    as_json: bool,
+) -> None:
+    """Remove a hook by its zero-based index.
+
+    Use ``architect hooks list`` to see available indices.
+    """
+    _setup_loguru()
+    from the_architect.core.hooks import list_hooks, remove_hook
+
+    proj = _resolve_project(project)
+    hooks = list_hooks(proj)
+
+    if index < 0 or index >= len(hooks):
+        if as_json:
+            click.echo(
+                json.dumps(
+                    {
+                        "project": str(proj),
+                        "error": f"index {index} out of range",
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            console.print(
+                f"[red]Error: index {index} out of range.[/red] Valid indices: 0–{len(hooks) - 1}"
+            )
+        raise SystemExit(1)
+
+    removed_hook = hooks[index]
+    ok = remove_hook(proj, index)
+
+    if ok:
+        if as_json:
+            click.echo(_format_hooks_remove_json(removed_hook.model_dump(), str(proj), index))
+            return
+
+        console.print()
+        console.print(
+            f"[green]Hook removed.[/green]  "
+            f"Event: [cyan]{removed_hook.event.value}[/cyan]  "
+            f"Command: [green]{removed_hook.command}[/green]"
+        )
+    else:
+        if as_json:
+            click.echo(
+                json.dumps(
+                    {
+                        "project": str(proj),
+                        "error": "failed to remove hook",
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            console.print("[red]Error: failed to remove hook.[/red]")
+        raise SystemExit(1)
+
+
+# -- hooks run ---------------------------------------------------------------
+
+
+@hooks_cmd.command(name="run")
+@_PROJECT_OPT
+@click.option(
+    "--event",
+    "-e",
+    type=click.Choice(["pre_run", "post_task", "post_run_success", "post_run_failure"]),
+    required=True,
+    help="Lifecycle event to trigger hooks for",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Output as machine-readable JSON",
+)
+def hooks_run(
+    project: Path | None,
+    event: str,
+    as_json: bool,
+) -> None:
+    """Execute all enabled hooks for a specific event immediately.
+
+    Useful for testing hooks without running a full Architect session.
+    """
+    _setup_loguru()
+    from the_architect.core.hooks import HookEvent, execute_hooks_for_event, list_hooks
+
+    proj = _resolve_project(project)
+    hooks = list_hooks(proj)
+    hook_event = HookEvent(event)
+
+    # Check if any hooks match
+    matching = [h for h in hooks if h.event == hook_event and h.enabled]
+    if not matching:
+        if as_json:
+            click.echo(_format_hooks_run_json([], str(proj), event))
+        else:
+            console.print(f"[dim]No enabled hooks for event [cyan]{event}[/cyan].[/dim]")
+        return
+
+    results = asyncio.run(execute_hooks_for_event(hooks, hook_event))
+
+    if as_json:
+        click.echo(_format_hooks_run_json([r.model_dump() for r in results], str(proj), event))
+        return
+
+    console.print()
+    console.print(f"[bold]Ran {len(results)} hook(s) for [cyan]{event}[/cyan]:[/bold]")
+    for result in results:
+        status = (
+            "[green]OK[/green]" if result.exit_code == 0 else f"[red]exit {result.exit_code}[/red]"
+        )
+        console.print(f"  [{status}] {result.command}")
+        if result.stdout:
+            console.print(f"       stdout: {result.stdout.strip()}")
+        if result.stderr:
+            console.print(f"       stderr: {result.stderr.strip()}")
+        if result.error:
+            console.print(f"       error:  [red]{result.error}[/red]")
+
+
+# ---------------------------------------------------------------------------
+# Register command groups
 # ---------------------------------------------------------------------------
 
 main.add_command(preset_cmd, name="preset")
 main.add_command(template_cmd, name="template")
+main.add_command(hooks_cmd, name="hooks")
 
 # ---------------------------------------------------------------------------
 # Entry point

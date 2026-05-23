@@ -6,6 +6,8 @@ import os
 import sys
 from typing import Any
 
+from loguru import logger
+
 TERMINAL_RESTORE_SEQUENCE = (
     "\033[?1049l"  # leave alternate screen + restore cursor
     "\033[?1000l"  # X10 mouse reporting
@@ -45,7 +47,8 @@ def _stream_is_tty(stream: Any) -> bool:
     """Return True when a stream appears to be attached to a terminal."""
     try:
         return bool(stream.isatty())
-    except Exception:
+    except Exception as exc:
+        logger.debug(f"_stream_is_tty check failed on stream {stream!r}: {exc!r}")
         return False
 
 
@@ -56,8 +59,8 @@ def _write_restore_sequence(stream: Any, *, require_tty: bool = True) -> None:
     try:
         stream.write(TERMINAL_RESTORE_SEQUENCE)
         stream.flush()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug(f"terminal restore sequence write failed on {stream!r}: {exc!r}")
 
 
 def restore_terminal_input_modes() -> None:
@@ -88,8 +91,8 @@ def restore_terminal_input_modes() -> None:
         try:
             with open(_DEV_TTY, "w", encoding="utf-8") as tty:
                 _write_restore_sequence(tty, require_tty=False)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"terminal restore via {_DEV_TTY} failed: {exc!r}")
 
 
 def resetup_terminal_after_sleep() -> None:
@@ -113,8 +116,8 @@ def resetup_terminal_after_sleep() -> None:
         try:
             sys.stdout.write(TERMINAL_RESETUP_SEQUENCE)
             sys.stdout.flush()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"terminal re-setup write to stdout failed: {exc!r}")
 
     # Also target /dev/tty directly for robustness
     if sys.platform != "win32":
@@ -122,5 +125,5 @@ def resetup_terminal_after_sleep() -> None:
             with open(_DEV_TTY, "w", encoding="utf-8") as tty:
                 tty.write(TERMINAL_RESETUP_SEQUENCE)
                 tty.flush()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"terminal re-setup write via {_DEV_TTY} failed: {exc!r}")

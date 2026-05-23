@@ -25,6 +25,13 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
+from the_architect.core.free_models import (
+    is_model_not_found_text as _is_model_not_found_text,
+)
+from the_architect.core.free_models import (
+    is_rate_limit_text as _is_rate_limit_text,
+)
+
 if TYPE_CHECKING:
     from the_architect.config import ArchitectConfig
     from the_architect.core.provider import ParsedEvent
@@ -41,28 +48,6 @@ _FALLBACK_CODEX_MODELS = [
     "gpt-5.3-codex",
     "gpt-5.2",
     "o3",
-]
-
-
-# Rate-limit and model-not-found phrase detection (same as ClaudeCodeProvider)
-_RATE_LIMIT_PHRASES = [
-    "rate limit",
-    "rate_limit",
-    "429",
-    "too many requests",
-    "overloaded",
-    "529",
-    "quota exceeded",
-    "usage limit",
-]
-
-_MODEL_NOT_FOUND_PHRASES = [
-    "model not found",
-    "model_not_found",
-    "no such model",
-    "unknown model",
-    "invalid model",
-    "does not exist",
 ]
 
 
@@ -130,7 +115,7 @@ class CodexCliProvider:
             result = subprocess.run(
                 ["codex", "--version"],
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
                 timeout=10,
             )
             if result.returncode == 0:
@@ -154,7 +139,7 @@ class CodexCliProvider:
             result = subprocess.run(
                 ["codex", "--version"],
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
                 timeout=10,
             )
             return result.returncode == 0
@@ -195,7 +180,7 @@ class CodexCliProvider:
                 headers={"Accept": "application/json"},
             )
             with urllib.request.urlopen(req, timeout=5) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+                data = json.loads(resp.read().decode("utf-8", errors="replace"))
                 latest = data.get("version", "")
                 if not latest:
                     return ""
@@ -246,7 +231,7 @@ class CodexCliProvider:
             result = subprocess.run(
                 ["codex", "debug", "models"],
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
                 timeout=10,
             )
             if result.returncode == 0 and result.stdout.strip():
@@ -708,34 +693,3 @@ def _read_codex_config_model() -> str:
         return str(data.get("model", "")).strip()
     except (OSError, tomllib.TOMLDecodeError):
         return ""
-
-
-# ---------------------------------------------------------------------------
-# Rate-limit / model-not-found detection for plain text and JSON
-# ---------------------------------------------------------------------------
-
-
-def _is_rate_limit_text(text: str) -> bool:
-    """Return True if the text signals a provider rate limit.
-
-    Args:
-        text: A plain-text line or error message.
-
-    Returns:
-        True if a rate-limit phrase is found.
-    """
-    lower = text.lower()
-    return any(phrase in lower for phrase in _RATE_LIMIT_PHRASES)
-
-
-def _is_model_not_found_text(text: str) -> bool:
-    """Return True if the text signals that the requested model is unavailable.
-
-    Args:
-        text: A plain-text line or error message.
-
-    Returns:
-        True if a model-not-found phrase is found.
-    """
-    lower = text.lower()
-    return any(phrase in lower for phrase in _MODEL_NOT_FOUND_PHRASES)

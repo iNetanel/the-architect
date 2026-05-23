@@ -34,6 +34,43 @@ directory the goal refers to.
 
 ---
 
+## Infinite Loop Replanning
+
+When running in infinite loop mode, the planner may be called for a new iteration
+after a previous run had failures. The context will include archived task files
+and PROGRESS.md with Failure Reports.
+
+**You MUST:**
+
+1. **Read all Failure Reports** from the previous run — they explain what was tried
+   and why it failed. This is your primary input for avoiding repeat mistakes.
+2. **Read ARCHITECT.md** — the reviewer may have recorded Known Constraints,
+   Lessons Learned, or Best Practices from the previous failures.
+3. **Plan fundamentally different approaches** — if approach X failed for task T03B,
+   do not plan T03B using approach X. Use the Failure Report to choose a new path.
+4. **Consider task splitting** — if a task failed because it was too large (the
+   Failure Report mentions context limits, session timeout, or scope issues),
+   split it into smaller, independently verifiable sub-tasks.
+5. **Consider dependency chains** — if T03B failed and T03C depends on T03B,
+   fix T03B first before planning T03C.
+6. **Record why the new plan is different** — in INSTRUCTIONS.md, note what failed
+   in the previous run and how this plan avoids those failures.
+
+**If the Failure Report shows the task is genuinely unsolvable:**
+
+- Skip it or mark it as out of scope for this iteration
+- Document why in INSTRUCTIONS.md
+- Focus planning on tasks that CAN succeed
+- The infinite loop will continue in the next iteration with fresh context
+
+**Do NOT:**
+
+- Replan the same task with the same approach as the previous run
+- Ignore the Failure Report and plan as if starting fresh
+- Create tasks that depend on a failed upstream task without fixing it first
+
+---
+
 ## Historical Context
 
 The project context may include a "Previous Plan History" section. This is from
@@ -68,22 +105,25 @@ ARCHITECT.md sections:
 - Shared contracts that future tasks must know
 - Style, verification, environment, or operational constraints
 
-Keep ARCHITECT.md concise and curated. If a note is only about this run's task
-sequence or temporary state, leave it for PROGRESS.md or tasks/SUMMARY.md.
+Keep ARCHITECT.md concise and curated. Target under 20KB total — if it exceeds that,
+future planning sessions will hit OS argument-list limits. If a note is only about this
+run's task sequence or temporary state, leave it for PROGRESS.md or tasks/SUMMARY.md.
 
-**Do not describe implementation details unless they are durable project
-contracts or conventions.** Name major moving parts and how they connect; the
-execution agents will inspect local internals themselves.
+**Do not describe implementation details unless they are durable project contracts or
+conventions.** Name major moving parts and how they connect; the execution agents will
+inspect local internals themselves. Feature descriptions, changelog entries, test-writing
+tips, and coverage baselines do not belong here — see "Updating ARCHITECT.md" for the
+full rules on what belongs and what does not.
 
 ### Minimum ARCHITECT.md enrichment contract
 
 During planning, keep ARCHITECT.md useful enough that a human or future agent can
 understand durable project facts without rediscovering basics. Use the existing
 ARCHITECT.md, Repository Map, structure report, docs, project rules, package
-manifests shown in context, and task history. If ARCHITECT.md is missing, create
-it. If a section still contains a placeholder and available context can answer it
-with durable project knowledge, replace the placeholder. Do not manufacture
-entries just because planning is running.
+manifests shown in context, and task history. If ARCHITECT.md is missing, create it.
+If a section still contains a placeholder and available context can answer it with
+durable project knowledge, replace the placeholder. Do not manufacture entries just
+because planning is running.
 
 Ensure these durable topics are captured when known:
 
@@ -101,11 +141,11 @@ Ensure these durable topics are captured when known:
   repo/component
 - Style standards, best practices, and what not to do
 - Environment/secrets expectations and operational constraints
-- Lessons learned and known constraints that should prevent repeated mistakes
 
 Do not dump a file tree or low-level implementation inventory. Prefer high-value
 project intelligence: mission, ownership, contracts, commands, constraints,
-locations, and practices.
+locations, and practices. Do not add feature descriptions, cycle summaries, test
+patterns, or coverage baselines.
 
 ARCHITECT.md is project-level memory, not current-goal memory. Do not add the
 current goal, task sequence, temporary assumptions, or per-run cross-task notes
@@ -391,6 +431,12 @@ Before planning you will receive context in this order:
      current goal clearly requires redoing the failed work, you may
      reference the failed task in your plan, but write a NEW task with a
      different approach — do not assume a simple retry will succeed.
+   - **CRITICAL: Read the `## Failure Report` section in PROGRESS.md** — it contains
+     what was tried, why it failed, and what has NOT been tried. Use this to:
+     - Avoid planning tasks that repeat failed approaches
+     - Plan around known environmental constraints
+     - Choose fundamentally different strategies for tasks that need replanning
+     - Understand blocking dependencies between failed tasks
    - `Blocked` — resource constraint halted the task. Usually transient;
      leave alone unless the user's goal explicitly addresses the
      blocker.
@@ -465,32 +511,111 @@ instructions — never reuse or continue numbering from archived tasks.
 
 ## Updating ARCHITECT.md
 
-After planning, update ARCHITECT.md only when you discovered new durable project
-knowledge, or a conflict with existing project knowledge, that should guide
-future unrelated work. If ARCHITECT.md is missing, create it first.
+ARCHITECT.md is embedded in every planning prompt. It must stay small and useful —
+target **under 20KB total**. If it grows beyond that, future planning sessions will
+hit OS argument-list limits and fail entirely.
 
-- Add permanent decisions to the Permanent Decisions table. A permanent
-  decision is anything that should not be revisited — architectural choices,
-  technology selections, boundary decisions.
+### What belongs in ARCHITECT.md
 
-- Add identified constraints to the Known Constraints section.
+ARCHITECT.md is planning context for future unrelated goals. An entry belongs here
+only if a planner decomposing a completely different goal next week would need it.
 
-- Add/update durable knowledge in sections such as Tech Stack, Architecture,
-  Key Flows, Shared Contracts, Code Locations, Build/Test/Verification, Style,
-  Agent conventions, Data/Storage, Environment/Secrets, or Operational Constraints.
+- **Project Overview** — what the project is, who it serves, main capabilities
+- **Tech Stack** — languages, frameworks, key dependencies, runtimes
+- **Architecture** — major layers, components, how they connect
+- **Key Flows** — important runtime lifecycles (one concrete flow each)
+- **Shared Contracts** — API shapes, config keys, file formats, completion signals
+  that execution agents must produce correctly
+- **Code Locations** — where important systems live for focused exploration
+- **Build, Test, Verification** — exact commands by repo/component
+- **Style and Code Standards** — naming, error handling, test conventions
+- **Agent and AI Conventions** — prompt locations, agent config patterns
+- **Data and Storage** — state files, persistence, generated artifacts
+- **Environment and Secrets** — env vars, credentials expectations
+- **Operational Constraints** — runtime limits that affect execution
 
-- Do NOT add run history, the full current goal, or task lists to ARCHITECT.md.
-  Those belong in tasks/INSTRUCTIONS.md, tasks/PROGRESS.md, or tasks/SUMMARY.md.
+### What does NOT belong
 
+These are the most common mistakes that bloat ARCHITECT.md:
+
+- **Feature implementation details** — "the `--json` flag on `architect diff` outputs
+  `{tasks: [...], project: str}`" is a changelog entry, not planning context. The code
+  already exists; future agents read the source or CLI help.
+- **Cycle-by-cycle development history** — "Cycle 15 targets: architect estimate command"
+  belongs in CHANGELOG.md or tasks/SUMMARY.md, not ARCHITECT.md.
+- **Test-writing gotchas** — "MagicMock properties require type-level definition" is
+  useful for QA agents writing tests, not for planners decomposing goals. Put these in
+  inline test comments or a separate `.architect/test_patterns.md`.
+- **Specific coverage baselines** — "app.py has 478 statements, 167 missing (65%)" is
+  stale by the next session. Record only the target percentage, not the current count.
+- **Intermediate state details** — "baseline.py is stable at 100% coverage" is a status
+  update, not durable knowledge.
+
+### Permanent Decisions — foundational architecture only
+
+A permanent decision is an architectural choice that should never be revisited. It is
+NOT a record of how a feature was implemented.
+
+**Keep:** "Completion signals use promise tag + PROGRESS.md + clean exit" (defines how
+the system works).
+
+**Do not add:** "`architect history --tasks` flag replaces default view with per-task
+breakdown" (this is a feature description, not an architectural decision).
+
+The Permanent Decisions table should have fewer than 20 rows. If it has more, prune
+the oldest entries that describe completed features rather than enduring architecture.
+
+### Known Constraints — active constraints only
+
+A known constraint is something that actively affects how tasks are planned or executed
+today. It is NOT a record of what was built in the past.
+
+**Keep:** "Build counter is mandatory — every task bumps `__build__`" (active rule).
+
+**Do not add:** "Cycle 24 targets: Parallel Task Execution — [Complete build 10557]"
+(this is changelog history, not a constraint).
+
+The Known Constraints section should have fewer than 30 entries. If it has more, remove
+entries that describe completed cycles rather than active rules.
+
+### Lessons Learned — execution patterns only
+
+A lesson learned is a pattern about how tasks fail or succeed that affects how future
+tasks should be structured. It is NOT a test-writing tip or API quirk.
+
+**Keep:** "Avoid overloaded acceptance criteria — 4-6 outcomes, not 10+" (affects task
+structure for all future planning).
+
+**Do not add:** "datetime.fromisoformat produces tz-naive on Python 3.12" (this is a
+Python API quirk that executors discover themselves; it does not affect planning).
+
+The Lessons Learned section should have fewer than 25 entries. If it has more, remove
+entries that are test-specific or module-specific rather than cross-cutting patterns.
+
+### Pruning obligation — check before adding
+
+Before adding any new entry to ARCHITECT.md:
+
+1. **Is this already documented?** If so, do not add a duplicate. Update the existing
+   entry if the new information corrects or extends it.
+2. **Is the existing entry still accurate?** If code has changed and an entry is now
+   stale, update it or remove it entirely. Stale entries are worse than no entries —
+   they mislead future planners.
+3. **Does this belong here at all?** Apply the "what belongs / what does not belong"
+   rules above. When in doubt, leave it out.
+4. **Is the section getting too large?** If Permanent Decisions exceeds 20 rows, Known
+   Constraints exceeds 30 entries, or Lessons Learned exceeds 25 entries, prune the
+   oldest or least relevant entries before adding new ones.
+
+### How to update
+
+- You MAY add, modify, or remove entries — ARCHITECT.md is a curated document, not an
+  append-only log. Remove stale entries freely.
 - Do NOT modify the Repository Map section — The Architect tool manages that.
-
-- Do NOT remove existing entries — only append.
-
+- Replace placeholder text (`_No ... recorded yet._`) with real entries.
 - Do NOT add `---` horizontal rules or extra blank lines inside sections.
   The file is rebuilt automatically — extra dividers create duplicates.
-
 - When adding table rows, append them directly after the last existing row.
-  Do not add separators between rows.
 
 Write your updates to ARCHITECT.md as part of your planning output.
 
@@ -512,6 +637,8 @@ minimize planning effort:
 - If best practices are documented your task files must follow them
   without the user having to repeat them in the goal.
 
-The goal of ARCHITECT.md is that by the third or fourth planning session
-you should need minimal input from the user to produce a high-quality plan.
-The accumulated knowledge should carry most of the context.
+The goal of ARCHITECT.md is that by the third or fourth planning session you should
+need minimal input from the user to produce a high-quality plan. The accumulated
+knowledge should carry most of the context — but only if it stays curated and under
+20KB. A bloated ARCHITECT.md is worse than no ARCHITECT.md: it wastes tokens on stale
+entries and can cause planning to fail entirely with OS argument-list limits.

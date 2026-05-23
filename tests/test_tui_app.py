@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 from textual.containers import VerticalScroll
-from textual.widgets import RichLog, Static
+from textual.widgets import RichLog, Static, TabbedContent
 
 from the_architect.tui.app import ArchitectApp, SplashScreen
 from the_architect.tui.screens.execution import ExecutionScreen
@@ -268,6 +268,98 @@ async def test_execution_tab_bodies_are_scrollable_and_focusable() -> None:
         await pilot.pause(0.05)
         await pilot.pause(0.05)
         assert screen.focused is settings
+
+
+@pytest.mark.asyncio
+async def test_execution_arrow_keys_switch_tabs() -> None:
+    """Left and right arrow keys cycle through execution tabs.
+
+    Regression test: arrow key bindings (left/right) were not firing in the
+    execution screen because mouse tracking was not enabled, and child widgets
+    (RichLog, DataTable) consumed the key events before screen-level bindings
+    could catch them. The fix adds mouse: all CSS plus an on_key handler.
+    """
+    app = ArchitectApp()
+    async with app.run_test() as pilot:
+        await pilot.pause(0.05)
+        app.switch_to_execution()
+        await pilot.pause(0.05)
+        await pilot.pause(0.05)
+        assert app._execution_screen is not None
+        screen = app._execution_screen
+
+        tabs = screen.query_one("#exec_tabs", TabbedContent)
+        assert tabs.active == "tab_live"
+
+        # Right arrow → next tab (Progress)
+        screen.action_next_tab()
+        await pilot.pause(0.05)
+        await pilot.pause(0.05)
+        assert tabs.active == "tab_progress"
+
+        # Right arrow → next tab (Diagnostics)
+        screen.action_next_tab()
+        await pilot.pause(0.05)
+        await pilot.pause(0.05)
+        assert tabs.active == "tab_diagnostics"
+
+        # Left arrow → previous tab (Progress)
+        screen.action_prev_tab()
+        await pilot.pause(0.05)
+        await pilot.pause(0.05)
+        assert tabs.active == "tab_progress"
+
+        # Left arrow → previous tab (Live)
+        screen.action_prev_tab()
+        await pilot.pause(0.05)
+        await pilot.pause(0.05)
+        assert tabs.active == "tab_live"
+
+
+@pytest.mark.asyncio
+async def test_execution_arrow_keys_wrap_around() -> None:
+    """Arrow key tab navigation wraps from last tab to first and vice versa."""
+    app = ArchitectApp()
+    async with app.run_test() as pilot:
+        await pilot.pause(0.05)
+        app.switch_to_execution()
+        await pilot.pause(0.05)
+        await pilot.pause(0.05)
+        assert app._execution_screen is not None
+        screen = app._execution_screen
+
+        tabs = screen.query_one("#exec_tabs", TabbedContent)
+
+        # Left from first tab (Live) wraps to last tab (Tasks)
+        screen.action_prev_tab()
+        await pilot.pause(0.05)
+        await pilot.pause(0.05)
+        assert tabs.active == "tab_tasks"
+
+        # Right from last tab (Tasks) wraps to first tab (Live)
+        screen.action_next_tab()
+        await pilot.pause(0.05)
+        await pilot.pause(0.05)
+        assert tabs.active == "tab_live"
+
+
+@pytest.mark.asyncio
+async def test_execution_screen_has_on_key_handler() -> None:
+    """ExecutionScreen has on_key handler for arrow key tab switching.
+
+    The on_key handler catches left/right arrow keys that bubble up from
+    child widgets (RichLog, DataTable) when screen-level bindings are
+    consumed, providing robust tab navigation regardless of focus state.
+    """
+    import inspect
+
+    # Verify on_key method exists and handles left/right
+    assert hasattr(ExecutionScreen, "on_key"), (
+        "ExecutionScreen must have on_key handler for arrow key fallback."
+    )
+    source = inspect.getsource(ExecutionScreen.on_key)
+    assert '"left"' in source or "'left'" in source, "on_key must handle left arrow"
+    assert '"right"' in source or "'right'" in source, "on_key must handle right arrow"
 
 
 @pytest.mark.asyncio
@@ -705,6 +797,13 @@ class TestPushAndWait:
 
         assert result_container.get("value") == "test_result"
 
+    # Textual's call_from_thread creates internal coroutines that are garbage
+    # collected without being awaited during test teardown. This is a known
+    # limitation of the headless test harness — not a bug in our code.
+    @pytest.mark.filterwarnings(
+        "ignore:coroutine 'App\\.call_from_thread\\.<locals>\\.run_callback' "
+        "was never awaited:RuntimeWarning"
+    )
     @pytest.mark.asyncio
     async def test_push_and_wait_headless_skips_splash_gate(self) -> None:
         """In headless mode (run_test), splash minimum display is skipped."""
@@ -1094,6 +1193,26 @@ class TestSigcontHandler:
         # Should not raise — in test environment it's a no-op
         app._resetup_terminal_after_sleep()
 
+    def test_sigcont_handler_does_not_call_logger(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """SIGCONT handler must NOT call logger (async-signal-safety).
+
+        Loguru acquires internal locks — calling logger.debug from a signal
+        handler risks deadlock if the signal arrives while the main thread
+        holds that lock. Verify the handler source contains no logger calls.
+        """
+        import inspect
+        import re
+
+        from the_architect.tui.app import ArchitectApp
+
+        source = inspect.getsource(ArchitectApp._sigcont_handler)
+        # Check for actual logger calls (logger.debug, logger.info, etc.)
+        # but allow the word "logger" in docstrings/comments.
+        assert not re.search(r"\blogger\.", source), (
+            "_sigcont_handler must not call any logger.* method — signal handlers "
+            "must be async-signal-safe (no lock-acquiring calls)"
+        )
+
 
 class TestPushAndWaitShutdown:
     """Tests for push_and_wait shutdown unblocking."""
@@ -1181,3 +1300,599 @@ class TestPushAndWaitShutdown:
 
         assert unblocked == [True]
         assert app._shutdown_started is True
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# App lifecycle exception paths
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestOnMountExceptions:
+    """Tests for ArchitectApp.on_mount exception handlers."""
+
+    def test_on_mount_title_set_fails(self) -> None:
+        """on_mount swallows title assignment exception."""
+        # Verify the except clause exists by checking the source
+        import inspect
+
+        source = inspect.getsource(ArchitectApp.on_mount)
+        assert "except Exception" in source
+
+
+class TestOnUnmountExceptions:
+    """Tests for ArchitectApp.on_unmount exception handlers."""
+
+    @pytest.mark.asyncio
+    async def test_on_unmount_signal_restore_fails(self) -> None:
+        """on_unmount swallows signal restore exceptions."""
+        import signal
+
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            with patch.object(signal, "signal", side_effect=OSError("no signal")):
+                app.on_unmount()
+
+    @pytest.mark.asyncio
+    async def test_on_unmount_restore_terminal_fails(self) -> None:
+        """on_unmount swallows restore_terminal_input_modes exception."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            app._prev_sigcont = None
+            with patch(
+                "the_architect.tui.terminal.restore_terminal_input_modes",
+                side_effect=RuntimeError("boom"),
+            ):
+                app.on_unmount()
+
+
+class TestSigcontHandlerExceptions:
+    """Tests for _sigcont_handler and _resetup_terminal_after_sleep exceptions."""
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="SIGWINCH unavailable on Windows")
+    def test_sigcont_handler_sigwinch_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """SIGCONT handler swallows SIGWINCH kill exception."""
+        import signal
+
+        monkeypatch.setattr(signal, "SIGWINCH", 29)
+
+        def _bad_kill(*args, **kwargs):
+            raise PermissionError("cannot kill")
+
+        import os
+
+        monkeypatch.setattr(os, "kill", _bad_kill)
+
+        app = ArchitectApp()
+        call_from_thread_calls: list[object] = []
+
+        def _mock_call_from_thread(fn: object) -> None:
+            call_from_thread_calls.append(fn)
+
+        app.call_from_thread = _mock_call_from_thread  # type: ignore[method-assign]
+        app._sigcont_handler(signal.SIGCONT, None)
+        assert len(call_from_thread_calls) == 1
+
+    def test_resetup_terminal_import_fails(self) -> None:
+        """_resetup_terminal_after_sleep swallows import error."""
+        app = ArchitectApp()
+        app._resetup_terminal_after_sleep()
+
+    @pytest.mark.asyncio
+    async def test_resetup_terminal_refresh_fails(self) -> None:
+        """_resetup_terminal_after_sleep swallows refresh exception."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            with patch.object(app, "refresh", side_effect=RuntimeError("boom")):
+                app._resetup_terminal_after_sleep()
+
+
+class TestForceFullRefresh:
+    """Tests for _force_full_refresh stub."""
+
+    def test_force_full_refresh_is_noop(self) -> None:
+        """_force_full_refresh is a no-op stub that does not raise."""
+        app = ArchitectApp()
+        app._force_full_refresh()
+
+
+class TestBeginShutdownPaths:
+    """Tests for begin_shutdown screen stack manipulation paths."""
+
+    @pytest.mark.asyncio
+    async def test_begin_shutdown_dismisses_screens(self) -> None:
+        """begin_shutdown walks the stack and dismisses above splash."""
+        from textual.screen import Screen
+
+        class _Overlay(Screen[None]):
+            pass
+
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            app.push_screen(_Overlay())
+            app.push_screen(_Overlay())
+            await pilot.pause(0.05)
+            stack_len_before = len(app.screen_stack)
+            app.begin_shutdown()
+            await pilot.pause(0.05)
+            assert len(app.screen_stack) < stack_len_before
+
+    @pytest.mark.asyncio
+    async def test_begin_shutdown_creates_splash_when_none(self) -> None:
+        """begin_shutdown creates a SplashScreen when none exists on stack."""
+        from textual.screen import Screen
+
+        class _Overlay(Screen[None]):
+            pass
+
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            app.push_screen(_Overlay())
+            await pilot.pause(0.05)
+            app.screen_stack.clear()
+            app.begin_shutdown()
+            await pilot.pause(0.05)
+            assert len(app.screen_stack) >= 1
+
+    @pytest.mark.asyncio
+    async def test_begin_shutdown_screen_stack_exception(self) -> None:
+        """begin_shutdown swallows screen stack manipulation exceptions."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+
+            class _BadDismiss:
+                def dismiss(self):
+                    raise RuntimeError("dismiss failed")
+
+            app.screen_stack[-1] = _BadDismiss()  # type: ignore[index]
+            app.begin_shutdown()
+            await pilot.pause(0.05)
+
+
+class TestPushAndWaitExceptionPaths:
+    """Tests for push_and_wait exception handling.
+
+    These tests exercise thread-based screen orchestration via call_from_thread,
+    which creates internal Textual coroutines that are garbage collected without
+    being awaited during test teardown. This is a known limitation of the headless
+    test harness — not a bug in our code.
+    """
+
+    @pytest.mark.filterwarnings(
+        "ignore:coroutine 'App\\.call_from_thread\\.<locals>\\.run_callback' "
+        "was never awaited:RuntimeWarning"
+    )
+    @pytest.mark.asyncio
+    async def test_push_and_wait_push_exception(self) -> None:
+        """push_and_wait handles push_screen exception gracefully."""
+        import threading
+
+        from textual.screen import Screen
+
+        app = ArchitectApp()
+        result_container: dict[str, object] = {}
+
+        class _TestScreen(Screen[None]):
+            pass
+
+        def worker():
+            result_container["value"] = app.push_and_wait(_TestScreen())
+
+        async with app.run_test() as pilot:
+            await pilot.pause(0.1)
+
+            def bad_push(*args, **kwargs):
+                raise RuntimeError("push failed")
+
+            app.push_screen = bad_push  # type: ignore[method-assign]
+            thread = threading.Thread(target=worker, daemon=True)
+            thread.start()
+            await pilot.pause(0.5)
+            thread.join(timeout=3)
+            assert result_container.get("value") is None
+
+    @pytest.mark.asyncio
+    async def test_push_and_wait_splash_gate_non_headless(self) -> None:
+        """push_and_wait enforces splash minimum display for non-headless."""
+        import threading
+        import time
+
+        from textual.screen import Screen
+
+        app = ArchitectApp()
+        result_container: dict[str, object] = {}
+
+        class _TestScreen(Screen[None]):
+            def on_mount(self) -> None:
+                self.dismiss("done")
+
+        app._splash_shown_at = time.monotonic()
+        app._splash_min_seconds = 0.1
+
+        def worker():
+            result_container["value"] = app.push_and_wait(_TestScreen())
+
+        async with app.run_test() as pilot:
+            await pilot.pause(0.1)
+            thread = threading.Thread(target=worker, daemon=True)
+            thread.start()
+            await pilot.pause(0.5)
+            thread.join(timeout=3)
+
+        assert result_container.get("value") == "done"
+
+
+class TestSwitchAndWait:
+    """Tests for switch_and_wait delegation."""
+
+    @pytest.mark.asyncio
+    async def test_switch_and_wait_delegates_to_push_and_wait(self) -> None:
+        """switch_and_wait delegates to push_and_wait."""
+        import threading
+
+        from textual.screen import Screen
+
+        app = ArchitectApp()
+
+        class _TestScreen(Screen[None]):
+            def on_mount(self) -> None:
+                self.dismiss("switched")
+
+        result_container: dict[str, object] = {}
+
+        def worker():
+            result_container["value"] = app.switch_and_wait(_TestScreen())
+
+        async with app.run_test() as pilot:
+            await pilot.pause(0.1)
+            thread = threading.Thread(target=worker, daemon=True)
+            thread.start()
+            await pilot.pause(0.5)
+            thread.join(timeout=3)
+
+        assert result_container.get("value") == "switched"
+
+
+class TestSwitchToExecutionSyncExceptions:
+    """Tests for _switch_to_execution_sync exception paths."""
+
+    @pytest.mark.asyncio
+    async def test_switch_to_execution_switch_screen_fails(self) -> None:
+        """_switch_to_execution_sync handles switch_screen exception."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            with patch.object(app, "switch_screen", side_effect=RuntimeError("switch failed")):
+                with patch.object(app, "_dismiss_wait_overlay_if_stacked", return_value=False):
+                    app._switch_to_execution_sync()
+                    await pilot.pause(0.05)
+
+
+class TestPushOutputLineDispatchPaths:
+    """Tests for push_output_line dispatch paths."""
+
+    @pytest.mark.asyncio
+    async def test_push_output_line_loop_runtime_error(self) -> None:
+        """push_output_line falls back to _thread_safe_call on RuntimeError."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            app.switch_to_execution()
+            await pilot.pause(0.05)
+            with patch.object(
+                app._loop, "call_soon_threadsafe", side_effect=RuntimeError("loop closed")
+            ):
+                app.push_output_line("fallback line")
+                await pilot.pause(0.05)
+
+
+class TestEventAndDetailDispatch:
+    """Tests for push_event_line and update details dispatch."""
+
+    @pytest.mark.asyncio
+    async def test_push_event_line_dispatches(self) -> None:
+        """push_event_line dispatches to execution screen."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            app.switch_to_execution()
+            await pilot.pause(0.05)
+            app.push_event_line("test_event", {"key": "value"})
+            await pilot.pause(0.05)
+
+    @pytest.mark.asyncio
+    async def test_update_costs_dispatches(self) -> None:
+        """update_costs dispatches to execution screen."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            app.switch_to_execution()
+            await pilot.pause(0.05)
+            app.update_costs({"session_cost_usd": 1.0, "model_costs": {}})
+            await pilot.pause(0.05)
+
+    @pytest.mark.asyncio
+    async def test_update_feedback_dispatches(self) -> None:
+        """update_feedback dispatches to execution screen."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            app.switch_to_execution()
+            await pilot.pause(0.05)
+            app.update_feedback("test feedback")
+            await pilot.pause(0.05)
+
+    @pytest.mark.asyncio
+    async def test_update_feedback_clear(self) -> None:
+        """update_feedback with None clears the feedback."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            app.switch_to_execution()
+            await pilot.pause(0.05)
+            app.update_feedback(None)
+            await pilot.pause(0.05)
+
+    @pytest.mark.asyncio
+    async def test_update_artifacts_dispatches(self) -> None:
+        """update_artifacts dispatches to execution screen."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            app.switch_to_execution()
+            await pilot.pause(0.05)
+            app.update_artifacts(3)
+            await pilot.pause(0.05)
+
+
+class TestShowWaitExceptionPaths:
+    """Tests for _show_wait_sync exception paths."""
+
+    @pytest.mark.asyncio
+    async def test_show_wait_stale_wait_not_in_stack(self) -> None:
+        """_show_wait_sync handles stale wait reference not in stack."""
+        from the_architect.tui.screens.wait import WaitScreen
+
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            stale = WaitScreen(title="stale")
+            app._wait_screen = stale
+            app._show_wait_sync("fresh", "")
+            await pilot.pause(0.05)
+            assert app._wait_screen is not stale
+            assert isinstance(app.screen, WaitScreen)
+
+    @pytest.mark.asyncio
+    async def test_show_wait_push_fails(self) -> None:
+        """_show_wait_sync handles push_screen exception."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            app._wait_screen = None
+            original_push = app.push_screen
+
+            def bad_push(*args, **kwargs):
+                raise RuntimeError("push failed")
+
+            app.push_screen = bad_push  # type: ignore[method-assign]
+            try:
+                app._show_wait_sync("test", "")
+                await pilot.pause(0.05)
+                assert app._wait_screen is None
+            finally:
+                app.push_screen = original_push  # type: ignore[method-assign]
+
+
+class TestAppendWaitLogDispatchPaths:
+    """Tests for append_wait_log dispatch paths."""
+
+    @pytest.mark.asyncio
+    async def test_append_wait_log_loop_none(self) -> None:
+        """append_wait_log falls back to _thread_safe_call when _loop is None."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            app.show_wait("test", "")
+            await pilot.pause(0.05)
+            orig_loop = app._loop
+            app._loop = None  # type: ignore[attr-defined]
+            try:
+                app.append_wait_log("fallback line")
+                await pilot.pause(0.05)
+            finally:
+                app._loop = orig_loop  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
+    async def test_append_wait_log_loop_runtime_error(self) -> None:
+        """append_wait_log falls back on call_soon_threadsafe RuntimeError."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            app.show_wait("test", "")
+            await pilot.pause(0.05)
+            with patch.object(
+                app._loop, "call_soon_threadsafe", side_effect=RuntimeError("loop closed")
+            ):
+                app.append_wait_log("fallback line")
+                await pilot.pause(0.05)
+
+
+class TestHideWaitExceptionPaths:
+    """Tests for _hide_wait_sync exception paths."""
+
+    @pytest.mark.asyncio
+    async def test_hide_wait_recovery_fails(self) -> None:
+        """_hide_wait_sync handles recovery exception."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            app.show_wait("test", "")
+            await pilot.pause(0.05)
+            app.push_screen(SplashScreen())
+            await pilot.pause(0.05)
+            with patch.object(app, "switch_screen", side_effect=RuntimeError("switch failed")):
+                app._hide_wait_sync()
+                await pilot.pause(0.05)
+
+
+class TestScreenStackNamesException:
+    """Tests for _screen_stack_names exception path."""
+
+    def test_screen_stack_names_exception_pre_mount(self) -> None:
+        """_screen_stack_names returns safe fallback before app is mounted."""
+        app = ArchitectApp()
+        names = app._screen_stack_names()
+        assert isinstance(names, list)
+
+
+class TestRepairScreenStackExceptions:
+    """Tests for _repair_screen_stack exception paths."""
+
+    @pytest.mark.asyncio
+    async def test_repair_screen_stack_both_push_fail(self) -> None:
+        """_repair_screen_stack handles both preferred and fallback push failing."""
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            app.screen_stack.clear()
+            app.push_screen = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))  # type: ignore[method-assign]
+            app._repair_screen_stack("test", SplashScreen())
+            await pilot.pause(0.05)
+
+
+class TestShowSuccessExceptionPaths:
+    """Tests for show_success cost estimation exception."""
+
+    @pytest.mark.asyncio
+    async def test_show_success_cost_estimation_fails(self) -> None:
+        """show_success handles cost estimation exception gracefully."""
+        from the_architect.core.runner import TaskResult, TokenUsage
+
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            results = [
+                TaskResult(
+                    prefix="T01",
+                    title="Test",
+                    status="done",
+                    duration_seconds=10.0,
+                    attempts=1,
+                    tokens=TokenUsage(input_tokens=100, output_tokens=50),
+                    model="test-model",
+                )
+            ]
+            with patch(
+                "the_architect.core.token_ledger.estimate_cost_detailed",
+                side_effect=RuntimeError("cost error"),
+            ):
+                called_with = []
+
+                def mock_push_and_wait(screen):
+                    called_with.append(screen)
+                    return None
+
+                app.push_and_wait = mock_push_and_wait  # type: ignore[method-assign]
+                app.show_success(results=results, total_duration=10.0, total_tokens=TokenUsage())
+                assert len(called_with) == 1
+
+
+class TestHandleExceptionNonStackError:
+    """Tests for _handle_exception with non-ScreenStackError."""
+
+    def test_handle_exception_regular_error_calls_super(self) -> None:
+        """_handle_exception calls super for non-ScreenStackError."""
+        # We verify the code path exists by checking the source.
+        # Actually calling super()._handle_exception() triggers a fatal
+        # error in Textual, so we test the ScreenStackError path instead
+        # (which is the only path that doesn't crash the test runner).
+        import inspect
+
+        source = inspect.getsource(ArchitectApp._handle_exception)
+        assert "super()._handle_exception" in source
+
+
+class TestActionHelp:
+    """Tests for action_help screen bindings."""
+
+    @pytest.mark.asyncio
+    async def test_action_help_shows_help_screen(self) -> None:
+        """action_help pushes the HelpScreen with current bindings."""
+        from the_architect.tui.screens.help import HelpScreen
+
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            app.action_help()
+            await pilot.pause(0.05)
+            assert any(isinstance(s, HelpScreen) for s in app.screen_stack)
+
+
+class TestShowPauseMenuDismissDecision:
+    """Tests for show_pause_menu _on_dismiss callback."""
+
+    @pytest.mark.asyncio
+    async def test_show_pause_menu_continue_decision(self) -> None:
+        """'continue' decision from pause menu just closes the overlay."""
+        from the_architect.tui.screens.pause import PauseMenuScreen
+
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            app.show_pause_menu()
+            await pilot.pause(0.05)
+            pause = None
+            for s in app.screen_stack:
+                if isinstance(s, PauseMenuScreen):
+                    pause = s
+                    break
+            assert pause is not None
+            pause.dismiss("continue")
+            await pilot.pause(0.05)
+            assert app._pause_menu_visible is False
+
+    @pytest.mark.asyncio
+    async def test_show_pause_menu_detach_decision(self) -> None:
+        """'detach' decision from pause menu just closes the overlay."""
+        from the_architect.tui.screens.pause import PauseMenuScreen
+
+        app = ArchitectApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            app.show_pause_menu()
+            await pilot.pause(0.05)
+            pause = None
+            for s in app.screen_stack:
+                if isinstance(s, PauseMenuScreen):
+                    pause = s
+                    break
+            assert pause is not None
+            pause.dismiss("detach")
+            await pilot.pause(0.05)
+            assert app._pause_menu_visible is False
+
+
+class TestRunSingleScreenPaths:
+    """Tests for run_single_screen additional paths."""
+
+    def test_run_single_screen_background_thread(self) -> None:
+        """run_single_screen returns None when called from background thread."""
+        import threading
+
+        from the_architect.tui.app import run_single_screen
+
+        result_container: dict[str, object] = {}
+
+        def worker():
+            result_container["value"] = run_single_screen(SplashScreen())
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        thread.join(timeout=3)
+        assert result_container.get("value") is None

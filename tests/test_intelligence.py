@@ -908,7 +908,7 @@ class TestPlanningInstructionContext:
     """Tests for the updated planning instruction with new context sections."""
 
     def test_instruction_includes_architect_md(self, tmp_path: Path) -> None:
-        """Planning instruction should include ARCHITECT.md content."""
+        """Planning instruction should reference ARCHITECT.md by path."""
         from the_architect.core.planner import PlanningRequest, build_planning_instruction
         from the_architect.core.tasks import TaskScope
 
@@ -920,7 +920,9 @@ class TestPlanningInstructionContext:
         )
         instruction = build_planning_instruction(request, "project context")
         assert "ARCHITECT.md" in instruction
-        assert "Use REST only" in instruction
+        # Content is referenced by path, not embedded inline
+        assert str(tmp_path / "ARCHITECT.md") in instruction
+        assert "Use REST only" not in instruction
 
     def test_instruction_includes_structure_report(self, tmp_path: Path) -> None:
         """Planning instruction should include structure report."""

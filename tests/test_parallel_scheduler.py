@@ -720,3 +720,141 @@ class TestRegisterTasks:
         assert scheduler.pending_count == 4
         ready = scheduler.get_ready_tasks()
         assert len(ready) == 1  # Only T01 (max_concurrency=1)
+
+
+# ---------------------------------------------------------------------------
+# Priority-aware scheduling tests (Cycle 35, T01)
+# ---------------------------------------------------------------------------
+
+
+def _task_priority(prefix: str, number: int, priority: str | None = None) -> Task:
+    """Create a minimal Task with priority for testing."""
+    return Task(
+        name=f"{prefix}_test",
+        prefix=prefix,
+        number=number,
+        path=Path(f"/tmp/{prefix}_test.md"),
+        priority=priority,
+    )
+
+
+class TestPriorityAwareScheduling:
+    """Tests for priority-based task ordering in the scheduler."""
+
+    def test_critical_before_low(self) -> None:
+        """Critical tasks must be scheduled before low-priority tasks."""
+        tasks = [
+            _task_priority("T01", 1, priority="low"),
+            _task_priority("T02", 2, priority="critical"),
+        ]
+        plan = TaskPlan(tasks=tasks)
+        scheduler = ParallelScheduler(plan, max_concurrency=2)
+        ready = scheduler.get_ready_tasks()
+        assert len(ready) == 2
+        assert ready[0].priority == "critical"
+        assert ready[1].priority == "low"
+
+    def test_priority_order_all_levels(self) -> None:
+        """Tasks must be ordered: critical > high > medium > low."""
+        tasks = [
+            _task_priority("T04", 4, priority="low"),
+            _task_priority("T01", 1, priority="critical"),
+            _task_priority("T03", 3, priority="medium"),
+            _task_priority("T02", 2, priority="high"),
+        ]
+        plan = TaskPlan(tasks=tasks)
+        scheduler = ParallelScheduler(plan, max_concurrency=4)
+        ready = scheduler.get_ready_tasks()
+        priorities = [t.priority for t in ready]
+        assert priorities == ["critical", "high", "medium", "low"]
+
+    def test_none_priority_treated_as_medium(self) -> None:
+        """Tasks with priority=None must be treated as medium (rank 2)."""
+        tasks = [
+            _task_priority("T01", 1, priority=None),
+            _task_priority("T02", 2, priority="high"),
+            _task_priority("T03", 3, priority="low"),
+        ]
+        plan = TaskPlan(tasks=tasks)
+        scheduler = ParallelScheduler(plan, max_concurrency=3)
+        ready = scheduler.get_ready_tasks()
+        priorities = [t.priority for t in ready]
+        assert priorities == ["high", None, "low"]
+
+    def test_stable_sort_preserves_plan_order_same_priority(self) -> None:
+        """Among same-priority tasks, plan order (task_sort_key) must be preserved."""
+        tasks = [
+            _task_priority("T03", 3, priority="high"),
+            _task_priority("T01", 1, priority="high"),
+            _task_priority("T02", 2, priority="high"),
+        ]
+        plan = TaskPlan(tasks=tasks)
+        scheduler = ParallelScheduler(plan, max_concurrency=3)
+        ready = scheduler.get_ready_tasks()
+        # All same priority, so sorted by task number
+        assert [t.prefix for t in ready] == ["T01", "T02", "T03"]
+
+    def test_mixed_priority_with_stable_sort(self) -> None:
+        """Priority sorts first, then plan order within same priority."""
+        tasks = [
+            _task_priority("T03", 3, priority="high"),
+            _task_priority("T01", 1, priority="critical"),
+            _task_priority("T02", 2, priority="high"),
+            _task_priority("T04", 4, priority="low"),
+        ]
+        plan = TaskPlan(tasks=tasks)
+        scheduler = ParallelScheduler(plan, max_concurrency=4)
+        ready = scheduler.get_ready_tasks()
+        # Critical first, then high (T02 before T03 by plan order), then low
+        assert [t.prefix for t in ready] == ["T01", "T02", "T03", "T04"]
+
+    def test_batch_respects_priority_order(self) -> None:
+        """get_next_batch must return tasks in priority order."""
+        tasks = [
+            _task_priority("T02", 2, priority="low"),
+            _task_priority("T01", 1, priority="critical"),
+        ]
+        plan = TaskPlan(tasks=tasks)
+        scheduler = ParallelScheduler(plan, max_concurrency=1)
+        batch = scheduler.get_next_batch()
+        assert len(batch) == 1
+        assert batch[0].priority == "critical"
+        assert batch[0].prefix == "T01"
+
+    def test_priority_with_dependencies(self) -> None:
+        """Priority must not override dependency ordering."""
+        t1 = _task_priority("T01", 1, priority="low")
+        t2 = Task(
+            name="T02_critical",
+            prefix="T02",
+            number=2,
+            path=Path("/tmp/T02_critical.md"),
+            priority="critical",
+            depends_on=["T01"],
+        )
+        plan = TaskPlan(tasks=[t1, t2])
+        scheduler = ParallelScheduler(plan, max_concurrency=2)
+        # T02 depends on T01, so only T01 is ready initially
+        ready = scheduler.get_ready_tasks()
+        assert len(ready) == 1
+        assert ready[0].prefix == "T01"
+        # After T01 completes, T02 becomes ready
+        scheduler.complete_task("T01")
+        ready = scheduler.get_ready_tasks()
+        assert len(ready) == 1
+        assert ready[0].prefix == "T02"
+        assert ready[0].priority == "critical"
+
+    def test_sequential_mode_returns_highest_priority(self) -> None:
+        """In sequential mode (max_concurrency=1), highest priority runs first."""
+        tasks = [
+            _task_priority("T03", 3, priority="medium"),
+            _task_priority("T01", 1, priority="low"),
+            _task_priority("T02", 2, priority="critical"),
+        ]
+        plan = TaskPlan(tasks=tasks)
+        scheduler = ParallelScheduler(plan, max_concurrency=1)
+        batch = scheduler.get_next_batch()
+        assert len(batch) == 1
+        assert batch[0].priority == "critical"
+        assert batch[0].prefix == "T02"

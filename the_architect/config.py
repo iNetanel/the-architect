@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from the_architect.core.validation_gate_models import ValidationGateConfig
 
 
 class ArchitectConfig(BaseModel):
@@ -295,6 +299,37 @@ class ArchitectConfig(BaseModel):
         ),
     )
 
+    task_timeout: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Maximum wall-clock seconds allowed for any single task. "
+            "0 (default) means no limit — a task can run indefinitely. "
+            "When exceeded, The Architect kills the provider subprocess "
+            "and grants bonus retries (not consuming normal retry slots). "
+            "Use this alongside token_budget_per_run to cap both time "
+            "and token spend per task."
+        ),
+    )
+
+    validation_gate: dict[str, object] = Field(
+        default_factory=dict,
+        description=(
+            "Post-task validation gate configuration.  Keys: "
+            "'enabled' (bool, default True), "
+            "'checks' (list of check names — built-in: 'lint', 'test', 'typecheck', "
+            "or any custom name), "
+            "'custom_commands' (dict mapping check name to shell command string, "
+            "e.g. {'build': 'npm run build', 'security': 'npm audit'}), "
+            "'fail_fast' (bool, default True), "
+            "'timeout' (int, default 120 seconds), "
+            "'fixup_attempts' (int, default 2 — number of automatic fix-up "
+            "attempts when the gate fails before reclassifying the task). "
+            "Empty dict means all defaults.  The gate runs CI checks "
+            "after each task to verify the agent's work independently."
+        ),
+    )
+
     model_config = {"frozen": False, "extra": "ignore"}
 
     @property
@@ -309,6 +344,36 @@ class ArchitectConfig(BaseModel):
             The resolved project root directory.
         """
         return self.tasks_dir.parent
+
+    @property
+    def validation_gate_config(self) -> ValidationGateConfig:
+        """Return a typed :class:`ValidationGateConfig` from the raw dict.
+
+        Reads the ``validation_gate`` dict field and constructs a
+        ``ValidationGateConfig`` with defaults applied for any missing keys.
+
+        Returns:
+            A ValidationGateConfig instance with all fields populated.
+        """
+        from the_architect.core.validation_gate_models import ValidationGateConfig
+
+        raw = self.validation_gate
+        if not raw:
+            return ValidationGateConfig()
+        return ValidationGateConfig(
+            enabled=cast(bool, raw.get("enabled", True)),
+            checks=cast(
+                list[str],
+                raw.get("checks", ["lint", "test", "typecheck"]),
+            ),
+            custom_commands=cast(
+                dict[str, str],
+                raw.get("custom_commands", {}),
+            ),
+            fail_fast=cast(bool, raw.get("fail_fast", True)),
+            timeout=int(cast(int, raw.get("timeout", 120))),
+            fixup_attempts=int(cast(int, raw.get("fixup_attempts", 2))),
+        )
 
     def resolve(self, project_dir: Path | str) -> ArchitectConfig:
         """Make all paths absolute relative to project_dir.
@@ -359,6 +424,8 @@ class ArchitectConfig(BaseModel):
             notify_on_complete=self.notify_on_complete,
             notify_on_fail=self.notify_on_fail,
             max_parallel_tasks=self.max_parallel_tasks,
+            task_timeout=self.task_timeout,
+            validation_gate=self.validation_gate,
         )
 
 

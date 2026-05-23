@@ -1037,3 +1037,120 @@ class TestAtomicLock:
         release_lock(tmp_path)
         assert acquire_lock(tmp_path) is True
         release_lock(tmp_path)
+
+
+class TestFindFailedTasks:
+    """Tests for find_failed_tasks helper."""
+
+    def test_finds_single_failed_task(self, tmp_path: Path) -> None:
+        """Returns a list with one Task when one task is Failed."""
+        from the_architect.core.progress import find_failed_tasks
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01_task.md").write_text("# T01 Task\n", encoding="utf-8")
+        progress = tasks_dir / "PROGRESS.md"
+        progress.write_text(
+            "| T01 | Task | Failed | — |\n",
+            encoding="utf-8",
+        )
+
+        result = find_failed_tasks(progress, tasks_dir)
+        assert len(result) == 1
+        assert result[0].prefix == "T01"
+
+    def test_finds_multiple_failed_tasks_sorted(self, tmp_path: Path) -> None:
+        """Returns failed tasks sorted by plan order."""
+        from the_architect.core.progress import find_failed_tasks
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01_task.md").write_text("# T01 One\n", encoding="utf-8")
+        (tasks_dir / "T03_task.md").write_text("# T03 Three\n", encoding="utf-8")
+        (tasks_dir / "T05_task.md").write_text("# T05 Five\n", encoding="utf-8")
+        progress = tasks_dir / "PROGRESS.md"
+        progress.write_text(
+            "| T01 | One   | Failed | — |\n"
+            "| T03 | Three | Done   | 2024-01-01 |\n"
+            "| T05 | Five  | Failed | — |\n",
+            encoding="utf-8",
+        )
+
+        result = find_failed_tasks(progress, tasks_dir)
+        assert len(result) == 2
+        assert result[0].prefix == "T01"
+        assert result[1].prefix == "T05"
+
+    def test_returns_empty_when_no_failed_tasks(self, tmp_path: Path) -> None:
+        """Returns empty list when no tasks are Failed."""
+        from the_architect.core.progress import find_failed_tasks
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01_task.md").write_text("# T01 Task\n", encoding="utf-8")
+        progress = tasks_dir / "PROGRESS.md"
+        progress.write_text(
+            "| T01 | Task | Done | 2024-01-01 |\n",
+            encoding="utf-8",
+        )
+
+        result = find_failed_tasks(progress, tasks_dir)
+        assert result == []
+
+    def test_returns_empty_when_progress_missing(self, tmp_path: Path) -> None:
+        """Returns empty list when PROGRESS.md does not exist."""
+        from the_architect.core.progress import find_failed_tasks
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01_task.md").write_text("# T01 Task\n", encoding="utf-8")
+
+        result = find_failed_tasks(tmp_path / "PROGRESS.md", tasks_dir)
+        assert result == []
+
+    def test_returns_empty_when_tasks_dir_missing(self, tmp_path: Path) -> None:
+        """Returns empty list when tasks directory does not exist."""
+        from the_architect.core.progress import find_failed_tasks
+
+        progress = tmp_path / "PROGRESS.md"
+        progress.write_text(
+            "| T01 | Task | Failed | — |\n",
+            encoding="utf-8",
+        )
+
+        result = find_failed_tasks(progress, tmp_path / "nonexistent")
+        assert result == []
+
+    def test_accepts_string_paths(self, tmp_path: Path) -> None:
+        """find_failed_tasks accepts string paths in addition to Path objects."""
+        from the_architect.core.progress import find_failed_tasks
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01_task.md").write_text("# T01 Task\n", encoding="utf-8")
+        progress = tasks_dir / "PROGRESS.md"
+        progress.write_text(
+            "| T01 | Task | Failed | — |\n",
+            encoding="utf-8",
+        )
+
+        result = find_failed_tasks(str(progress), str(tasks_dir))
+        assert len(result) == 1
+        assert result[0].prefix == "T01"
+
+    def test_failed_with_annotation_still_matched(self, tmp_path: Path) -> None:
+        """Failed (N attempts) annotations are still recognised as Failed."""
+        from the_architect.core.progress import find_failed_tasks
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        (tasks_dir / "T01_task.md").write_text("# T01 Task\n", encoding="utf-8")
+        progress = tasks_dir / "PROGRESS.md"
+        progress.write_text(
+            "| T01 | Task | Failed (3 attempts) | — |\n",
+            encoding="utf-8",
+        )
+
+        result = find_failed_tasks(progress, tasks_dir)
+        assert len(result) == 1
+        assert result[0].prefix == "T01"

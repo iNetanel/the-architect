@@ -42,6 +42,30 @@ class TaskScope(StrEnum):
     COMPLEX = "complex"
 
 
+class TaskPriority(StrEnum):
+    """Priority level for task scheduling.
+
+    Controls execution ordering when resources (budget, timeout) are
+    constrained. Higher-priority tasks are scheduled first among ready
+    tasks (tasks whose dependencies are all satisfied).
+
+    - ``CRITICAL``: must-complete-first — blocks system if unfinished
+    - ``HIGH``: important feature work — schedule before medium/low
+    - ``MEDIUM``: default priority — standard feature work
+    - ``LOW``: nice-to-have — schedule last; first to be skipped if
+      budget or timeout constraints hit
+
+    Priority is advisory — the scheduler still respects dependencies.
+    A low-priority task that depends on a critical task will not run
+    until the critical task completes.
+    """
+
+    CRITICAL = "critical"
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
 class Task(BaseModel):
     """A single development task."""
 
@@ -54,6 +78,14 @@ class Task(BaseModel):
     depends_on: list[str] = Field(
         default_factory=list,
         description="Task prefixes this task depends on (e.g. ['T01', 'T02'])",
+    )
+    model: str | None = Field(
+        default=None,
+        description="Per-task model assignment. None means use the default execution model.",
+    )
+    priority: str | None = Field(
+        default=None,
+        description="Task priority level. None resolves to 'medium' at runtime.",
     )
 
     model_config = {"frozen": True}
@@ -245,6 +277,122 @@ def _extract_dependencies(file_path: Path) -> list[str]:
     return dependencies
 
 
+def _extract_model(file_path: Path) -> str | None:
+    """Extract the model assignment from a task file.
+
+    Reads the task file looking for a ``## Model`` section.  The model
+    identifier is the first non-empty line after the heading (e.g.
+    ``openrouter/google/gemini-2.5-pro``).
+
+    Returns ``None`` if the section is not found, is empty, or the file
+    cannot be read.  An empty string is treated as ``None``.
+
+    Args:
+        file_path: Absolute path to the task file.
+
+    Returns:
+        The model identifier string, or ``None`` if no model is assigned.
+
+    Examples:
+        Given a task file containing:
+
+        ```markdown
+        ## Model
+        openrouter/google/gemini-2.5-pro
+        ```
+
+        Returns ``"openrouter/google/gemini-2.5-pro"``.
+    """
+    try:
+        content = file_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+    in_section = False
+
+    for line in content.splitlines():
+        stripped = line.strip()
+
+        # Check for section header
+        if re.match(r"^##\s+Model\s*$", stripped, re.IGNORECASE):
+            in_section = True
+            continue
+
+        # End of section on next heading
+        if in_section and stripped.startswith("##"):
+            break
+
+        if not in_section:
+            continue
+
+        # First non-empty line is the model identifier
+        if stripped:
+            return stripped if stripped else None
+
+    return None
+
+
+def _extract_priority(file_path: Path) -> str | None:
+    """Extract the priority level from a task file.
+
+    Reads the task file looking for a ``## Priority`` section.  The priority
+    value is the first non-empty line after the heading (e.g. ``critical``,
+    ``high``, ``medium``, or ``low``).
+
+    Returns ``None`` if the section is not found, is empty, or the file
+    cannot be read.  Matching is case-insensitive — ``Critical`` and
+    ``CRITICAL`` both resolve to ``"critical"``.  An unrecognised value
+    is treated as ``None`` (defaults to medium at runtime).
+
+    Args:
+        file_path: Absolute path to the task file.
+
+    Returns:
+        The priority string (one of ``"critical"``, ``"high"``, ``"medium"``,
+        ``"low"``), or ``None`` if no priority is assigned.
+
+    Examples:
+        Given a task file containing:
+
+        ```markdown
+        ## Priority
+        critical
+        ```
+
+        Returns ``"critical"``.
+    """
+    try:
+        content = file_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+    in_section = False
+
+    for line in content.splitlines():
+        stripped = line.strip()
+
+        # Check for section header
+        if re.match(r"^##\s+Priority\s*$", stripped, re.IGNORECASE):
+            in_section = True
+            continue
+
+        # End of section on next heading
+        if in_section and stripped.startswith("##"):
+            break
+
+        if not in_section:
+            continue
+
+        # First non-empty line is the priority value
+        if stripped:
+            lowered = stripped.lower()
+            if lowered in {p.value for p in TaskPriority}:
+                return lowered
+            return None
+
+    return None
+
+
 def task_sort_key(t: Task) -> tuple[int, int, int]:
     """Return a stable sort key for a task, ordering by base number then variant.
 
@@ -290,6 +438,55 @@ def task_sort_key(t: Task) -> tuple[int, int, int]:
     return (t.number, 1, ord(suffix.upper()[0]))
 
 
+# Mapping from priority value to numeric rank for sorting.
+# Lower rank = higher priority (scheduled first).
+_PRIORITY_RANK: dict[str | None, int] = {
+    "critical": 0,
+    "high": 1,
+    "medium": 2,
+    None: 2,  # None resolves to medium
+    "low": 3,
+}
+
+
+def priority_sort_key(t: Task) -> int:
+    """Return a numeric sort key for priority-based task ordering.
+
+    Lower values mean higher priority (scheduled first).  Tasks with
+    ``priority=None`` are treated as ``"medium"`` (rank 2).
+
+    This key is designed to be composed with :func:`task_sort_key` for
+    a stable priority-aware sort: ``key=lambda t: (priority_sort_key(t), task_sort_key(t))``.
+
+    Args:
+        t: The task to produce a sort key for.
+
+    Returns:
+        An integer rank: 0 for critical, 1 for high, 2 for medium/None,
+        3 for low.
+
+    Examples:
+        >>> from pathlib import Path
+        >>> tc = Task(name='T01_foo', prefix='T01', number=1, path=Path('/tmp/x'),
+        ...           priority='critical')
+        >>> priority_sort_key(tc)
+        0
+        >>> th = Task(name='T02_bar', prefix='T02', number=2, path=Path('/tmp/y'),
+        ...           priority='high')
+        >>> priority_sort_key(th)
+        1
+        >>> tm = Task(name='T03_baz', prefix='T03', number=3, path=Path('/tmp/z'),
+        ...           priority=None)
+        >>> priority_sort_key(tm)
+        2
+        >>> tl = Task(name='T04_qux', prefix='T04', number=4, path=Path('/tmp/w'),
+        ...           priority='low')
+        >>> priority_sort_key(tl)
+        3
+    """
+    return _PRIORITY_RANK.get(t.priority, 2)
+
+
 def discover_tasks(tasks_dir: Path | str) -> list[Task]:
     """Discover all task files in a directory.
 
@@ -330,6 +527,8 @@ def discover_tasks(tasks_dir: Path | str) -> list[Task]:
                 number = int(match.group(2))
                 title = _extract_title(entry.resolve(), entry.stem)
                 deps = _extract_dependencies(entry.resolve())
+                task_model = _extract_model(entry.resolve())
+                task_priority = _extract_priority(entry.resolve())
                 tasks.append(
                     Task(
                         name=entry.stem,
@@ -339,6 +538,8 @@ def discover_tasks(tasks_dir: Path | str) -> list[Task]:
                         status=TaskStatus.PENDING,
                         title=title,
                         depends_on=deps,
+                        model=task_model,
+                        priority=task_priority,
                     )
                 )
 

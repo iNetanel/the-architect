@@ -154,7 +154,7 @@ def _find_commit_before_timestamp(
             ["git", "log", f"--before={iso_ts}", "--format=%H", "-1"],
             cwd=str(project_dir),
             capture_output=True,
-            text=True,
+            encoding="utf-8",
             timeout=10,
         )
         if result.returncode != 0:
@@ -193,8 +193,8 @@ def _get_file_content_at_commit(
         )
         if result.returncode != 0:
             return None
-        return result.stdout.decode("utf-8")
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError, UnicodeDecodeError):
+        return result.stdout.decode("utf-8", errors="replace")
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return None
 
 

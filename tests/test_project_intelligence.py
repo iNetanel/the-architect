@@ -117,7 +117,6 @@ def test_build_instruction_limits_agent_to_architect_md(tmp_path: Path) -> None:
         project_dir=tmp_path,
         structure_report=report,
         project_context="## File Tree\nFile tree:",
-        architect_md_content="# ARCHITECT.md",
         reasons=["memory is shallow"],
     )
 
@@ -125,6 +124,8 @@ def test_build_instruction_limits_agent_to_architect_md(tmp_path: Path) -> None:
     assert "edit only `ARCHITECT.md`" in instruction
     assert "do not create task files" in instruction
     assert "Deterministic Structure Report" in instruction
+    # ARCHITECT.md is referenced by path, not embedded inline
+    assert str(tmp_path / "ARCHITECT.md") in instruction
 
 
 # ---------------------------------------------------------------------------

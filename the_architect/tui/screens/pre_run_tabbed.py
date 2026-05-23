@@ -2,8 +2,9 @@
 
 A single persistent :class:`PreRunScreen` that owns the Header, tab bar,
  and Footer, and hosts one tab per configuration concern. The user arrives
- on the Goal tab, can move freely with ``Tab`` / arrow keys / number
-hotkeys, and submits once when every required tab is complete.
+ on the Goal tab, can move freely with ``Tab`` / number hotkeys.
+ Arrow keys belong to widgets (cursor in text, selection in lists).
+ The user submits once when every required tab is complete.
 
 Replaces the linear chain of screens (Provider → Goal → Scope → Model →
 Agent → Mode) that Phase A made back-navigable. The linear screens stay
@@ -18,8 +19,9 @@ Tabs:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from loguru import logger
 from pydantic import BaseModel
@@ -48,6 +50,7 @@ from the_architect.tui.widgets import BlankOffCheckbox, BlankOffRadioButton, Mat
 if TYPE_CHECKING:
     from the_architect.config import ArchitectConfig
     from the_architect.core.provider import ArchitectProvider
+    from the_architect.core.resume_verification import ResumeVerificationResult
     from the_architect.core.tasks import Task
     from the_architect.core.templates import GoalTemplate
 
@@ -70,10 +73,8 @@ class GoalTextArea(TextArea):
     key name separate from ``enter``, so the screen's Enter binding does
     not fire for Shift+Enter and the key falls through to this handler.
 
-    Left/right arrows are intentionally NOT intercepted here — the
-    screen-level priority bindings own those keys so they always switch
-    tabs, even while text is being edited in this widget.  If you need
-    cursor movement within the text, use Ctrl+Left / Ctrl+Right.
+    Arrow keys move the cursor within the text (widget-owned behaviour).
+    Tab / Shift+Tab move focus between form fields.
     """
 
     class Submit(Message):
@@ -122,8 +123,13 @@ class PreRunValues(BaseModel):
     infinite_loop: bool = False
     token_budget_per_hour: int = 0
     token_budget_per_run: int = 0
+    task_timeout: int = 0
     notify_on_complete: bool = True
     notify_on_fail: bool = True
+    validation_gate_enabled: bool = True
+    validation_gate_checks: tuple[str, ...] = ("lint", "test", "typecheck")
+    validation_gate_custom_commands: dict[str, str] = {}
+    validation_gate_fail_fast: bool = True
     action: str = "plan"
 
 
@@ -207,8 +213,8 @@ class InfiniteLoopConfirmScreen(ModalScreen[bool]):
         """Focus the safer Cancel option by default."""
         try:
             self.query_one("#btn_infinite_cancel", MatrixButton).focus()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"InfiniteLoopConfirmScreen initial focus failed: {exc!r}")
 
     def action_focus_previous(self) -> None:
         """Move focus to the previous button."""
@@ -269,17 +275,8 @@ class PreRunScreen(Screen[PreRunValues]):
     """
 
     BINDINGS = [
-        # Left/right arrows ALWAYS switch tabs — they are priority
-        # bindings so they fire before any child widget (TextArea,
-        # RadioSet, ListView) can consume them for internal cursor
-        # movement.  Ctrl+Left / Ctrl+Right remain available inside
-        # the Goal TextArea for word-level cursor movement.
-        Binding("right", "next_tab", "Next tab", show=False, priority=True),
-        Binding("left", "prev_tab", "Previous tab", show=False, priority=True),
-        # Vertical arrows move focus/highlight only. Selection is explicit:
-        # Space commits the focused option; Enter still submits the form.
-        Binding("up", "focus_previous", "Previous field", show=False, priority=True),
-        Binding("down", "focus_next", "Next field", show=False, priority=True),
+        # Tab keys and number hotkeys for tab navigation.
+        # Arrow keys belong to widgets — not intercepted by this screen.
         Binding("tab", "next_tab", "Next tab", show=False),
         Binding("shift+tab", "prev_tab", "Previous tab", show=False),
         Binding("ctrl+tab", "next_tab", "Next tab", show=False),
@@ -399,6 +396,11 @@ class PreRunScreen(Screen[PreRunValues]):
         border: round $panel;
     }
 
+    PreRunScreen #inp_vg_custom {
+        height: 6;
+        border: round $panel;
+    }
+
     PreRunScreen #options_scroll {
         height: 1fr;
         overflow-y: scroll;
@@ -420,12 +422,16 @@ class PreRunScreen(Screen[PreRunValues]):
         persistent: bool = False,
         pending_tasks: list[Task] | None = None,
         action: str = "plan",
+        verification_results: Sequence[ResumeVerificationResult] | None = None,
     ) -> None:
         super().__init__()
         self._providers = providers
         self._config = config
         self._project_dir = project_dir
         self._pending_tasks = pending_tasks or []
+        self._verification_results = (
+            list(verification_results) if verification_results is not None else None
+        )
 
         # Hydrate values from config + CLI flags
         self._values = PreRunValues(
@@ -444,8 +450,21 @@ class PreRunScreen(Screen[PreRunValues]):
             force_reassessment=config.force_reassessment,
             token_budget_per_hour=config.token_budget_per_hour,
             token_budget_per_run=config.token_budget_per_run,
+            task_timeout=config.task_timeout,
             notify_on_complete=config.notify_on_complete,
             notify_on_fail=config.notify_on_fail,
+            validation_gate_enabled=cast(bool, config.validation_gate.get("enabled", True)),
+            validation_gate_checks=tuple(
+                cast(
+                    list[str],
+                    config.validation_gate.get("checks", ["lint", "test", "typecheck"]),
+                )
+            ),
+            validation_gate_custom_commands=cast(
+                dict[str, str],
+                config.validation_gate.get("custom_commands", {}),
+            ),
+            validation_gate_fail_fast=cast(bool, config.validation_gate.get("fail_fast", True)),
             action=action,
         )
 
@@ -471,6 +490,9 @@ class PreRunScreen(Screen[PreRunValues]):
         self._templates: list[GoalTemplate] = []
         self._load_templates()
 
+        # Custom commands textarea initial text (set in compose, applied in on_mount)
+        self._vg_custom_initial_text = ""
+
     # ── Template loading ─────────────────────────────────────────────
 
     def _load_templates(self) -> None:
@@ -479,8 +501,8 @@ class PreRunScreen(Screen[PreRunValues]):
             from the_architect.core.templates import list_templates
 
             self._templates = list_templates(self._project_dir)
-        except Exception:
-            # If templates can't be loaded, silently show empty
+        except Exception as exc:
+            logger.debug(f"PreRunScreen template loading failed: {exc!r}")
             self._templates = []
 
     # ── Composition ──────────────────────────────────────────────────
@@ -503,6 +525,14 @@ class PreRunScreen(Screen[PreRunValues]):
                             classes="tab_hint",
                             markup=False,
                         )
+                        # Verification summary — shown when verification was performed
+                        verify_summary = self._format_verify_summary()
+                        if verify_summary:
+                            yield Static(
+                                verify_summary,
+                                classes="tab_hint",
+                                markup=False,
+                            )
                         yield Static("Action", classes="tab_title")
                         yield Static(
                             "Execute keeps the current task plan. Replan archives it and creates "
@@ -521,6 +551,7 @@ class PreRunScreen(Screen[PreRunValues]):
                                 value=self._values.action == "replan",
                             )
                     # ── Template selection section ────────────────────
+                    yield Static("")
                     yield Static("Templates", id="template_label", classes="tab_title")
                     if self._templates:
                         template_items: list[ListItem] = []
@@ -659,6 +690,11 @@ class PreRunScreen(Screen[PreRunValues]):
                             else ""
                         )
                         yield Input(placeholder="0", id="inp_budget_run", value=budget_run_str)
+                        yield Label("Task timeout (0 = unlimited):")
+                        timeout_str = (
+                            str(self._values.task_timeout) if self._values.task_timeout > 0 else ""
+                        )
+                        yield Input(placeholder="0", id="inp_task_timeout", value=timeout_str)
                         # ── Defaults-enabled options ──────────────────────
                         yield BlankOffCheckbox(
                             "Integrity defense  (snapshot before edits)",
@@ -696,6 +732,60 @@ class PreRunScreen(Screen[PreRunValues]):
                             "desktop notification when the run fails",
                             classes="tab_hint",
                         )
+                        # ── Validation Gate options ────────────────────
+                        yield BlankOffCheckbox(
+                            "Validation Gate  (CI checks after each task)",
+                            id="chk_validation_gate",
+                            value=self._values.validation_gate_enabled,
+                        )
+                        yield Static(
+                            "run CI checks after each task to catch drift",
+                            classes="tab_hint",
+                        )
+                        yield BlankOffCheckbox(
+                            "  Gate: Lint  (ruff check)",
+                            id="chk_vg_lint",
+                            value="lint" in self._values.validation_gate_checks,
+                        )
+                        yield BlankOffCheckbox(
+                            "  Gate: Test  (pytest)",
+                            id="chk_vg_test",
+                            value="test" in self._values.validation_gate_checks,
+                        )
+                        yield BlankOffCheckbox(
+                            "  Gate: Typecheck  (mypy)",
+                            id="chk_vg_typecheck",
+                            value="typecheck" in self._values.validation_gate_checks,
+                        )
+                        yield BlankOffCheckbox(
+                            "  Gate: Fail Fast  (stop on first failure)",
+                            id="chk_vg_fail_fast",
+                            value=self._values.validation_gate_fail_fast,
+                        )
+                        yield Static(
+                            "Custom Commands  (one per line: name=command)",
+                            id="vg_custom_label",
+                            classes="tab_title",
+                        )
+                        yield Static(
+                            "e.g. build=npm run build · security=npm audit · overrides built-in "
+                            "names when keys match",
+                            classes="tab_hint",
+                        )
+                        # Build initial text for custom commands textarea
+                        vg_custom_text = ""
+                        if self._values.validation_gate_custom_commands:
+                            vg_custom_text = "\n".join(
+                                f"{k}={v}"
+                                for k, v in self._values.validation_gate_custom_commands.items()
+                            )
+                        yield GoalTextArea(
+                            id="inp_vg_custom",
+                            soft_wrap=True,
+                            show_line_numbers=False,
+                        )
+                        # Set initial text after compose via on_mount
+                        self._vg_custom_initial_text = vg_custom_text
 
         yield Static(self._footer_text(), id="prerun_footer")
 
@@ -718,6 +808,14 @@ class PreRunScreen(Screen[PreRunValues]):
         # Apply cross-tab state (free checkbox visibility)
         self._update_free_checkbox_visibility()
         self._update_replan_controls_visibility()
+
+        # Pre-fill custom commands textarea
+        if self._vg_custom_initial_text:
+            try:
+                area = self.query_one("#inp_vg_custom", TextArea)
+                area.text = self._vg_custom_initial_text
+            except Exception as exc:
+                logger.debug(f"PreRunScreen: custom commands pre-fill failed: {exc!r}")
 
         # Focus the first field
         try:
@@ -856,19 +954,19 @@ class PreRunScreen(Screen[PreRunValues]):
         if provider_name:
             self._start_provider_fetch(provider_name)
 
-        self._models = []
-        self._agents = []
+        # Keep stale model/agent data visible while new data loads — don't clear.
+        # This prevents visual flicker when switching providers quickly.
         self._model_fetch_error = False
         self._models_loading = bool(provider_name)
 
-        # Show loading status and clear stale provider rows while the worker runs.
+        # Show loading status without clearing existing provider rows.
         try:
             status = self.query_one("#model_fetch_status", Static)
             provider_label = provider.display_name if provider is not None else "provider"
             status.update(f"Loading models for {provider_label}…")
             status.display = True
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"PreRunScreen loading status update failed: {exc!r}")
         self._update_models_tab()
         self._update_tab_labels()
         self._update_footer()
@@ -1071,60 +1169,36 @@ class PreRunScreen(Screen[PreRunValues]):
             if not active_id:
                 return False
             pane = self.query_one(f"#{active_id}", TabPane)
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"PreRunScreen _move_focus_within_active_tab tab query failed: {exc!r}")
             return False
 
+        # Collect focusable widgets dynamically from the active tab pane.
+        # This avoids a hardcoded list that breaks when new widgets are added.
+        # Composite widgets (RadioSet, ListView) are treated as single stops.
         stops: list[Widget] = []
         for widget in self._collect_focusable_descendants(pane):
-            widget_id = getattr(widget, "id", "")
-            if widget_id in {
-                "scope_set",
-                "action_set",
-                "provider_set",
-                "model_list",
-                "agent_list",
-                "template_list",
-                "chk_free",
-                "chk_persistent",
-                "chk_integrity",
-                "chk_force_reassessment",
-                "chk_infinite_loop",
-                "chk_notify_complete",
-                "chk_notify_fail",
-                "inp_budget",
-                "inp_budget_run",
-                "goal_text",
-            }:
-                stops.append(widget)
+            stops.append(widget)
 
         if not stops:
             return False
 
+        # Find which stop the current focus belongs to.
         focused = self.focused
         current_index = -1
         if focused is not None:
-            focused_id = getattr(focused, "id", "") or ""
             for i, stop in enumerate(stops):
-                stop_id = getattr(stop, "id", "")
-                if focused is stop or focused_id == stop_id:
+                if focused is stop:
                     current_index = i
                     break
-                if stop_id == "scope_set" and focused_id in {
-                    "rb_simple",
-                    "rb_standard",
-                    "rb_complex",
-                }:
-                    current_index = i
-                    break
-                if stop_id == "action_set" and focused_id in {
-                    "rb_action_execute",
-                    "rb_action_replan",
-                }:
-                    current_index = i
-                    break
-                if stop_id == "provider_set" and focused_id.startswith("rb_prov_"):
-                    current_index = i
-                    break
+                # Check if focused widget is a descendant of this stop
+                # (handles RadioSet children where focus lands on inner buttons)
+                try:
+                    if focused in stop.walk_children():
+                        current_index = i
+                        break
+                except Exception as exc:
+                    logger.debug(f"PreRunScreen walk_children check failed: {exc!r}")
 
         if 0 <= current_index < len(stops):
             current_stop = stops[current_index]
@@ -1143,7 +1217,8 @@ class PreRunScreen(Screen[PreRunValues]):
             # set keeps track of which button is selected internally.
             target.focus()
             return True
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"PreRunScreen focus target widget failed: {exc!r}")
             return False
 
     def _move_composite_cursor(self, widget: Widget, *, forward: bool) -> bool:
@@ -1171,7 +1246,8 @@ class PreRunScreen(Screen[PreRunValues]):
                     widget.action_previous_button()
                 widget.focus()
                 return True
-            except Exception:
+            except Exception as exc:
+                logger.debug(f"PreRunScreen RadioSet cursor move failed: {exc!r}")
                 return False
 
         if isinstance(widget, ListView):
@@ -1189,7 +1265,8 @@ class PreRunScreen(Screen[PreRunValues]):
                     widget.action_cursor_up()
                 widget.focus()
                 return True
-            except Exception:
+            except Exception as exc:
+                logger.debug(f"PreRunScreen ListView cursor move failed: {exc!r}")
                 return False
 
         return False
@@ -1204,7 +1281,8 @@ class PreRunScreen(Screen[PreRunValues]):
         try:
             text = self.query_one("#goal_text", TextArea).text.strip()
             return len(text) >= 10
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"PreRunScreen _goal_complete query failed: {exc!r}")
             return False
 
     @property
@@ -1303,8 +1381,8 @@ class PreRunScreen(Screen[PreRunValues]):
         goal = ""
         try:
             goal = self.query_one("#goal_text", TextArea).text.strip()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"PreRunScreen collect goal text failed: {exc!r}")
 
         # Scope
         scope = "standard"
@@ -1316,8 +1394,8 @@ class PreRunScreen(Screen[PreRunValues]):
                     scope = "simple"
                 elif pressed.id == "rb_complex":
                     scope = "complex"
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"PreRunScreen collect scope failed: {exc!r}")
 
         action = self._selected_action()
 
@@ -1332,8 +1410,8 @@ class PreRunScreen(Screen[PreRunValues]):
                     idx = int(idx_str)
                     if 0 <= idx < len(self._providers):
                         provider_name = self._providers[idx].name
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"PreRunScreen collect provider failed: {exc!r}")
 
         # Architect model
         architect_model = (
@@ -1356,58 +1434,111 @@ class PreRunScreen(Screen[PreRunValues]):
             chk = self.query_one("#chk_free", Checkbox)
             if chk.display:
                 free = bool(chk.value)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"PreRunScreen collect free checkbox failed: {exc!r}")
 
         persistent = False
         try:
             persistent = bool(self.query_one("#chk_persistent", Checkbox).value)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"PreRunScreen collect persistent checkbox failed: {exc!r}")
 
         integrity = True
         try:
             integrity = bool(self.query_one("#chk_integrity", Checkbox).value)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"PreRunScreen collect integrity checkbox failed: {exc!r}")
 
         force_reassessment = True
         try:
             force_reassessment = bool(self.query_one("#chk_force_reassessment", Checkbox).value)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"PreRunScreen collect force_reassessment checkbox failed: {exc!r}")
 
         infinite_loop = False
         try:
             infinite_loop = bool(self.query_one("#chk_infinite_loop", Checkbox).value)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"PreRunScreen collect infinite_loop checkbox failed: {exc!r}")
 
         budget = 0
         try:
             raw = self.query_one("#inp_budget", Input).value or "0"
             budget = max(int(raw.strip() or "0"), 0)
-        except (ValueError, Exception):
+        except (ValueError, Exception) as exc:
+            logger.debug(f"PreRunScreen collect budget input failed: {exc!r}")
             budget = 0
 
         budget_run = 0
         try:
             raw_run = self.query_one("#inp_budget_run", Input).value or "0"
             budget_run = max(int(raw_run.strip() or "0"), 0)
-        except (ValueError, Exception):
+        except (ValueError, Exception) as exc:
+            logger.debug(f"PreRunScreen collect budget_run input failed: {exc!r}")
             budget_run = 0
+
+        task_timeout = 0
+        try:
+            raw_timeout = self.query_one("#inp_task_timeout", Input).value or "0"
+            task_timeout = max(int(raw_timeout.strip() or "0"), 0)
+        except (ValueError, Exception) as exc:
+            logger.debug(f"PreRunScreen collect task_timeout input failed: {exc!r}")
+            task_timeout = 0
 
         notify_complete = True
         try:
             notify_complete = bool(self.query_one("#chk_notify_complete", Checkbox).value)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"PreRunScreen collect notify_complete checkbox failed: {exc!r}")
 
         notify_fail = True
         try:
             notify_fail = bool(self.query_one("#chk_notify_fail", Checkbox).value)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"PreRunScreen collect notify_fail checkbox failed: {exc!r}")
+
+        # ── Validation Gate ──────────────────────────────────────────
+        vg_enabled = True
+        try:
+            vg_enabled = bool(self.query_one("#chk_validation_gate", Checkbox).value)
+        except Exception as exc:
+            logger.debug(f"PreRunScreen collect vg_enabled checkbox failed: {exc!r}")
+
+        vg_checks: list[str] = []
+        for check_id, check_name in [
+            ("chk_vg_lint", "lint"),
+            ("chk_vg_test", "test"),
+            ("chk_vg_typecheck", "typecheck"),
+        ]:
+            try:
+                if bool(self.query_one(f"#{check_id}", Checkbox).value):
+                    vg_checks.append(check_name)
+            except Exception as exc:
+                logger.debug(f"PreRunScreen collect vg_check {check_id} failed: {exc!r}")
+        if not vg_checks:
+            vg_checks = ["lint", "test", "typecheck"]
+
+        vg_fail_fast = True
+        try:
+            vg_fail_fast = bool(self.query_one("#chk_vg_fail_fast", Checkbox).value)
+        except Exception as exc:
+            logger.debug(f"PreRunScreen collect vg_fail_fast checkbox failed: {exc!r}")
+
+        # Custom commands — parse "name=command" per line
+        vg_custom: dict[str, str] = {}
+        try:
+            raw = self.query_one("#inp_vg_custom", TextArea).text.strip()
+            if raw:
+                for line in raw.split("\n"):
+                    line = line.strip()
+                    if "=" in line and line:
+                        key, _, cmd = line.partition("=")
+                        key = key.strip()
+                        cmd = cmd.strip()
+                        if key and cmd:
+                            vg_custom[key] = cmd
+        except Exception as exc:
+            logger.debug(f"PreRunScreen collect vg_custom commands failed: {exc!r}")
 
         return PreRunValues(
             goal=goal,
@@ -1423,8 +1554,13 @@ class PreRunScreen(Screen[PreRunValues]):
             infinite_loop=infinite_loop,
             token_budget_per_hour=budget,
             token_budget_per_run=budget_run,
+            task_timeout=task_timeout,
             notify_on_complete=notify_complete,
             notify_on_fail=notify_fail,
+            validation_gate_enabled=vg_enabled,
+            validation_gate_checks=tuple(vg_checks),
+            validation_gate_custom_commands=vg_custom,
+            validation_gate_fail_fast=vg_fail_fast,
             action=action,
         )
 
@@ -1549,13 +1685,53 @@ class PreRunScreen(Screen[PreRunValues]):
             self._update_tab_labels()
             self._update_footer()
 
-    def on_key(self, event: Any) -> None:
-        """Use Space to commit focused ListView rows without affecting text input."""
-        if event.key != "space" or not isinstance(self.focused, ListView):
+    async def _on_key(self, event: Any) -> None:
+        """Handle arrows, Space for ListView, and tab navigation.
+
+        Up/down arrows move focus between form fields on the active tab.
+        Left/right arrows switch tabs. TextArea keeps arrow keys for
+        multi-line cursor movement (all four directions) — except the
+        custom commands TextArea whose up/down moves between options.
+        Input widgets are single-line so up/down moves focus; left/right
+        still works for cursor movement within the input text.
+        Space commits the focused ListView row without submitting the form.
+        """
+        key_name = getattr(event, "key", "")
+
+        # Up/down: move focus between fields; TextArea keeps arrows for text
+        if key_name in ("up", "down"):
+            focused = self.focused
+            if isinstance(focused, TextArea) and getattr(focused, "id", "") != "inp_vg_custom":
+                return  # let TextArea handle multi-line cursor movement
+            if key_name == "up":
+                self.action_focus_previous()
+            else:
+                self.action_focus_next()
+            event.stop()
+            event.prevent_default()
             return
-        self.focused.action_select_cursor()
-        event.prevent_default()
-        event.stop()
+
+        # Left/right: switch tabs; TextArea keeps arrows for cursor movement
+        if key_name in ("left", "right"):
+            focused = self.focused
+            if isinstance(focused, TextArea):
+                return  # let TextArea handle cursor movement
+            if key_name == "left":
+                self.action_prev_tab()
+            else:
+                self.action_next_tab()
+            event.stop()
+            event.prevent_default()
+            return
+
+        # Space commits ListView rows without submitting the form
+        if key_name == "space" and isinstance(self.focused, ListView):
+            self.focused.action_select_cursor()
+            event.prevent_default()
+            event.stop()
+            return
+
+        await super()._on_key(event)
 
     def _selected_action(self) -> str:
         """Return the existing-task action selected on the Goal tab."""
@@ -1565,8 +1741,8 @@ class PreRunScreen(Screen[PreRunValues]):
             pressed = self.query_one("#action_set", RadioSet).pressed_button
             if pressed is not None and pressed.id == "rb_action_replan":
                 return "replan"
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"PreRunScreen _selected_action query failed: {exc!r}")
         return "execute"
 
     def on_checkbox_changed(self) -> None:
@@ -1577,8 +1753,8 @@ class PreRunScreen(Screen[PreRunValues]):
                 self._show_infinite_loop_confirmation(submit_after_confirm=False)
             elif not infinite_loop_checked:
                 self._infinite_loop_confirmed = False
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"PreRunScreen on_checkbox_changed failed: {exc!r}")
         self._update_tab_labels()
         self._update_footer()
 
@@ -1672,14 +1848,65 @@ class PreRunScreen(Screen[PreRunValues]):
         return None
 
     def _format_pending_tasks(self) -> str:
-        """Return a compact pending-task summary for existing-task runs."""
+        """Return a compact pending-task summary for existing-task runs.
+
+        Includes color-coded verification indicators (●) when verification
+        results are available: green for valid, yellow for stale, red for missing.
+        """
         n = len(self._pending_tasks)
         lines = [f"{n} pending task{'s' if n != 1 else ''} found:"]
         for task in self._pending_tasks[:5]:
-            lines.append(f"  {task.prefix}  {task.title or task.name}")
+            indicator = self._verify_indicator(task.prefix)
+            lines.append(f"  {indicator}{task.prefix}  {task.title or task.name}")
         if n > 5:
             lines.append(f"  ... and {n - 5} more")
         return "\n".join(lines)
+
+    def _format_verify_summary(self) -> str:
+        """Return a verification summary line, or empty string if no verification.
+
+        Returns a string like "Verification: 2 valid, 1 stale, 1 missing" when
+        verification results are available. Returns empty string when verification
+        was not performed (disabled or no completed tasks).
+        """
+        if not self._verification_results:
+            return ""
+        valid = sum(1 for r in self._verification_results if r.status == "valid")
+        stale = sum(1 for r in self._verification_results if r.status == "stale")
+        missing = sum(1 for r in self._verification_results if r.status == "missing")
+        parts: list[str] = []
+        if valid:
+            parts.append(f"{valid} valid")
+        if stale:
+            parts.append(f"{stale} stale")
+        if missing:
+            parts.append(f"{missing} missing")
+        if not parts:
+            return ""
+        return f"Verification: {', '.join(parts)}"
+
+    def _verify_indicator(self, task_prefix: str) -> str:
+        """Return a color-coded verification indicator for a task prefix.
+
+        Args:
+            task_prefix: The task prefix (e.g. "T01").
+
+        Returns:
+            A Rich markup string with the indicator, e.g.
+            "[green]●[/green] " for valid, "[yellow]●[/yellow] " for stale,
+            "[red]●[/red] " for missing, or empty string when not verified.
+        """
+        if not self._verification_results:
+            return ""
+        for result in self._verification_results:
+            if result.task_id == task_prefix:
+                if result.status == "valid":
+                    return "[green]●[/green] "
+                elif result.status == "stale":
+                    return "[yellow]●[/yellow] "
+                else:
+                    return "[red]●[/red] "
+        return ""
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1700,6 +1927,7 @@ def run_pre_run_tabbed(
     persistent: bool = False,
     pending_tasks: list[Task] | None = None,
     action: str = "plan",
+    verification_results: Sequence[ResumeVerificationResult] | None = None,
 ) -> PreRunValues | None:
     """Show the tabbed pre-run screen and return the chosen values.
 
@@ -1708,6 +1936,22 @@ def run_pre_run_tabbed(
     when no runner is hosting the CLI flow.
 
     Raises :class:`SystemExit` with code 0 when the user cancels.
+
+    Args:
+        providers: Available AI CLI providers.
+        config: Current ArchitectConfig.
+        project_dir: The project root directory.
+        goal_text: Pre-filled goal text.
+        scope_text: Pre-filled scope text.
+        architect_model: Pre-filled architect model.
+        execution_model: Pre-filled execution model.
+        free_mode: Whether free-tier mode is enabled.
+        persistent: Whether persistent mode is enabled.
+        pending_tasks: List of pending Task objects.
+        action: Default action ("plan" or "execute" or "replan").
+        verification_results: Optional verification results from
+            :func:`~the_architect.core.resume_verification.verify_all_completed_tasks`
+            showing which completed tasks are still valid.
 
     Returns:
         The collected :class:`PreRunValues`, or None on cancel.
@@ -1726,6 +1970,7 @@ def run_pre_run_tabbed(
         persistent=persistent,
         pending_tasks=pending_tasks,
         action=action,
+        verification_results=verification_results,
     )
     result = run_single_screen(screen)
     if result is None:

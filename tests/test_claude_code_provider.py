@@ -56,7 +56,7 @@ class TestClaudeCodeProviderGetVersion:
             mock_run.assert_called_once_with(
                 ["claude", "--version"],
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
                 timeout=10,
             )
 

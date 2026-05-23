@@ -171,6 +171,12 @@ class TestPauseMenuArrowNavigation:
             assert app.focused is not None
             assert app.focused.id == "btn_continue"
 
+    # Textual's call_from_thread creates internal coroutines that are garbage
+    # collected without being awaited during test teardown.
+    @pytest.mark.filterwarnings(
+        "ignore:coroutine 'App\\.call_from_thread\\.<locals>\\.run_callback' "
+        "was never awaited:RuntimeWarning"
+    )
     @pytest.mark.asyncio
     async def test_enter_on_focused_exit_button_dismisses_with_exit(self) -> None:
         app = _HarnessApp()

@@ -185,6 +185,46 @@ class TestGatherProjectContextEdgeCases:
             # Should not crash, should handle the error gracefully
             assert "File tree:" in context
 
+    def test_gather_context_excludes_history_when_fresh(self, tmp_path: Path) -> None:
+        """Fresh planning (include_history=False) omits previous plan history."""
+        # Set up: create PROGRESS.md with completed tasks, old task files, archive
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        progress_md = tasks_dir / "PROGRESS.md"
+        progress_md.write_text(
+            "## Task Log\n"
+            "| Task | Title | Status | Completed |\n"
+            "|------|-------|--------|----------|\n"
+            "| T01 | init | Done | 2026-04-25 |\n",
+            encoding="utf-8",
+        )
+        (tasks_dir / "T01_old.md").write_text("# T01 old", encoding="utf-8")
+        archive_dir = tasks_dir / "archive" / "2024-01-01_000000"
+        archive_dir.mkdir(parents=True)
+        (archive_dir / "T01_setup.md").write_text("# T01", encoding="utf-8")
+
+        # create a regular file so file tree is non-empty
+        (tmp_path / "README.md").write_text("# Project", encoding="utf-8")
+
+        # Fresh planning — history excluded
+        context = gather_project_context(tmp_path, include_history=False)
+
+        # File tree and docs still present
+        assert "File tree:" in context
+        assert "README.md" in context
+        # History sections absent — the "## Tasks" section with leftover annotation,
+        # "Previous Plan History" header, and archive summary are all skipped.
+        assert "Previous Plan History" not in context
+        assert "leftover from the previous run" not in context
+        assert "tasks/archive/" not in context
+        assert "## Tasks" not in context
+
+        # Default (include_history=True) should include history
+        context_with_history = gather_project_context(tmp_path, include_history=True)
+        assert "Previous Plan History" in context_with_history
+        assert "leftover from the previous run" in context_with_history
+        assert "tasks/archive/" in context_with_history
+
 
 class TestBuildPlanningInstructionEdgeCases:
     """Edge-case tests for build_planning_instruction()."""
@@ -699,7 +739,7 @@ class TestBuildPlanningInstructionAdditional:
     """Additional tests for build_planning_instruction() (lines 461, 471)."""
 
     def test_build_instruction_with_architect_md_content(self, tmp_path: Path) -> None:
-        """Test that architect_md_content is included in instruction (line 461)."""
+        """Test that architect_md_content triggers a path reference in instruction."""
         request = PlanningRequest(
             goal="Test goal",
             scope=TaskScope.STANDARD,
@@ -708,7 +748,9 @@ class TestBuildPlanningInstructionAdditional:
         )
         instruction = build_planning_instruction(request, "project context")
         assert "ARCHITECT.md" in instruction
-        assert "Use SQLite" in instruction
+        # Content is referenced by path, not embedded inline
+        assert str(tmp_path / "ARCHITECT.md") in instruction
+        assert "Use SQLite" not in instruction
 
     def test_build_instruction_with_structure_report(self, tmp_path: Path) -> None:
         """Test that structure_report is included in instruction (line 471)."""

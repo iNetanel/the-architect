@@ -21,6 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeVar
 
+from loguru import logger
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
@@ -69,7 +70,8 @@ class ProviderSelectionScreen(Screen[int]):
     }
 
     #provider_body {
-        width: 72;
+        width: 100%;
+        max-width: 72;
         height: auto;
         padding: 1 2;
         border: round $panel;
@@ -127,7 +129,8 @@ class ProviderSelectionScreen(Screen[int]):
         try:
             list_view = self.query_one("#provider_list", ListView)
             idx = list_view.index if list_view.index is not None else 0
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"ProviderSelectionScreen confirm query failed: {exc!r}")
             idx = 0
         self.dismiss(int(idx))
 
@@ -175,7 +178,9 @@ class StringListPickerScreen(Screen[str]):
     }
 
     #picker_body {
-        width: 82;
+        width: 100%;
+        max-width: 82;
+
         height: auto;
         padding: 1 2;
         border: round $panel;
@@ -238,7 +243,8 @@ class StringListPickerScreen(Screen[str]):
             idx = self.query_one("#picker_list", ListView).index
             if idx is None:
                 idx = 0
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"StringListPickerScreen confirm query failed: {exc!r}")
             idx = 0
         self.dismiss(self._choices[idx][0])
 
@@ -330,7 +336,9 @@ class UpdateActionScreen(Screen[str]):
     }
 
     #update_body {
-        width: 82;
+        width: 100%;
+        max-width: 82;
+
         height: auto;
         padding: 1 2;
         border: round $panel;
@@ -402,7 +410,9 @@ class SelfUpdateScreen(Screen[str]):
     }
 
     #selfupdate_body {
-        width: 82;
+        width: 100%;
+        max-width: 82;
+
         height: auto;
         padding: 1 2;
         border: round $panel;
@@ -490,7 +500,9 @@ class PendingTasksScreen(Screen[bool]):
     }
 
     #pending_body {
-        width: 82;
+        width: 100%;
+        max-width: 82;
+
         height: auto;
         padding: 1 2;
         border: round $panel;

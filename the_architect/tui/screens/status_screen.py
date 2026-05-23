@@ -127,6 +127,8 @@ class StatusApp(App[None]):
             budget_parts.append(f"{config.token_budget_per_hour:,} tokens/hour")
         if config.token_budget_per_run > 0:
             budget_parts.append(f"{config.token_budget_per_run:,} tokens/run")
+        if config.task_timeout > 0:
+            budget_parts.append(f"{config.task_timeout}s/task timeout")
         if budget_parts:
             self.query_one("#token_line", Static).update("  ·  ".join(budget_parts))
         else:

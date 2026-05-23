@@ -25,8 +25,9 @@ Hosts:
 from __future__ import annotations
 
 import random
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
+from loguru import logger
 from rich.text import Text
 from textual.binding import Binding
 from textual.content import Content
@@ -34,6 +35,11 @@ from textual.message import Message
 from textual.reactive import reactive
 from textual.style import Style
 from textual.widgets import Checkbox, RadioButton, Static
+
+from the_architect.tui.constants import ANIMATION_TICK_INTERVAL
+
+if TYPE_CHECKING:
+    from textual.timer import Timer
 
 
 class BlankOffCheckbox(Checkbox):
@@ -206,7 +212,7 @@ class MatrixRain(Static):
 
     # 10 FPS is the same cadence the braille spinner used. Fast enough
     # to feel animated, slow enough not to chew CPU.
-    TICK_INTERVAL: ClassVar[float] = 0.1
+    TICK_INTERVAL: ClassVar[float] = ANIMATION_TICK_INTERVAL
 
     # Grid size. DEFAULT_CSS is generated from these values so the render
     # grid and layout dimensions stay in sync across every rain surface.
@@ -230,6 +236,7 @@ class MatrixRain(Static):
 
     def __init__(self, id: str | None = None) -> None:
         super().__init__("", id=id)
+        self._timer: Timer | None = None
         # Per-column state: (head_row, stream_length). Heads start at
         # staggered rows so the first frame isn't a flat line.
         self._rng = random.Random(0x4D415452)  # b"MATR"
@@ -242,7 +249,23 @@ class MatrixRain(Static):
         # Paint the initial frame immediately so the widget isn't blank
         # for the first 100ms before the first tick fires.
         self.update(self._build_frame())
-        self.set_interval(self.TICK_INTERVAL, self._tick)
+        self._timer = self.set_interval(self.TICK_INTERVAL, self._tick)
+
+    def on_hide(self) -> None:
+        """Pause the rain animation while the widget is not visible."""
+        if self._timer is not None:
+            self._timer.pause()
+
+    def on_resume(self) -> None:
+        """Restart the rain animation when the widget becomes visible again."""
+        if self._timer is not None:
+            self._timer.resume()
+
+    def on_unmount(self) -> None:
+        """Stop the interval timer to prevent leaks after removal."""
+        if self._timer is not None:
+            self._timer.stop()
+            self._timer = None
 
     def _tick(self) -> None:
         # Advance each column; respawn columns whose head has fallen
@@ -350,12 +373,15 @@ class MatrixRain(Static):
         # clearly visible on a near-black terminal background without
         # competing with the bright head glyph.
         accent_muted = "#5a9400"
-        try:
-            theme_accent = self.app.theme_variables.get("accent")
-            if theme_accent and theme_accent.startswith("#"):
-                accent = theme_accent
-        except Exception:
-            pass
+        # Resolve theme accent color if app is attached and theme is loaded.
+        # self.app can be None during widget construction or unit testing.
+        if self.app is not None:
+            try:
+                theme_accent = self.app.theme_variables.get("accent")
+                if theme_accent and theme_accent.startswith("#"):
+                    accent = theme_accent
+            except Exception as exc:
+                logger.debug(f"MatrixRain theme accent resolution failed: {exc!r}")
         return style.replace("$accent-muted", accent_muted).replace("$accent", accent)
 
 

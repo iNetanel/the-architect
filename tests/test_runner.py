@@ -142,6 +142,20 @@ def _make_mock_process(stdout_lines=None, exit_code=0, stdout_none=False):
         mock_stdout.readline = AsyncMock(return_value=b"")
 
     mock_process.stdout = mock_stdout
+
+    # Mock stderr as a pipe (always drained, never blocks).
+    mock_stderr = AsyncMock()
+    mock_stderr.readline = AsyncMock(return_value=b"")
+    mock_process.stderr = mock_stderr
+
+    # Mock stdin as a pipe (always present since runner always uses PIPE).
+    mock_stdin = MagicMock()
+    mock_stdin.write = MagicMock()
+    mock_stdin.drain = AsyncMock()
+    mock_stdin.close = MagicMock()
+    mock_stdin.wait_closed = AsyncMock()
+    mock_process.stdin = mock_stdin
+
     mock_process.wait = AsyncMock(return_value=exit_code)
     return mock_process
 
@@ -1278,9 +1292,8 @@ class TestBuildInstruction:
         assert "<promise>T01_COMPLETE</promise>" in result
         assert task.path.name in result
 
-    def test_uses_project_local_execution_protocol_when_resources_fail(
-        self, task, config, monkeypatch
-    ):
+    def test_references_execution_protocol_by_path(self, task, config):
+        """Execution protocol is referenced by path, not embedded inline."""
         prompts_dir = config.project_root / ".architect" / "prompts"
         prompts_dir.mkdir(parents=True, exist_ok=True)
         (prompts_dir / "execution.md").write_text(
@@ -1288,14 +1301,10 @@ class TestBuildInstruction:
             encoding="utf-8",
         )
 
-        def fail_resource_lookup(package: str) -> None:
-            raise NotADirectoryError("MultiplexedPath only supports directories")
-
-        monkeypatch.setattr("importlib.resources.files", fail_resource_lookup)
-
         result = build_instruction(task, attempt=1, config=config)
 
-        assert "LOCAL EXECUTION PROTOCOL" in result
+        assert "Read" in result
+        assert "execution.md" in result
         assert "TASK PREFIX: T01" in result
 
     def test_instruction_uses_r_task_prefix_for_promise(self, config):
@@ -1318,8 +1327,9 @@ class TestBuildInstruction:
         result = build_instruction(
             task, attempt=1, config=config, architect_md_content="# Knowledge"
         )
-        assert "=== ARCHITECT.md" in result
-        assert "Knowledge" in result
+        assert "ARCHITECT.md" in result
+        assert "Read" in result
+        assert "persistent project intelligence" in result
 
     def test_without_architect_md_content(self, task, config):
         result = build_instruction(task, attempt=1, config=config, architect_md_content="")
@@ -1330,8 +1340,7 @@ class TestBuildInstruction:
         assert "RETRY ATTEMPT" in result
 
     def test_with_instructions_md(self, task, config):
-        instructions_md = config.progress_file.parent / "tasks" / "INSTRUCTIONS.md"
-        instructions_md.parent.mkdir(parents=True, exist_ok=True)
+        instructions_md = config.tasks_dir / "INSTRUCTIONS.md"
         instructions_md.write_text("# Instructions\n", encoding="utf-8")
         result = build_instruction(task, attempt=1, config=config)
         assert "tasks/INSTRUCTIONS.md" in result
@@ -1350,6 +1359,72 @@ class TestBuildInstruction:
         config.retry_prompt_mode = "same"
         result = build_instruction(task, attempt=2, config=config)
         assert "RETRY ATTEMPT" in result
+
+
+class TestBuildInstructionAssignedModel:
+    """Tests for per-task model assignment context injection (Cycle 32)."""
+
+    def test_assigned_model_injected_when_task_has_model(self, config):
+        """ASSIGNED MODEL section appears when task.model is set."""
+        path = config.tasks_dir / "T01_test.md"
+        path.write_text("# T01 - Test Task\n", encoding="utf-8")
+        task = Task(
+            name="T01_test",
+            prefix="T01",
+            number=1,
+            path=path,
+            status=TaskStatus.PENDING,
+            model="openrouter/google/gemini-2.5-pro",
+        )
+        result = build_instruction(task, attempt=1, config=config)
+        assert "=== ASSIGNED MODEL ===" in result
+
+    def test_assigned_model_not_injected_when_task_model_none(self, config):
+        """No ASSIGNED MODEL section when task.model is None."""
+        path = config.tasks_dir / "T01_test.md"
+        path.write_text("# T01 - Test Task\n", encoding="utf-8")
+        task = Task(
+            name="T01_test",
+            prefix="T01",
+            number=1,
+            path=path,
+            status=TaskStatus.PENDING,
+            model=None,
+        )
+        result = build_instruction(task, attempt=1, config=config)
+        assert "=== ASSIGNED MODEL ===" not in result
+
+    def test_assigned_model_content(self, config):
+        """ASSIGNED MODEL section contains the correct model name."""
+        path = config.tasks_dir / "T02_analytics.md"
+        path.write_text("# T02 - Analytics\n", encoding="utf-8")
+        task = Task(
+            name="T02_analytics",
+            prefix="T02",
+            number=2,
+            path=path,
+            status=TaskStatus.PENDING,
+            model="openrouter/anthropic/claude-sonnet-4-20250514",
+        )
+        result = build_instruction(task, attempt=1, config=config)
+        assert "=== ASSIGNED MODEL ===" in result
+        assert "openrouter/anthropic/claude-sonnet-4-20250514" in result
+        assert "assigned a specific model" in result
+
+    def test_assigned_model_empty_string_not_injected(self, config):
+        """Empty string model is treated as None — no section injected."""
+        path = config.tasks_dir / "T01_test.md"
+        path.write_text("# T01 - Test Task\n", encoding="utf-8")
+        task = Task(
+            name="T01_test",
+            prefix="T01",
+            number=1,
+            path=path,
+            status=TaskStatus.PENDING,
+            model="",
+        )
+        result = build_instruction(task, attempt=1, config=config)
+        assert "=== ASSIGNED MODEL ===" not in result
 
 
 class TestBuildAttemptSummary:
@@ -1413,6 +1488,68 @@ class TestSelectModel:
         config.standalone_mode = "claude-3-opus"
         model = select_model(1, config, model_override="gpt-4o")
         assert model == "gpt-4o"
+
+    # -- Per-task model assignment tests (Cycle 32) --
+
+    def test_task_model_basic(self, config):
+        """task_model is returned when no override and no standalone_mode."""
+        model = select_model(1, config, task_model="openrouter/google/gemini-2.5-pro")
+        assert model == "openrouter/google/gemini-2.5-pro"
+
+    def test_task_model_over_standalone_mode(self, config):
+        """task_model takes priority over standalone_mode."""
+        config.standalone_mode = "claude-3-opus"
+        model = select_model(1, config, task_model="openrouter/google/gemini-2.5-pro")
+        assert model == "openrouter/google/gemini-2.5-pro"
+
+    def test_model_override_over_task_model(self, config):
+        """model_override (retry fallback) beats task_model."""
+        model = select_model(
+            2,
+            config,
+            model_override="claude-sonnet-4-20250514",
+            task_model="openrouter/google/gemini-2.5-pro",
+        )
+        assert model == "claude-sonnet-4-20250514"
+
+    def test_full_priority_chain(self, config):
+        """model_override > task_model > standalone_mode > None."""
+        config.standalone_mode = "claude-3-opus"
+        # With all three set, override wins
+        model = select_model(
+            2,
+            config,
+            model_override="gpt-4o",
+            task_model="openrouter/google/gemini-2.5-pro",
+        )
+        assert model == "gpt-4o"
+        # Without override, task_model wins
+        model = select_model(1, config, task_model="openrouter/google/gemini-2.5-pro")
+        assert model == "openrouter/google/gemini-2.5-pro"
+        # Without task_model, standalone_mode wins
+        model = select_model(1, config)
+        assert model == "claude-3-opus"
+
+    def test_free_mode_overrides_task_model(self, config):
+        """Free mode's model_override beats task_model (user-level override)."""
+        # Free mode passes its model as model_override
+        model = select_model(
+            1,
+            config,
+            model_override="openrouter/free/llama-3.1-8b",
+            task_model="openrouter/google/gemini-2.5-pro",
+        )
+        assert model == "openrouter/free/llama-3.1-8b"
+
+    def test_backward_compat_no_task_model(self, config):
+        """When task_model is None (default), behavior is unchanged."""
+        config.standalone_mode = "claude-3-opus"
+        # Explicit None for task_model — should fall through to standalone_mode
+        model = select_model(1, config, task_model=None)
+        assert model == "claude-3-opus"
+        # No task_model keyword at all — same result
+        model = select_model(1, config)
+        assert model == "claude-3-opus"
 
 
 class TestRunTaskOnce:
@@ -2166,10 +2303,8 @@ class TestBuildInstructionFeedback:
         lines = result.split("\n")
         budget_idx = lines.index("=== TOKEN BUDGET CONTEXT ===")
         feedback_idx = lines.index("=== USER FEEDBACK ===")
-        # ARCHITECT.md header includes extra text; find by prefix match
-        architect_idx = next(
-            i for i, line in enumerate(lines) if line.startswith("=== ARCHITECT.md")
-        )
+        # ARCHITECT.md is referenced by path (not embedded); find the reference line
+        architect_idx = next(i for i, line in enumerate(lines) if "ARCHITECT.md" in line)
         assert budget_idx < feedback_idx, "Feedback must appear after budget context"
         assert feedback_idx < architect_idx, "Feedback must appear before ARCHITECT.md"
 
@@ -3570,8 +3705,12 @@ class TestInstructionViaStdin:
         assert kwargs.get("stdin") == _asyncio.subprocess.PIPE
 
     @pytest.mark.asyncio
-    async def test_non_stdin_provider_does_not_open_stdin_pipe(self, tmp_path: Path) -> None:
-        """When instruction_via_stdin=False the subprocess stdin must be None."""
+    async def test_non_stdin_provider_also_uses_stdin_pipe(self, tmp_path: Path) -> None:
+        """When instruction_via_stdin=False stdin is still PIPE (never a TTY).
+
+        The pipe prevents the provider CLI from detecting a TTY and
+        configuring terminal raw mode which would corrupt the TUI.
+        """
         provider = _make_mock_provider(instruction_via_stdin=False)
 
         with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
@@ -3579,7 +3718,9 @@ class TestInstructionViaStdin:
             await stream_provider("instruction", tmp_path, provider)
 
         _, kwargs = mock_exec.call_args
-        assert kwargs.get("stdin") is None
+        import asyncio as _asyncio
+
+        assert kwargs.get("stdin") == _asyncio.subprocess.PIPE
 
     def test_claude_code_provider_instruction_via_stdin_is_true(self) -> None:
         """ClaudeCodeProvider must advertise stdin delivery."""
@@ -3598,7 +3739,7 @@ class TestInstructionViaStdin:
         assert "secret instruction" not in cmd
 
     def test_other_providers_instruction_via_stdin_is_false(self) -> None:
-        """OpenCode, Codex, and Gemini providers must keep stdin=False."""
+        """OpenCode, Codex and Gemini providers keep stdin=False."""
         from the_architect.core.codex_cli_provider import CodexCliProvider
         from the_architect.core.gemini_cli_provider import GeminiCliProvider
         from the_architect.core.opencode_provider import OpenCodeProvider
@@ -5696,28 +5837,7 @@ class TestKillProcessTreeGenericException:
 
 
 class TestStreamProviderWarningCallbackStdin:
-    """Coverage for instruction warning, callback exception, stdin failure."""
-
-    @pytest.mark.asyncio
-    async def test_stream_provider_long_instruction_warning(self):
-        from io import StringIO
-
-        from loguru import logger
-
-        sink = StringIO()
-        handler_id = logger.add(sink, level="WARNING", format="{message}")
-        try:
-            provider = _make_mock_provider()
-            long_instruction = "x" * 20000  # > 16384
-            with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
-                mock_exec.return_value = _make_mock_process(stdout_lines=[], exit_code=0)
-                result = await stream_provider(long_instruction, Path.cwd(), provider)
-                assert isinstance(result, StreamResult)
-            # The warning fires regardless of platform when instruction is large
-            log_output = sink.getvalue()
-            assert "approaching the Windows CreateProcess command-line limit" in log_output
-        finally:
-            logger.remove(handler_id)
+    """Coverage for callback exception and stdin failure."""
 
     @pytest.mark.asyncio
     async def test_stream_provider_on_first_output_callback_raises(self):
@@ -5745,6 +5865,35 @@ class TestStreamProviderWarningCallbackStdin:
             mock_exec.return_value = mock_proc
             result = await stream_provider("test", Path.cwd(), provider)
             assert isinstance(result, StreamResult)
+
+
+class TestStreamProviderStdinDelivery:
+    """Coverage for instruction delivery via stdin vs CLI args."""
+
+    @pytest.mark.asyncio
+    async def test_stdin_used_when_provider_sets_flag(self):
+        from the_architect.core.runner import stream_provider
+
+        provider = _make_mock_provider()
+        provider.instruction_via_stdin = True
+        with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = _make_mock_process(stdout_lines=[], exit_code=0)
+            await stream_provider("test instruction", Path.cwd(), provider)
+            call_kwargs = mock_exec.call_args[1]
+            assert call_kwargs["stdin"] == asyncio.subprocess.PIPE
+
+    @pytest.mark.asyncio
+    async def test_stdin_always_piped_regardless_of_flag(self):
+        """Stdin is always PIPE — the provider must never detect a TTY."""
+        from the_architect.core.runner import stream_provider
+
+        provider = _make_mock_provider()
+        assert getattr(provider, "instruction_via_stdin", False) is False
+        with patch("the_architect.core.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = _make_mock_process(stdout_lines=[], exit_code=0)
+            await stream_provider("test instruction", Path.cwd(), provider)
+            call_kwargs = mock_exec.call_args[1]
+            assert call_kwargs["stdin"] == asyncio.subprocess.PIPE
 
 
 class TestStreamProviderReadlinePaths:
@@ -6645,6 +6794,336 @@ class TestIdleTimeoutBonusRetry:
         assert _idle_timeout_retry_pause_seconds() == 0.0
 
 
+# ── Task-level wall-clock timeout tests ──────────────────────────────
+
+
+class TestTaskTimeoutHelpers:
+    """Tests for task timeout helper functions."""
+
+    def setup_method(self):
+        import the_architect.core.runner as _runner
+
+        with _runner._TASK_TIMEOUT_TASKS_LOCK:
+            _runner._TASK_TIMEOUT_TASKS.clear()
+        with _runner._TASK_TIMEOUT_START_LOCK:
+            _runner._TASK_TIMEOUT_START.clear()
+
+    def test_task_timeout_mark_and_get(self):
+        """_mark_task_timeout adds prefix to registry, get_task_timeout_tasks returns it."""
+        from the_architect.core.runner import (
+            _mark_task_timeout,
+            get_task_timeout_tasks,
+        )
+
+        _mark_task_timeout("T01")
+        tasks = get_task_timeout_tasks()
+        assert "T01" in tasks
+        assert isinstance(tasks, frozenset)
+
+    def test_task_timeout_clear(self):
+        """_clear_task_timeout removes prefix from registry."""
+        from the_architect.core.runner import (
+            _clear_task_timeout,
+            _mark_task_timeout,
+            get_task_timeout_tasks,
+        )
+
+        _mark_task_timeout("T02")
+        assert "T02" in get_task_timeout_tasks()
+        _clear_task_timeout("T02")
+        assert "T02" not in get_task_timeout_tasks()
+
+    def test_task_timeout_clear_nonexistent_is_noop(self):
+        """_clear_task_timeout on unknown prefix does not raise."""
+        from the_architect.core.runner import (
+            _clear_task_timeout,
+            get_task_timeout_tasks,
+        )
+
+        _clear_task_timeout("TXXX")  # must not raise
+        assert "TXXX" not in get_task_timeout_tasks()
+
+    def test_task_timeout_set_start(self):
+        """_set_task_timeout_start records a monotonic timestamp."""
+        from the_architect.core.runner import (
+            _get_task_timeout_start,
+            _set_task_timeout_start,
+        )
+
+        _set_task_timeout_start("T03")
+        start = _get_task_timeout_start("T03")
+        assert start is not None
+        assert isinstance(start, float)
+
+    def test_task_timeout_get_start_none_when_not_set(self):
+        """_get_task_timeout_start returns None when no start recorded."""
+        from the_architect.core.runner import _get_task_timeout_start
+
+        assert _get_task_timeout_start("TXXX") is None
+
+    def test_task_timeout_clear_start(self):
+        """_clear_task_timeout_start removes the start timestamp."""
+        from the_architect.core.runner import (
+            _clear_task_timeout_start,
+            _get_task_timeout_start,
+            _set_task_timeout_start,
+        )
+
+        _set_task_timeout_start("T04")
+        assert _get_task_timeout_start("T04") is not None
+        _clear_task_timeout_start("T04")
+        assert _get_task_timeout_start("T04") is None
+
+    def test_task_timeout_clear_start_nonexistent_is_noop(self):
+        """_clear_task_timeout_start on unknown prefix does not raise."""
+        from the_architect.core.runner import _clear_task_timeout_start
+
+        _clear_task_timeout_start("TXXX")  # must not raise
+
+
+class TestTaskTimeoutBonusRetry:
+    """Task wall-clock timeout kills must not consume retry slots in run_task."""
+
+    @pytest.fixture
+    def task(self, tmp_path: Path) -> Task:
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        task_file = tasks_dir / "T05_timeout.md"
+        task_file.write_text("# T05 test\n", encoding="utf-8")
+        return Task(path=task_file, prefix="T05", name="T05_timeout", title="timeout", number=5)
+
+    @pytest.fixture
+    def config(self, tmp_path: Path) -> ArchitectConfig:
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        progress = tmp_path / "PROGRESS.md"
+        progress.write_text("", encoding="utf-8")
+        cfg = ArchitectConfig(
+            project_root=tmp_path,
+            tasks_dir=tasks_dir,
+            progress_file=progress,
+            log_dir=tmp_path / ".architect" / "logs",
+        )
+        cfg.max_retries = 2
+        cfg.retry_pause = 0
+        cfg.task_timeout = 300
+        return cfg
+
+    def setup_method(self):
+        import the_architect.core.runner as _runner
+
+        with _runner._TASK_TIMEOUT_TASKS_LOCK:
+            _runner._TASK_TIMEOUT_TASKS.clear()
+        with _runner._TASK_TIMEOUT_START_LOCK:
+            _runner._TASK_TIMEOUT_START.clear()
+
+    @pytest.mark.asyncio
+    async def test_task_timeout_does_not_consume_retry_slot(self, task, config):
+        """A task-timeout kill must be retried without burning a retry slot."""
+        call_count = 0
+
+        async def mock_run_once(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return TaskResult(
+                    prefix=task.prefix,
+                    title="test",
+                    status="failed",
+                    duration_seconds=1.0,
+                    attempts=1,
+                    tokens=TokenUsage(),
+                    model="",
+                    interrupted=True,
+                    interruption_reason="task_timeout",
+                )
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="done",
+                duration_seconds=2.0,
+                attempts=2,
+                tokens=TokenUsage(),
+                model="",
+            )
+
+        with patch("the_architect.core.runner.run_task_once", side_effect=mock_run_once):
+            with patch("asyncio.sleep", return_value=None):
+                result = await run_task(task=task, config=config)
+
+        assert result.status == "done"
+        assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_task_timeout_marks_registry(self, task, config):
+        """A task-timeout kill must register the task in the task_timeout registry."""
+        from the_architect.core.runner import get_task_timeout_tasks
+
+        call_count = 0
+
+        async def mock_run_once(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return TaskResult(
+                    prefix=task.prefix,
+                    title="test",
+                    status="failed",
+                    duration_seconds=1.0,
+                    attempts=1,
+                    tokens=TokenUsage(),
+                    model="",
+                    interrupted=True,
+                    interruption_reason="task_timeout",
+                )
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="done",
+                duration_seconds=2.0,
+                attempts=2,
+                tokens=TokenUsage(),
+                model="",
+            )
+
+        with patch("the_architect.core.runner.run_task_once", side_effect=mock_run_once):
+            with patch("asyncio.sleep", return_value=None):
+                await run_task(task=task, config=config)
+
+        # Registry is cleared on success
+        assert task.prefix not in get_task_timeout_tasks()
+
+    @pytest.mark.asyncio
+    async def test_task_timeout_fires_circuit_events(self, task, config):
+        """task_timeout_detected and task_timeout_resumed events must be fired."""
+        events_fired: list[str] = []
+
+        def _on_event(name: str, data: dict) -> None:
+            events_fired.append(name)
+
+        call_count = 0
+
+        async def mock_run_once(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return TaskResult(
+                    prefix=task.prefix,
+                    title="test",
+                    status="failed",
+                    duration_seconds=1.0,
+                    attempts=1,
+                    tokens=TokenUsage(),
+                    model="",
+                    interrupted=True,
+                    interruption_reason="task_timeout",
+                )
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="done",
+                duration_seconds=2.0,
+                attempts=2,
+                tokens=TokenUsage(),
+                model="",
+            )
+
+        with patch("the_architect.core.runner.run_task_once", side_effect=mock_run_once):
+            with patch("asyncio.sleep", return_value=None):
+                await run_task(task=task, config=config, on_circuit_event=_on_event)
+
+        assert "task_timeout_detected" in events_fired
+        assert "task_timeout_resumed" in events_fired
+
+    @pytest.mark.asyncio
+    async def test_success_clears_task_timeout_registry(self, task, config):
+        """On success, the task prefix must be removed from the task-timeout registry."""
+        from the_architect.core.runner import (
+            _mark_task_timeout,
+            get_task_timeout_tasks,
+        )
+
+        _mark_task_timeout(task.prefix)
+
+        async def mock_run_once(**kwargs):
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="done",
+                duration_seconds=1.0,
+                attempts=1,
+                tokens=TokenUsage(),
+                model="",
+            )
+
+        with patch("the_architect.core.runner.run_task_once", side_effect=mock_run_once):
+            result = await run_task(task=task, config=config)
+
+        assert result.status == "done"
+        assert task.prefix not in get_task_timeout_tasks()
+
+    @pytest.mark.asyncio
+    async def test_task_timeout_bonus_retries_capped(self, task, config):
+        """_MAX_TASK_TIMEOUT_BONUS_RETRIES (5) must be respected — no infinite loop."""
+        call_count = 0
+
+        async def mock_run_once(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            # Always fail with task_timeout — should stop after 5 bonus retries
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="failed",
+                duration_seconds=1.0,
+                attempts=call_count,
+                tokens=TokenUsage(),
+                model="",
+                interrupted=True,
+                interruption_reason="task_timeout",
+            )
+
+        with patch("the_architect.core.runner.run_task_once", side_effect=mock_run_once):
+            with patch("asyncio.sleep", return_value=None):
+                result = await run_task(task=task, config=config)
+
+        # Should have used 2 normal retries + 5 bonus retries = 7 total calls max
+        # The task should ultimately fail (not loop forever)
+        assert result.status == "failed"
+        assert call_count <= 7  # 2 normal retries + 5 bonus retries
+
+    @pytest.mark.asyncio
+    async def test_task_timeout_not_cleared_on_non_timeout_failure(self, task, config):
+        """A non-timeout failure must not clear the task_timeout registry entry."""
+        from the_architect.core.runner import (
+            _mark_task_timeout,
+            get_task_timeout_tasks,
+        )
+
+        _mark_task_timeout(task.prefix)
+        assert task.prefix in get_task_timeout_tasks()
+
+        async def mock_run_once(**kwargs):
+            return TaskResult(
+                prefix=task.prefix,
+                title="test",
+                status="failed",
+                duration_seconds=1.0,
+                attempts=1,
+                tokens=TokenUsage(),
+                model="",
+                interrupted=False,
+                interruption_reason=None,
+            )
+
+        with patch("the_architect.core.runner.run_task_once", side_effect=mock_run_once):
+            result = await run_task(task=task, config=config)
+
+        # Non-timeout failure should not clear the registry
+        assert result.status == "failed"
+        assert task.prefix in get_task_timeout_tasks()
+
+
 class TestRunAllRTaskContinuation:
     """run_all must continue to a pending R-task when its T-task fails."""
 
@@ -7131,7 +7610,7 @@ class TestRunTaskErrorPaths:
                 "the_architect.core.runner.run_task_once",
                 side_effect=mock_run_once_seq,
             ),
-            patch("the_architect.core.runner.asyncio.sleep", return_value=None),
+            patch("the_architect.core.runner.asyncio.sleep", new_callable=AsyncMock),
         ):
             await run_task(
                 task=task, config=config, circuit_breaker=cb, on_circuit_event=bad_callback

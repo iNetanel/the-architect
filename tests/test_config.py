@@ -452,3 +452,58 @@ class TestNotificationConfigFields:
         config = load_config(tmp_path)
         assert config.notify_on_complete is False
         assert config.notify_on_fail is False
+
+
+# ---------------------------------------------------------------------------
+# Task timeout config field
+# ---------------------------------------------------------------------------
+
+
+class TestTaskTimeoutConfigField:
+    """Tests for task_timeout config field."""
+
+    def test_task_timeout_default_zero(self) -> None:
+        """task_timeout should default to 0 (disabled)."""
+        config = ArchitectConfig()
+        assert config.task_timeout == 0
+
+    def test_task_timeout_positive_accepted(self) -> None:
+        """task_timeout accepts positive values (seconds)."""
+        config = ArchitectConfig(task_timeout=300)
+        assert config.task_timeout == 300
+
+    def test_task_timeout_rejects_negative(self) -> None:
+        """task_timeout rejects negative values (ge=0)."""
+        with pytest.raises(Exception):  # Pydantic ValidationError
+            ArchitectConfig(task_timeout=-1)
+
+    def test_task_timeout_persisted(self, tmp_path: Path) -> None:
+        """task_timeout round-trips through write_config/load_config."""
+        write_config(tmp_path, {"task_timeout": 600})
+        config = load_config(tmp_path)
+        assert config.task_timeout == 600
+
+    def test_task_timeout_in_resolve(self) -> None:
+        """resolve() preserves task_timeout."""
+        config = ArchitectConfig(task_timeout=900)
+        resolved = config.resolve(Path("/project/root"))
+        assert resolved.task_timeout == 900
+
+    def test_task_timeout_zero_explicit(self) -> None:
+        """task_timeout=0 explicitly means disabled."""
+        config = ArchitectConfig(task_timeout=0)
+        assert config.task_timeout == 0
+
+    def test_task_timeout_large_value(self) -> None:
+        """task_timeout accepts large values (e.g. 1 hour = 3600s)."""
+        config = ArchitectConfig(task_timeout=3600)
+        assert config.task_timeout == 3600
+
+    def test_task_timeout_load_from_toml(self, tmp_path: Path) -> None:
+        """Should load task_timeout from architect.toml."""
+        (tmp_path / "architect.toml").write_text(
+            "[architect]\ntask_timeout = 420\n",
+            encoding="utf-8",
+        )
+        config = load_config(tmp_path)
+        assert config.task_timeout == 420

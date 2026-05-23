@@ -20,15 +20,20 @@ Both surfaces show the same three elements:
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
+from loguru import logger
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Footer, Header, RichLog, Static
 
+from the_architect.tui.constants import ANIMATION_TICK_INTERVAL
 from the_architect.tui.widgets import MatrixRain, next_matrix_frame
+
+if TYPE_CHECKING:
+    from textual.timer import Timer
 
 
 class WaitScreen(Screen[None]):
@@ -95,6 +100,9 @@ class WaitScreen(Screen[None]):
         # streaming immediately after the app thread starts.
         self._pending_detail: str | None = None
         self._pending_log_lines: list[str] = []
+        # Timer handle for the animated spinner — stopped on unmount
+        # to prevent leaks.
+        self._timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -116,13 +124,29 @@ class WaitScreen(Screen[None]):
 
     def on_mount(self) -> None:
         # 10 FPS spinner; matches the feel of the inline scanner.
-        self.set_interval(0.1, self._tick_spinner)
+        self._timer = self.set_interval(ANIMATION_TICK_INTERVAL, self._tick_spinner)
         # Disable focus on the log so it never shows a blinking cursor.
         try:
             self.query_one("#wait_log", RichLog).can_focus = False
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"WaitScreen log can_focus disable failed: {exc!r}")
         self.call_after_refresh(self._flush_pending)
+
+    def on_hide(self) -> None:
+        """Pause the spinner animation while the screen is hidden behind an overlay."""
+        if self._timer is not None:
+            self._timer.pause()
+
+    def on_resume(self) -> None:
+        """Restart the spinner animation when the screen becomes visible again."""
+        if self._timer is not None:
+            self._timer.resume()
+
+    def on_unmount(self) -> None:
+        """Stop the spinner timer to prevent leaks after removal."""
+        if self._timer is not None:
+            self._timer.stop()
+            self._timer = None
 
     # ── Actions ────────────────────────────────────────────────────────
 
@@ -138,8 +162,8 @@ class WaitScreen(Screen[None]):
         """
         try:
             self.app.show_pause_menu()  # type: ignore[attr-defined]
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"WaitScreen pause menu dispatch failed: {exc!r}")
 
     # ── Public API (safe from any thread via call_from_thread) ─────────
 
@@ -147,21 +171,23 @@ class WaitScreen(Screen[None]):
         self._title = title
         try:
             self.query_one("#wait_title", Static).update(self._render_title())
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"WaitScreen set_title widget update failed: {exc!r}")
 
     def set_detail(self, detail: str) -> None:
         self._detail = detail
         try:
             self.query_one("#wait_detail", Static).update(detail)
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"WaitScreen set_detail widget update failed: {exc!r}")
             self._pending_detail = detail
 
     def append_log(self, line: str) -> None:
         try:
             log = self.query_one("#wait_log", RichLog)
             log.write(line)
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"WaitScreen append_log widget write failed (buffering): {exc!r}")
             self._pending_log_lines.append(line)
 
     # ── Internal ──────────────────────────────────────────────────────
@@ -174,8 +200,8 @@ class WaitScreen(Screen[None]):
         self._current_frame = next_matrix_frame(self._frame_index)
         try:
             self.query_one("#wait_title", Static).update(self._render_title())
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"WaitScreen tick spinner update failed: {exc!r}")
 
     def _render_title(self) -> str:
         return f"{self._current_frame}  {self._title}"
@@ -184,8 +210,8 @@ class WaitScreen(Screen[None]):
         if self._pending_detail is not None:
             try:
                 self.query_one("#wait_detail", Static).update(self._pending_detail)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"WaitScreen flush pending detail failed: {exc!r}")
             else:
                 self._pending_detail = None
 
@@ -194,7 +220,8 @@ class WaitScreen(Screen[None]):
 
         try:
             log = self.query_one("#wait_log", RichLog)
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"WaitScreen flush pending log query failed: {exc!r}")
             return
 
         for line in self._pending_log_lines:
@@ -234,8 +261,8 @@ class WaitApp(App[None]):
             from the_architect.tui.terminal import restore_terminal_input_modes
 
             restore_terminal_input_modes()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"WaitApp terminal restore on unmount failed: {exc!r}")
 
     # Proxy convenience methods so existing callers keep working.
     def set_title(self, title: str) -> None:
@@ -268,12 +295,13 @@ class WaitApp(App[None]):
             if decision == "exit":
                 try:
                     self.exit()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug(f"WaitApp pause menu exit failed: {exc!r}")
 
         try:
             self.push_screen(PauseMenuScreen(), _on_dismiss)
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"WaitApp push_pause_menu failed: {exc!r}")
             self._pause_menu_visible = False
 
     # Back-compat accessors used in existing tests.

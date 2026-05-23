@@ -437,6 +437,86 @@ class TestRunnerErrorHandling:
         with pytest.raises(KeyboardInterrupt):
             _sigint_kill_handler(2, None)
 
+    def test_sigint_force_kill_on_second_ctrl_c(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Second Ctrl+C within 2 seconds force-kills and os._exit(130)."""
+        import os as _os
+
+        import the_architect.tui.runner as runner_mod
+
+        exit_called: list[int] = []
+
+        def _mock_exit(code: int) -> None:
+            exit_called.append(code)
+            raise SystemExit(code)
+
+        monkeypatch.setattr(_os, "_exit", _mock_exit)
+
+        # Reset module state for clean test
+        runner_mod._SIGINT_COUNT = 0
+        runner_mod._SIGINT_FIRST_AT = 0.0
+
+        from the_architect.tui.runner import _sigint_kill_handler
+
+        # First Ctrl+C — should raise KeyboardInterrupt (not force kill)
+        with pytest.raises(KeyboardInterrupt):
+            _sigint_kill_handler(2, None)
+
+        # Counter should be 1 after first interrupt (NOT reset yet)
+        assert runner_mod._SIGINT_COUNT == 1
+        assert runner_mod._SIGINT_FIRST_AT > 0.0
+
+        # Second Ctrl+C within 2 seconds — should force exit
+        with pytest.raises(SystemExit) as exc_info:
+            _sigint_kill_handler(2, None)
+        assert exc_info.value.code == 130
+
+        # Verify os._exit was called with SIGINT code
+        assert 130 in exit_called
+
+    def test_sigint_counter_resets_after_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Counter resets when >2 seconds elapse since first interrupt."""
+        import the_architect.tui.runner as runner_mod
+
+        # Set state as if first Ctrl+C happened 3 seconds ago
+        runner_mod._SIGINT_COUNT = 1
+        runner_mod._SIGINT_FIRST_AT = time.monotonic() - 3.0
+
+        from the_architect.tui.runner import _sigint_kill_handler
+
+        # This should be treated as a new first Ctrl+C (timeout expired)
+        with pytest.raises(KeyboardInterrupt):
+            _sigint_kill_handler(2, None)
+
+        # Counter should have been reset to 1 (new cycle started)
+        assert runner_mod._SIGINT_COUNT == 1
+
+    def test_sigint_no_force_kill_after_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Second Ctrl+C after 2+ seconds is treated as a new first interrupt."""
+        import os as _os
+
+        import the_architect.tui.runner as runner_mod
+
+        exit_called: list[int] = []
+
+        def _mock_exit(code: int) -> None:
+            exit_called.append(code)
+            raise SystemExit(code)
+
+        monkeypatch.setattr(_os, "_exit", _mock_exit)
+
+        # Set state as if first Ctrl+C happened 3 seconds ago (past the 2s window)
+        runner_mod._SIGINT_COUNT = 1
+        runner_mod._SIGINT_FIRST_AT = time.monotonic() - 3.0
+
+        from the_architect.tui.runner import _sigint_kill_handler
+
+        # This should be treated as a first Ctrl+C (timeout expired)
+        with pytest.raises(KeyboardInterrupt):
+            _sigint_kill_handler(2, None)
+
+        # os._exit should NOT have been called
+        assert exit_called == []
+
 
 class TestRunnerUnexpectedExitWithWorker:
     """Test unexpected app exit paths when the worker thread exists."""

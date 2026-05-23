@@ -320,7 +320,7 @@ promise, unless ALL of the following are true:
 - ✅ Every sub-task in the task file has been implemented
 - ✅ Relevant existing code paths were inspected before implementation
 - ✅ Tests have been **RUN and verified** (do not assume — confirm they actually pass)
-- ✅ New shared contracts follow existing conventions or are recorded in PROGRESS.md
+- ✅ New shared contracts follow existing conventions or recorded in PROGRESS.md
 - ✅ No `print()` statements, debug code, or `TODO` comments remain
 - ✅ No outstanding errors or failures in the terminal output
 - ✅ PROGRESS.md has been rewritten with the correct status

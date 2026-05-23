@@ -1796,6 +1796,7 @@ class TestOpenCodeProviderMissingCoverage:
         assert "--format" in cmd
         assert "json" in cmd
         assert "--dangerously-skip-permissions" in cmd
+        # Instruction IS included in the command list after --
         assert "do the thing" in cmd
 
     @patch("shutil.which", return_value="/usr/local/bin/opencode")

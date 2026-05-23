@@ -133,6 +133,28 @@ class TestRetrospectiveEdgeCases:
         # Should not include .git in the file tree
         assert ".git" not in context
 
+    def test_file_tree_cap_at_2000_entries(self, tmp_path: Path) -> None:
+        """File tree in review context is capped at 2000 entries."""
+        # Create 2010 files to exceed the cap
+        for i in range(2010):
+            file_path = tmp_path / f"file_{i:04d}.txt"
+            file_path.write_text(f"content {i}\n", encoding="utf-8")
+
+        context = _gather_review_context(tmp_path, "test goal")
+
+        # Should contain the truncation note
+        assert "more files omitted" in context
+        # The file tree should not contain all 2010 files
+        tree_section = context.split("## File Tree\n")[1].split("\n\n")[0]
+        # Count file entries (excluding "File tree:" header and truncation note)
+        file_entries = [
+            line
+            for line in tree_section.split("\n")
+            if line.strip() and line.strip() != "File tree:" and "more files omitted" not in line
+        ]
+        # Should be capped at 2000
+        assert len(file_entries) <= 2000
+
     def test_gather_review_context_reports_eval_snapshots_separately(self, tmp_path: Path) -> None:
         """Eval snapshots should be hidden from file tree and shown in a warning section."""
         src_dir = tmp_path / "src"
@@ -1518,6 +1540,98 @@ class TestGatherBaselineEvidence:
         context = _gather_review_context(tmp_path, "test goal")
 
         assert "## Task Baseline Evidence" not in context
+
+    def test_baseline_evidence_caps_detailed_baselines(self, tmp_path: Path) -> None:
+        """Only the 10 most recent baselines are detailed; older ones are summarized."""
+        import os
+
+        from the_architect.core.baseline import WorkspaceBaseline, write_baseline
+
+        baselines_dir = tmp_path / ".architect" / "baselines"
+        baselines_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create 15 baseline files with staggered modification times
+        base_time = 1000000.0
+        for i in range(15):
+            baseline = WorkspaceBaseline(
+                task_prefix=f"T{i + 1:02d}",
+                files={},
+            )
+            baseline_path = baselines_dir / f"T{i + 1:02d}.json"
+            write_baseline(baseline, baseline_path)
+            # Stagger mtimes so T15 is newest, T1 is oldest
+            os.utime(baseline_path, (base_time + i, base_time + i))
+
+        evidence = _gather_baseline_evidence(tmp_path)
+
+        assert evidence is not None
+        # The 10 most recent (T06..T15) should be detailed
+        assert "T15 Baseline" in evidence
+        assert "T06 Baseline" in evidence
+        # The 5 oldest (T01..T05) should NOT be detailed
+        assert "T01 Baseline" not in evidence
+        assert "T05 Baseline" not in evidence
+        # Summary line for older baselines
+        assert "plus 5 older baseline(s)" in evidence
+
+    def test_baseline_evidence_output_size_cap(self, tmp_path: Path) -> None:
+        """Baseline evidence is truncated when it exceeds the 50KB cap."""
+        from the_architect.core.baseline import (
+            FileRecord,
+            WorkspaceBaseline,
+            write_baseline,
+        )
+
+        baselines_dir = tmp_path / ".architect" / "baselines"
+        baselines_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create a single baseline with many files using long paths to exceed 50KB.
+        # Each created-file line is ~55 chars. 50KB / 55 ≈ 909 lines needed.
+        files: dict[str, FileRecord] = {}
+        for i in range(1200):
+            rel = f"src/very_long_module_name_{i}/another_long_name_{i}/file_{i}.py"
+            files[rel] = FileRecord(path=rel, sha256="a" * 64, size=100)
+            # Also create the actual file so detect_changes reports it as created
+            file_path = tmp_path / rel
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(f"# file {i}\n", encoding="utf-8")
+
+        baseline = WorkspaceBaseline(task_prefix="T01", files=files)
+        write_baseline(baseline, baselines_dir / "T01.json")
+
+        evidence = _gather_baseline_evidence(tmp_path)
+
+        assert evidence is not None
+        # Must be under the 50KB cap
+        assert len(evidence.encode("utf-8")) <= 50 * 1024
+        # Must contain the truncation marker
+        assert "truncated" in evidence
+
+    def test_baseline_evidence_most_recent_by_mtime(self, tmp_path: Path) -> None:
+        """Baselines are sorted by modification time, not filename."""
+        import os
+
+        from the_architect.core.baseline import WorkspaceBaseline, write_baseline
+
+        baselines_dir = tmp_path / ".architect" / "baselines"
+        baselines_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create baselines where filename order differs from mtime order
+        baseline_a = WorkspaceBaseline(task_prefix="T01", files={})
+        write_baseline(baseline_a, baselines_dir / "T01.json")
+        # T01 gets the newest mtime
+        os.utime(baselines_dir / "T01.json", (2000000.0, 2000000.0))
+
+        baseline_z = WorkspaceBaseline(task_prefix="T99", files={})
+        write_baseline(baseline_z, baselines_dir / "T99.json")
+        # T99 gets the oldest mtime
+        os.utime(baselines_dir / "T99.json", (1000000.0, 1000000.0))
+
+        evidence = _gather_baseline_evidence(tmp_path)
+
+        assert evidence is not None
+        # T01 (newest) should appear before T99 (oldest)
+        assert evidence.index("T01 Baseline") < evidence.index("T99 Baseline")
 
 
 class TestRetrospectiveCoverageGaps:

@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from loguru import logger
+
 from the_architect.core.runner import PlainStreamRenderer, StreamRenderer
 
 if TYPE_CHECKING:
@@ -44,7 +46,8 @@ class TextualStreamRenderer(StreamRenderer):
             return
         try:
             self._app.push_output_line(line)
-        except Exception:
+        except Exception as exc:
+            logger.warning(f"TextualStreamRenderer write_line failed (falling back): {exc!r}")
             self._fallback.write_line(line)
 
     def set_footer(self, text: str) -> None:
@@ -52,24 +55,40 @@ class TextualStreamRenderer(StreamRenderer):
             return
         try:
             self._app.update_footer(text)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(f"TextualStreamRenderer set_footer failed: {exc!r}")
 
     def clear_footer(self) -> None:
         if self._app is None:
             return
         try:
             self._app.update_footer("")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"TextualStreamRenderer clear_footer failed: {exc!r}")
 
     def set_feedback(self, message: str | None) -> None:
         if self._app is None:
             return
         try:
             self._app.update_feedback(message)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"TextualStreamRenderer set_feedback failed: {exc!r}")
+
+    def set_artifacts(self, count: int) -> None:
+        if self._app is None:
+            return
+        try:
+            self._app.update_artifacts(count)
+        except Exception as exc:
+            logger.debug(f"TextualStreamRenderer set_artifacts failed: {exc!r}")
+
+    def push_event_line(self, event: str, data: dict[str, object] | None = None) -> None:
+        if self._app is None:
+            return
+        try:
+            self._app.push_event_line(event, data)
+        except Exception as exc:
+            logger.warning(f"TextualStreamRenderer push_event_line failed for {event!r}: {exc!r}")
 
     def close(self) -> None:
         return
@@ -112,9 +131,8 @@ class WaitLogRenderer(StreamRenderer):
         # ``WaitApp.call_from_thread``. Either is fine from a worker.
         try:
             self._session.append_log(line)
-        except Exception:
-            # Never let a UI failure crash the planner / reviewer.
-            pass
+        except Exception as exc:
+            logger.warning(f"WaitLogRenderer write_line failed (dropping line): {exc!r}")
 
     def set_footer(self, text: str) -> None:
         return

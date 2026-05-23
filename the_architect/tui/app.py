@@ -92,8 +92,8 @@ def apply_architect_theme(app: App[Any]) -> None:
     try:
         app.register_theme(ARCHITECT_THEME)
         app.theme = ARCHITECT_THEME.name
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug(f"apply_architect_theme failed on {type(app).__name__}: {exc!r}")
 
 
 # SplashScreen — the centered startup card shown while the app boots.
@@ -169,8 +169,8 @@ class SplashScreen(Screen[None]):
         self._subtitle = subtitle
         try:
             self.query_one("#splash_subtitle", Static).update(subtitle)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"SplashScreen set_subtitle update failed: {exc!r}")
 
 
 class ArchitectApp(App[None]):
@@ -237,11 +237,8 @@ class ArchitectApp(App[None]):
         try:
             self.register_theme(ARCHITECT_THEME)
             self.theme = ARCHITECT_THEME.name
-        except Exception:
-            # Fall back silently to the default theme if registration
-            # fails (e.g. a future Textual API change) — the app still
-            # works, it just looks orange again.
-            pass
+        except Exception as exc:
+            logger.debug(f"ArchitectApp theme registration failed: {exc!r}")
         # Append the version to the reactive `title` so the Header
         # shows "The Architect v1.2.0 (build 10095)" on every screen.
         # We deliberately do NOT touch the TITLE class attribute — a
@@ -249,8 +246,8 @@ class ArchitectApp(App[None]):
         # is already claimed by set_status() for run-scoped updates.
         try:
             self.title = f"{self.TITLE}  {_architect_header_version()}"
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"ArchitectApp title version update failed: {exc!r}")
         self.push_screen(self._initial_screen)
         self._log_screen_transition("mount", initial=type(self._initial_screen).__name__)
         # Record when the splash was painted so push_and_wait can
@@ -291,18 +288,18 @@ class ArchitectApp(App[None]):
             from the_architect.tui.terminal import restore_terminal_input_modes
 
             restore_terminal_input_modes()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"ArchitectApp terminal restore on unmount failed: {exc!r}")
 
     def _sigcont_handler(self, signum: int, frame: Any) -> None:
-        """Handle SIGCONT (resume from sleep/suspend) by recovering terminal state.
+        """Minimal async-signal-safe SIGCONT handler.
 
         When the machine wakes from sleep the terminal emulator may have reset
         its geometry, alternate screen buffer, mouse tracking, and bracketed
         paste modes.  We do two things from this signal handler:
 
         1. Send SIGWINCH to ourselves so Textual's ``on_terminal_resize`` fires
-           and re-measures the real terminal size.
+           and re-measures the real terminal size (async-signal-safe on POSIX).
 
         2. Schedule a terminal re-setup on the event loop that writes the
            alternate-screen-enter, mouse-tracking-enable, and bracketed-paste
@@ -310,16 +307,24 @@ class ArchitectApp(App[None]):
            signal handler) to avoid injecting raw bytes into the terminal's
            input stream at an unpredictable moment.
 
+        **Signal safety:** This handler does NOT call logging functions or any
+        other function that acquires locks (Loguru uses internal threading locks).
+        Calling a lock-acquiring function from a signal handler risks deadlock if
+        the signal arrives while the main thread holds that same lock. Only
+        async-signal-safe operations are performed here: ``os.kill()`` (POSIX)
+        and ``call_from_thread()`` which queues work on the event loop without
+        blocking.
+
         SIGWINCH is POSIX-only — guarded by ``hasattr`` so this is a safe
         no-op on Windows where Textual uses a different resize mechanism.
         """
-        logger.debug("SIGCONT received — recovering terminal state after sleep")
         try:
             if hasattr(signal, "SIGWINCH"):
                 import os as _os
 
                 _os.kill(_os.getpid(), signal.SIGWINCH)
         except Exception:
+            # Signal handler — no logging (async-signal-safe only).
             pass
         # Schedule terminal re-setup on the event loop.  This re-enables
         # mouse tracking, alternate screen, and bracketed paste which may
@@ -327,7 +332,7 @@ class ArchitectApp(App[None]):
         try:
             self.call_from_thread(self._resetup_terminal_after_sleep)
         except Exception:
-            # App not running or not on main thread — safe to skip.
+            # Signal handler — no logging (async-signal-safe only).
             pass
 
     def _resetup_terminal_after_sleep(self) -> None:
@@ -341,14 +346,14 @@ class ArchitectApp(App[None]):
             from the_architect.tui.terminal import resetup_terminal_after_sleep
 
             resetup_terminal_after_sleep()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"resetup terminal after sleep failed: {exc!r}")
         # Also trigger a full layout refresh so every widget repaints
         # with the correct terminal size.
         try:
             self.refresh(layout=True)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"resetup terminal layout refresh failed: {exc!r}")
 
     def _force_full_refresh(self) -> None:
         """Unused — kept as a no-op stub so any external callers don't crash.
@@ -413,26 +418,42 @@ class ArchitectApp(App[None]):
             else:
                 splash.set_subtitle("Shutting down…")
 
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(f"ArchitectApp begin_shutdown splash screen push failed: {exc!r}")
 
         def _cleanup_then_exit() -> None:
             try:
                 from the_architect.core.runner import kill_active_subprocesses
 
                 kill_active_subprocesses()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(f"begin_shutdown kill_active_subprocesses failed: {exc!r}")
 
             remaining = 1.0 - (time.monotonic() - started_at)
             if remaining > 0:
                 time.sleep(remaining)
+            # Exit the app — try multiple approaches for robustness across
+            # shutdown states. _loop may not exist yet or may be closed during
+            # interpreter teardown, so we fall back through options.
+            exited = False
             try:
                 loop = getattr(self, "_loop", None)
                 if loop is not None and not loop.is_closed():
                     loop.call_soon_threadsafe(self.exit)
-            except Exception:
-                pass
+                    exited = True
+            except Exception as exc:
+                logger.debug(f"begin_shutdown call_soon_threadsafe exit failed: {exc!r}")
+            if not exited:
+                try:
+                    self._thread_safe_call(self.exit)
+                    exited = True
+                except Exception as exc:
+                    logger.debug(f"begin_shutdown _thread_safe_call exit failed: {exc!r}")
+            if not exited:
+                logger.warning(
+                    "Could not schedule app exit from cleanup thread — "
+                    "runner finally block will handle subprocess cleanup"
+                )
 
         threading.Thread(
             target=_cleanup_then_exit,
@@ -471,14 +492,14 @@ class ArchitectApp(App[None]):
             # call_from_thread refuses same-thread calls — just run it.
             try:
                 fn(*args, **kwargs)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"_thread_safe_call same-thread fallback failed: {exc!r}")
         except Exception:
             # App not running yet.
             try:
                 fn(*args, **kwargs)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"_thread_safe_call app-not-running fallback failed: {exc!r}")
 
     # ── Worker-thread screen orchestration ─────────────────────────────
 
@@ -514,8 +535,8 @@ class ArchitectApp(App[None]):
                         self._push_waits.remove((screen, done, result))
                     except ValueError:
                         pass
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"push_and_wait dismiss cleanup failed: {exc!r}")
 
         def _push() -> None:
             self._log_screen_transition("push_and_wait.before", screen=type(screen).__name__)
@@ -616,8 +637,8 @@ class ArchitectApp(App[None]):
             if self.screen is screen:
                 self._log_screen_transition("switch_to_execution.already_active")
                 return
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"switch_to_execution screen check failed: {exc!r}")
 
         if self._dismiss_wait_overlay_if_stacked():
             self.call_after_refresh(
@@ -731,6 +752,18 @@ class ArchitectApp(App[None]):
         screen = self._ensure_execution_screen()
         screen.update_feedback(message)
 
+    def update_artifacts(self, count: int) -> None:
+        """Set the upstream artifact count in the execution footer.
+
+        Args:
+            count: Number of upstream artifacts for the current task.
+        """
+        self._thread_safe_call(self._update_artifacts_sync, count)
+
+    def _update_artifacts_sync(self, count: int) -> None:
+        screen = self._ensure_execution_screen()
+        screen.update_artifacts(count)
+
     # ── Wait screen overlay (planning / retrospective / reassessment) ──
 
     def show_wait(self, title: str, detail: str = "") -> None:
@@ -751,8 +784,8 @@ class ArchitectApp(App[None]):
                         self._wait_screen.set_detail(detail)
                     self._log_screen_transition("show_wait.updated", title=title)
                     return
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"show_wait update existing wait screen failed: {exc!r}")
             self._wait_screen = None
         self._wait_screen = WaitScreen(title=title)
         try:
@@ -850,7 +883,8 @@ class ArchitectApp(App[None]):
         """Return current screen stack class names for lifecycle diagnostics."""
         try:
             return [type(screen).__name__ for screen in self.screen_stack]
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"_screen_stack_names query failed: {exc!r}")
             return ["<unavailable>"]
 
     def _log_screen_transition(self, event: str, **fields: object) -> None:
@@ -881,8 +915,8 @@ class ArchitectApp(App[None]):
         try:
             if self.screen_stack:
                 return
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"_repair_screen_stack stack check failed: {exc!r}")
         logger.warning(f"TUI screen stack empty; repairing display ({reason})")
         try:
             self.push_screen(preferred or self._ensure_execution_screen())
@@ -926,8 +960,8 @@ class ArchitectApp(App[None]):
                         cache_write_tokens=r.tokens.cache_write_tokens,
                         model=r.model,
                     )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"show_success cost estimation failed: {exc!r}")
 
         screen = SuccessScreen(
             results=results,
@@ -967,7 +1001,8 @@ class ArchitectApp(App[None]):
 
         try:
             current = self.screen
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"action_help screen query failed: {exc!r}")
             current = self._initial_screen
         bindings = collect_screen_bindings(current)
         self.push_screen(HelpScreen(bindings=bindings))
@@ -1000,8 +1035,8 @@ class ArchitectApp(App[None]):
                 # Same shutdown path as Ctrl+C / action_quit.
                 try:
                     self.begin_shutdown()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug(f"pause menu exit begin_shutdown failed: {exc!r}")
             # "continue" and "detach" need no extra handling here —
             # "continue" just closes the overlay and "detach" already
             # tore down the tmux client (this process keeps running
@@ -1009,7 +1044,8 @@ class ArchitectApp(App[None]):
 
         try:
             self.push_screen(PauseMenuScreen(), _on_dismiss)
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"show_pause_menu push_screen failed: {exc!r}")
             # If we fail to push (e.g. app not fully mounted), reset
             # the flag so a retry can succeed.
             self._pause_menu_visible = False
@@ -1044,8 +1080,8 @@ def run_single_screen(screen: Screen[T]) -> T | None:
             from the_architect.tui.terminal import restore_terminal_input_modes
 
             restore_terminal_input_modes()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"run_single_screen suppressed terminal restore failed: {exc!r}")
         return None
 
     # Belt-and-braces: never boot a new Textual app from a background
@@ -1060,8 +1096,8 @@ def run_single_screen(screen: Screen[T]) -> T | None:
             from the_architect.tui.terminal import restore_terminal_input_modes
 
             restore_terminal_input_modes()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"run_single_screen non-main-thread terminal restore failed: {exc!r}")
         return None
 
     collected: dict[str, Any] = {"value": None}
@@ -1076,14 +1112,14 @@ def run_single_screen(screen: Screen[T]) -> T | None:
             try:
                 self.register_theme(ARCHITECT_THEME)
                 self.theme = ARCHITECT_THEME.name
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"_Harness theme registration failed: {exc!r}")
             # Match the main app so standalone screen flows also
             # show the version next to the app name.
             try:
                 self.title = f"{self.TITLE}  {_architect_header_version()}"
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"_Harness title version update failed: {exc!r}")
             self.push_screen(screen, self._on_dismiss)
 
         def _on_dismiss(self, value: Any) -> None:
@@ -1100,6 +1136,6 @@ def run_single_screen(screen: Screen[T]) -> T | None:
             from the_architect.tui.terminal import restore_terminal_input_modes
 
             restore_terminal_input_modes()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"run_single_screen terminal restore failed: {exc!r}")
     return collected["value"]  # type: ignore[no-any-return]

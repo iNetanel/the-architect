@@ -42,8 +42,10 @@ non-daemon worker continues running.  No tmux required.
 from __future__ import annotations
 
 import atexit
+import os
 import signal
 import threading
+import time
 import traceback
 from collections.abc import Callable
 from typing import Any, TypeVar
@@ -57,6 +59,12 @@ from the_architect.tui.terminal import restore_terminal_input_modes
 T = TypeVar("T")
 
 _UNEXPECTED_STARTUP_EXIT_WAIT_SECONDS = 30.0
+
+# Module-level state for SIGINT forced-kill on second Ctrl+C.
+# Accessed directly from the signal handler (no locks) — reads/writes to
+# plain int/float are atomic in CPython (GIL guarantees this).
+_SIGINT_COUNT: int = 0
+_SIGINT_FIRST_AT: float = 0.0
 
 
 # Module-global reference to the currently active runner, if any.
@@ -277,8 +285,8 @@ class ArchitectAppRunner:
                 if not self.app.shutdown_started:
                     try:
                         self.app.call_from_thread(self.app.exit)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug(f"runner worker app.exit call failed: {exc!r}")
 
         # Start the worker after the app's event loop is running —
         # call_later fires on the next event loop iteration, which is
@@ -391,8 +399,10 @@ class ArchitectAppRunner:
                         from the_architect.core.runner import kill_active_subprocesses
 
                         kill_active_subprocesses()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.warning(
+                            f"kill_active_subprocesses on unexpected exit failed: {exc!r}"
+                        )
                     if self._flow_exception is None:
                         self._flow_exception = RuntimeError(
                             "Architect TUI exited unexpectedly before the CLI flow completed"
@@ -413,16 +423,16 @@ class ArchitectAppRunner:
                         from the_architect.core.runner import kill_active_subprocesses
 
                         kill_active_subprocesses()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.warning(f"kill_active_subprocesses on user quit failed: {exc!r}")
                 elif not worker_still_running:
                     # Worker already done — kill any leftover subprocess.
                     try:
                         from the_architect.core.runner import kill_active_subprocesses
 
                         kill_active_subprocesses()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.warning(f"kill_active_subprocesses cleanup failed: {exc!r}")
 
             # Wait for the worker to finish so flow_exception /
             # flow_return are fully populated.
@@ -452,8 +462,8 @@ class ArchitectAppRunner:
 
             try:
                 atexit.unregister(_atexit_kill_subprocesses)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"atexit unregister failed: {exc!r}")
 
             # Persistent run detached — print a brief reconnect hint so
             # the user knows the run is still going.
@@ -478,8 +488,8 @@ class ArchitectAppRunner:
         if not self.app.shutdown_started:
             try:
                 self.app.call_from_thread(self.app.exit)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"SIGHUP handler app.exit call failed: {exc!r}")
 
 
 def _print_detach_hint() -> None:
@@ -505,24 +515,67 @@ def _atexit_kill_subprocesses() -> None:
         from the_architect.core.runner import kill_active_subprocesses
 
         kill_active_subprocesses()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning(f"atexit kill_active_subprocesses failed: {exc!r}")
 
 
 def _sigint_kill_handler(signum: int, frame: Any) -> None:
-    """SIGINT handler — kill subprocesses then raise KeyboardInterrupt.
+    """Non-blocking SIGINT handler with forced-kill on second Ctrl+C.
 
-    The raise mirrors Python's default SIGINT handler so whoever is
-    running above us (pytest, Click, the user's shell) sees the same
-    exit pattern it always has. The one behavioural difference is
-    that before the raise we yank every live provider subprocess out
-    of the OS so the user's Ctrl+C actually stops the backend.
+    First Ctrl+C: graceful cleanup of subprocesses then raise
+    KeyboardInterrupt (mirrors Python's default handler).
+
+    Second Ctrl+C within 2 seconds: force kill all tracked subprocesses
+    via ``os.killpg`` (bypassing the lock in ``kill_active_subprocesses``)
+    and exit immediately with ``os._exit(130)``. This is needed because
+    ``kill_active_subprocesses()`` acquires ``_ACTIVE_PROCS_LOCK`` which can
+    deadlock if the signal arrives while the main thread holds that lock,
+    causing the handler to block indefinitely and ignoring further Ctrl+C.
+
+    Signal safety notes:
+    - Module-level int/float reads/writes are atomic under the GIL.
+    - ``os.killpg()`` is async-signal-safe on POSIX.
+    - ``_restore_terminal_input_modes()`` writes small escape sequences to
+      stdout/stderr — safe in practice for small writes (kernel handles
+      atomically). Not strictly async-signal-safe per POSIX but acceptable
+      here since the alternative (leaking mouse tracking) is worse UX.
     """
+    global _SIGINT_COUNT, _SIGINT_FIRST_AT
+
+    now = time.monotonic()
+
+    # Reset if more than 2 seconds have passed since first interrupt.
+    if _SIGINT_FIRST_AT and (now - _SIGINT_FIRST_AT) >= 2.0:
+        _SIGINT_COUNT = 0
+        _SIGINT_FIRST_AT = 0.0
+
+    if not _SIGINT_FIRST_AT:
+        _SIGINT_FIRST_AT = now
+
+    _SIGINT_COUNT += 1
+
+    # Second Ctrl+C within 2 seconds — force kill and exit immediately.
+    if _SIGINT_COUNT >= 2:
+        _restore_terminal_input_modes()
+        try:
+            from the_architect.core.runner import _ACTIVE_PROCS, _kill_process_tree
+
+            # Iterate without holding _ACTIVE_PROCS_LOCK — we accept the
+            # race condition because this is an emergency exit path. In
+            # the worst case we miss a process, but os._exit() kills them all.
+            for proc in list(_ACTIVE_PROCS):
+                _kill_process_tree(proc)
+        except Exception as exc:
+            logger.warning(f"SIGINT force-kill subprocesses failed: {exc!r}")
+        os._exit(130)  # Standard SIGINT exit code (128 + 2)
+
+    # First Ctrl+C — graceful cleanup then raise KeyboardInterrupt.
     _restore_terminal_input_modes()
     try:
         from the_architect.core.runner import kill_active_subprocesses
 
         kill_active_subprocesses()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning(f"SIGINT graceful kill_active_subprocesses failed: {exc!r}")
+
     raise KeyboardInterrupt()

@@ -20,6 +20,8 @@ import threading
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
+from loguru import logger
+
 from the_architect.core.runner import PlainStreamRenderer, StreamRenderer
 from the_architect.tui.renderer import TextualStreamRenderer
 
@@ -54,8 +56,8 @@ class TuiSession:
             return
         try:
             self.app.push_event_line(event, data)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"TuiSession push_event failed for {event!r}: {exc!r}")
 
     def update_details(self, **fields: str) -> None:
         """Merge fields into the TUI Progress tab (no-op when disabled)."""
@@ -63,8 +65,8 @@ class TuiSession:
             return
         try:
             self.app.update_details(**fields)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"TuiSession update_details failed: {exc!r}")
 
     def update_progress_tasks(self, tasks: list[dict[str, str]]) -> None:
         """Replace the TUI Progress tab task list (no-op when disabled)."""
@@ -72,8 +74,8 @@ class TuiSession:
             return
         try:
             self.app.update_progress_tasks(tasks)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"TuiSession update_progress_tasks failed: {exc!r}")
 
     def update_settings(self, settings: dict[str, str]) -> None:
         """Replace the TUI Settings tab content (no-op when disabled)."""
@@ -81,8 +83,8 @@ class TuiSession:
             return
         try:
             self.app.update_execution_settings(settings)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"TuiSession update_settings failed: {exc!r}")
 
     def update_costs(self, costs: dict[str, object]) -> None:
         """Push live cost data to the Costs tab (no-op when disabled).
@@ -95,8 +97,8 @@ class TuiSession:
             return
         try:
             self.app.update_costs(costs)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"TuiSession update_costs failed: {exc!r}")
 
     def update_footer(self, text: str) -> None:
         """Update the TUI footer (no-op when disabled)."""
@@ -104,8 +106,8 @@ class TuiSession:
             return
         try:
             self.app.update_footer(text)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"TuiSession update_footer failed: {exc!r}")
 
     def update_feedback(self, message: str | None) -> None:
         """Set or clear the pending feedback banner (no-op when disabled).
@@ -117,8 +119,8 @@ class TuiSession:
             return
         try:
             self.app.update_feedback(message)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"TuiSession update_feedback failed: {exc!r}")
 
 
 @contextmanager
@@ -169,8 +171,8 @@ def tui_execution_session(enabled: bool) -> Iterator[TuiSession]:
         # Swap off the splash so output is visible from the first line.
         try:
             app.switch_to_execution()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(f"tui_execution_session switch_to_execution failed: {exc!r}")
         session = TuiSession(renderer=renderer, app=app, thread=None)
         try:
             yield session
@@ -200,15 +202,15 @@ def tui_execution_session(enabled: bool) -> Iterator[TuiSession]:
             import os
 
             app.run(headless=bool(os.environ.get("PYTEST_CURRENT_TEST")))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(f"tui_execution_session app.run failed: {exc!r}")
         finally:
             try:
                 from the_architect.tui.runner import _restore_terminal_input_modes
 
                 _restore_terminal_input_modes()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"tui_execution_session terminal restore failed: {exc!r}")
 
     thread = threading.Thread(target=_run_app, name="architect-tui", daemon=True)
     thread.start()
@@ -219,16 +221,16 @@ def tui_execution_session(enabled: bool) -> Iterator[TuiSession]:
     finally:
         try:
             app.exit()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(f"tui_execution_session app.exit failed: {exc!r}")
         if thread.is_alive():
             thread.join(timeout=2.0)
         try:
             from the_architect.tui.runner import _restore_terminal_input_modes
 
             _restore_terminal_input_modes()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"tui_execution_session terminal restore failed: {exc!r}")
 
 
 class TuiWaitSession:
@@ -255,36 +257,36 @@ class TuiWaitSession:
         if self._overlay_app is not None:
             try:
                 self._overlay_app.update_wait(title=title)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"TuiWaitSession set_title overlay failed: {exc!r}")
             return
         if self.app is None:
             return
         try:
             self.app.call_from_thread(self.app.set_title, title)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"TuiWaitSession set_title standalone failed: {exc!r}")
 
     def set_detail(self, detail: str) -> None:
         if self._overlay_app is not None:
             try:
                 self._overlay_app.update_wait(detail=detail)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"TuiWaitSession set_detail overlay failed: {exc!r}")
             return
         if self.app is None:
             return
         try:
             self.app.call_from_thread(self.app.set_detail, detail)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"TuiWaitSession set_detail standalone failed: {exc!r}")
 
     def append_log(self, line: str) -> None:
         if self._overlay_app is not None:
             try:
                 self._overlay_app.append_wait_log(line)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(f"TuiWaitSession append_log overlay failed (dropping line): {exc!r}")
             return
         if self.app is None:
             return
@@ -305,8 +307,8 @@ class TuiWaitSession:
         # Fallback: loop closed, not started, or same-thread call
         try:
             self.app.call_from_thread(self.app.append_log, line)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(f"TuiWaitSession append_log fallback failed (dropping line): {exc!r}")
 
 
 @contextmanager
@@ -361,15 +363,15 @@ def tui_wait_session(
     if overlay_app is not None:
         try:
             overlay_app.show_wait(title=title)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(f"tui_wait_session show_wait failed: {exc!r}")
         try:
             yield TuiWaitSession(app=None, thread=None, overlay_app=overlay_app)
         finally:
             try:
                 overlay_app.hide_wait()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"tui_wait_session hide_wait failed: {exc!r}")
         return
 
     # Standalone path: launch a dedicated WaitApp in a background thread.
@@ -394,15 +396,15 @@ def tui_wait_session(
             import os
 
             app.run(headless=bool(os.environ.get("PYTEST_CURRENT_TEST")))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(f"tui_wait_session WaitApp.run failed: {exc!r}")
         finally:
             try:
                 from the_architect.tui.runner import _restore_terminal_input_modes
 
                 _restore_terminal_input_modes()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"tui_wait_session terminal restore failed: {exc!r}")
 
     thread = threading.Thread(target=_run_app, name="architect-wait", daemon=True)
     thread.start()
@@ -413,13 +415,13 @@ def tui_wait_session(
     finally:
         try:
             app.exit()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(f"tui_wait_session WaitApp.exit failed: {exc!r}")
         if thread.is_alive():
             thread.join(timeout=2.0)
         try:
             from the_architect.tui.runner import _restore_terminal_input_modes
 
             _restore_terminal_input_modes()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"tui_wait_session terminal restore failed: {exc!r}")

@@ -18,9 +18,11 @@ Layout mirrors :class:`~the_architect.tui.screens.wait.WaitScreen`:
 from __future__ import annotations
 
 from datetime import datetime
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
+from loguru import logger
 from rich.markup import escape
+from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
@@ -34,7 +36,11 @@ from textual.widgets import (
     TabPane,
 )
 
+from the_architect.tui.constants import ANIMATION_TICK_INTERVAL
 from the_architect.tui.widgets import MatrixRain, next_matrix_frame
+
+if TYPE_CHECKING:
+    from textual.timer import Timer
 
 
 def _fmt_tokens(count: int) -> str:
@@ -55,7 +61,7 @@ def _footer_tabs_text() -> str:
     """Tab navigation hint shown at the bottom of each tab page."""
     return (
         "[dim]Tabs:  [l] Live  [p] Progress  [d] Diagnostics"
-        "  [g] Settings  [c] Costs  [t] Tasks[/dim]"
+        "  [g] Settings  [c] Costs  [t] Tasks  ·  Tab ← → switch[/dim]"
     )
 
 
@@ -77,7 +83,7 @@ class ExecutionScreen(Screen[None]):
 
     # All bindings use priority=True so they fire regardless of which
     # child widget has focus (RichLog, TabbedContent, etc.).
-    # Without this, tab-switch keys (l/p/d/g/c) and ESC need the child
+    # Without this, tab-switch keys (l/p/d/g/c/tab/←→) and ESC need the child
     # widget to bubble them up first — causing missed or double keypresses.
     BINDINGS = [
         Binding("l", "switch_tab('tab_live')", "Live", show=False, priority=True),
@@ -89,6 +95,10 @@ class ExecutionScreen(Screen[None]):
         Binding("o", "switch_tab('tab_live')", "Live", show=False, priority=True),
         Binding("e", "switch_tab('tab_diagnostics')", "Diagnostics", show=False, priority=True),
         Binding("s", "switch_tab('tab_progress')", "Progress", show=False, priority=True),
+        Binding("left", "prev_tab", "Previous tab", show=False, priority=True),
+        Binding("right", "next_tab", "Next tab", show=False, priority=True),
+        Binding("tab", "next_tab", "Next tab", show=False, priority=True),
+        Binding("shift+tab", "prev_tab", "Previous tab", show=False, priority=True),
         Binding("escape", "pause_menu", "Pause menu", priority=True),
     ]
 
@@ -201,10 +211,16 @@ class ExecutionScreen(Screen[None]):
         # Pending feedback message loaded by the runner. Displayed in the
         # footer prefix until the runner clears it after consumption.
         self._feedback_message: str | None = None
+        # Upstream artifact count loaded by the runner. Displayed in the
+        # footer prefix so the user knows context is being injected.
+        self._artifact_count: int = 0
         # Per-task details for the Tasks tab DataTable. Keys are task
         # prefixes; values are dicts with optional "tokens", "model", and
         # "circuit" keys. Populated by update_progress_tasks().
         self._task_details: dict[str, dict[str, str]] = {}
+        # Timer handle for the animated spinner — stopped on unmount
+        # to prevent leaks.
+        self._timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -249,7 +265,7 @@ class ExecutionScreen(Screen[None]):
 
     def on_mount(self) -> None:
         # Start the spinner at 10 FPS — same cadence as WaitScreen.
-        self.set_interval(0.1, self._tick_spinner)
+        self._timer = self.set_interval(ANIMATION_TICK_INTERVAL, self._tick_spinner)
         # Make every tab body focusable so keyboard scrolling works when a tab
         # has more content than the available terminal height.
         for scroll_id in (
@@ -262,8 +278,8 @@ class ExecutionScreen(Screen[None]):
         ):
             try:
                 self.query_one(scroll_id).can_focus = True
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"ExecutionScreen set can_focus for {scroll_id} failed: {exc!r}")
         self._focus_active_tab_scroller()
         self.call_after_refresh(self._focus_active_tab_scroller)
         # Flush any output that arrived before the DOM was ready first,
@@ -276,6 +292,22 @@ class ExecutionScreen(Screen[None]):
         self.call_after_refresh(self._flush_pending)
         self.call_after_refresh(self._write_default_placeholders)
 
+    def on_hide(self) -> None:
+        """Pause the spinner animation while the screen is hidden behind an overlay."""
+        if self._timer is not None:
+            self._timer.pause()
+
+    def on_resume(self) -> None:
+        """Restart the spinner animation when the screen becomes visible again."""
+        if self._timer is not None:
+            self._timer.resume()
+
+    def on_unmount(self) -> None:
+        """Stop the spinner timer to prevent leaks after removal."""
+        if self._timer is not None:
+            self._timer.stop()
+            self._timer = None
+
     def _flush_pending(self) -> None:
         """Apply any output/events/footer updates queued before mount."""
         if self._pending_output:
@@ -285,8 +317,8 @@ class ExecutionScreen(Screen[None]):
                     self._output_received = True
                 for line in self._pending_output:
                     log.write(line)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(f"ExecutionScreen flush pending output failed: {exc!r}")
             self._pending_output.clear()
         for event, data in self._pending_diagnostics:
             self._write_diagnostic_line(event, data)
@@ -294,8 +326,8 @@ class ExecutionScreen(Screen[None]):
         if self._pending_footer is not None:
             try:
                 self.query_one("#exec_footer", Static).update(self._pending_footer)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"ExecutionScreen flush pending footer failed: {exc!r}")
             self._pending_footer = None
         if self._pending_costs is not None:
             self.update_costs(self._pending_costs)
@@ -304,6 +336,17 @@ class ExecutionScreen(Screen[None]):
         # Flush the Tasks tab DataTable now that widgets are mounted.
         if self._progress_tasks:
             self.update_tasks_table(self._progress_tasks)
+
+    def on_resize(self, event: events.Resize) -> None:
+        """Refresh DataTable layout after terminal resize.
+
+        Ensures column widths and row heights recalculate correctly
+        when the terminal window is resized during execution.
+        """
+        try:
+            self.refresh(layout=True)
+        except Exception as exc:
+            logger.debug(f"ExecutionScreen resize refresh failed: {exc!r}")
 
     def _write_default_placeholders(self) -> None:
         # Only write the output placeholder when no real provider output
@@ -314,15 +357,15 @@ class ExecutionScreen(Screen[None]):
         if not self._output_received:
             try:
                 self.query_one("#exec_output", RichLog).write("Waiting for provider output…")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"ExecutionScreen output placeholder write failed: {exc!r}")
         try:
             self.query_one("#exec_diagnostics", RichLog).write(
                 "No diagnostics yet. Retries, cooldowns, model switches, "
                 "and circuit events appear here."
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"ExecutionScreen diagnostics placeholder write failed: {exc!r}")
 
     # ── Spinner ────────────────────────────────────────────────────────
 
@@ -332,8 +375,8 @@ class ExecutionScreen(Screen[None]):
         self._current_frame = next_matrix_frame(self._frame_index)
         try:
             self.query_one("#exec_anim_title", Static).update(self._render_anim_title())
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"ExecutionScreen tick spinner update failed: {exc!r}")
 
     def _render_anim_title(self) -> str:
         phase = self._details.get("phase", "idle")
@@ -351,13 +394,64 @@ class ExecutionScreen(Screen[None]):
             # Focus synchronously — defer causes a one-frame gap where
             # the next keypress goes to the wrong widget.
             self._focus_active_tab_scroller()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"ExecutionScreen switch_tab({tab_id!r}) failed: {exc!r}")
+
+    def action_next_tab(self) -> None:
+        """Switch to the next tab in order."""
+        self._switch_tab_direction(1)
+
+    def action_prev_tab(self) -> None:
+        """Switch to the previous tab in order."""
+        self._switch_tab_direction(-1)
+
+    def _switch_tab_direction(self, direction: int) -> None:
+        """Move to the next or previous execution tab.
+
+        Args:
+            direction: 1 for next, -1 for previous.
+        """
+        # Tab order matches compose() yield order
+        tab_order = [
+            "tab_live",
+            "tab_progress",
+            "tab_diagnostics",
+            "tab_settings",
+            "tab_costs",
+            "tab_tasks",
+        ]
+        try:
+            tabs = self.query_one("#exec_tabs", TabbedContent)
+            current = tabs.active
+            if current in tab_order:
+                idx = tab_order.index(current)
+                target = tab_order[(idx + direction) % len(tab_order)]
+                tabs.active = target
+                self._focus_active_tab_scroller()
+        except Exception as exc:
+            logger.debug(f"ExecutionScreen switch_tab({direction}) failed: {exc!r}")
 
     def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
         """Refocus the scrollable content after a mouse click on a tab header."""
         self._focus_active_tab_scroller()
         self.call_after_refresh(self._focus_active_tab_scroller)
+
+    def on_key(self, event: events.Key) -> None:
+        """Handle arrow-key tab switching as backup when bindings are consumed.
+
+        When a child widget (RichLog, DataTable) intercepts left/right before
+        the screen-level BINDINGS fire, this handler catches the bubbled event
+        and switches tabs. The bindings (priority=True) are the primary path;
+        this is the safety net.
+        """
+        if event.key == "left":
+            event.stop()
+            event.prevent_default()
+            self.action_prev_tab()
+        elif event.key == "right":
+            event.stop()
+            event.prevent_default()
+            self.action_next_tab()
 
     def _focus_active_tab_scroller(self) -> None:
         """Focus the active tab's scrollable body for keyboard scrolling."""
@@ -373,8 +467,8 @@ class ExecutionScreen(Screen[None]):
             }.get(active)
             if target_id:
                 self.query_one(target_id).focus()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"ExecutionScreen focus active tab scroller failed: {exc!r}")
 
     # ── Renderer hooks ─────────────────────────────────────────────────
 
@@ -384,7 +478,8 @@ class ExecutionScreen(Screen[None]):
         self._details["last_activity"] = datetime.now().strftime("%H:%M:%S")
         try:
             log = self.query_one("#exec_output", RichLog)
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"ExecutionScreen push_output_line query failed (buffering): {exc!r}")
             self._pending_output.append(line)
             return
         # On the first real output line, clear the placeholder text so it
@@ -393,15 +488,16 @@ class ExecutionScreen(Screen[None]):
             self._output_received = True
             try:
                 log.clear()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"ExecutionScreen push_output_line clear failed: {exc!r}")
         log.write(line)
 
     def push_event_line(self, event: str, data: dict[str, object] | None = None) -> None:
         """Append an operational event to the Diagnostics tab."""
         try:
             self.query_one("#exec_diagnostics", RichLog)
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"ExecutionScreen push_event_line query failed (buffering): {exc!r}")
             self._pending_diagnostics.append((event, data))
             return
         self._write_diagnostic_line(event, data)
@@ -412,8 +508,8 @@ class ExecutionScreen(Screen[None]):
             now = datetime.now().strftime("%H:%M:%S")
             payload = " ".join(f"{k}=[cyan]{v}[/cyan]" for k, v in (data or {}).items())
             log.write(f"[dim]{now}[/dim]  [#7cc800]{event}[/#7cc800]  {payload}")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"ExecutionScreen write_diagnostic_line({event!r}) failed: {exc!r}")
 
     def update_progress_tasks(self, tasks: list[dict[str, str]]) -> None:
         """Replace the Progress tab's task overview and refresh it.
@@ -435,7 +531,8 @@ class ExecutionScreen(Screen[None]):
         rendered = self._render_footer_text(text)
         try:
             footer = self.query_one("#exec_footer", Static)
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"ExecutionScreen update_footer query failed (buffering): {exc!r}")
             self._pending_footer = rendered
             return
         footer.update(rendered)
@@ -456,14 +553,38 @@ class ExecutionScreen(Screen[None]):
             base = self._strip_feedback_prefix(str(current_footer.render_str))
             self.update_footer(base)
             return
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"ExecutionScreen update_feedback query failed: {exc!r}")
         # If the widget isn't mounted yet, update the pending footer
         # so the next flush renders with the new feedback state.
         if self._pending_footer is not None:
             # Strip any existing feedback prefix from the pending text
             # and re-render with the new feedback state.
             base = self._strip_feedback_prefix(self._pending_footer)
+            self._pending_footer = self._render_footer_text(base)
+
+    def update_artifacts(self, count: int) -> None:
+        """Set the upstream artifact count displayed in the footer.
+
+        When *count* is positive, the footer shows an artifact indicator
+        (e.g. ``3 upstream artifacts``) so the user knows upstream context
+        is being injected.  Zero clears the indicator.
+
+        Args:
+            count: Number of upstream artifacts for the current task.
+        """
+        self._artifact_count = max(count, 0)
+        # If the footer widget is already mounted, refresh it.
+        try:
+            current_footer = self.query_one("#exec_footer", Static)
+            base = self._strip_artifacts_suffix(str(current_footer.render_str))
+            self.update_footer(base)
+            return
+        except Exception as exc:
+            logger.debug(f"ExecutionScreen update_artifacts query failed: {exc!r}")
+        # If the widget isn't mounted yet, update the pending footer.
+        if self._pending_footer is not None:
+            base = self._strip_artifacts_suffix(self._pending_footer)
             self._pending_footer = self._render_footer_text(base)
 
     def _strip_feedback_prefix(self, rendered: str) -> str:
@@ -487,29 +608,58 @@ class ExecutionScreen(Screen[None]):
                 return after_prefix[idx + len(sep) :]
         return rendered
 
+    def _strip_artifacts_suffix(self, rendered: str) -> str:
+        """Remove a previously appended artifact indicator from rendered text.
+
+        Returns the original base text if no artifact suffix is found.
+
+        Args:
+            rendered: Footer text that may contain an artifact indicator.
+
+        Returns:
+            Base footer text without the artifact indicator.
+        """
+        suffix_marker = "  ·  [cyan]📦"
+        idx = rendered.find(suffix_marker)
+        if idx != -1:
+            return rendered[:idx].rstrip()
+        return rendered
+
     def _render_footer_text(self, base_text: str) -> str:
-        """Compose the final footer string from base text and feedback.
+        """Compose the final footer string from base text, feedback, and artifacts.
 
         When feedback is pending, the footer shows the feedback message
-        prefixed with a yellow indicator, separated from the normal
-        footer by ``  ·  ``.  Long messages are truncated to keep the
-        footer on one line.
+        prefixed with a yellow indicator.  When upstream artifacts are
+        being injected, a cyan artifact indicator is appended.  Both can
+        be active simultaneously.
 
         Args:
             base_text: The normal footer text (phase, keys, etc.).
 
         Returns:
-            Final footer string with feedback prepended if active.
+            Final footer string with feedback prepended and/or artifacts
+            appended if active.
         """
-        if self._feedback_message is None:
-            return base_text
-        # Truncate long messages — keep the footer readable on one line.
-        msg = self._feedback_message
-        max_len = 80
-        if len(msg) > max_len:
-            msg = msg[: max_len - 3] + "…"
-        feedback_line = f"[yellow]⚡ Feedback[/yellow]: {escape(msg)}"
-        return f"{feedback_line}  ·  {base_text}"
+        parts: list[str] = []
+
+        # Feedback prefix (left side)
+        if self._feedback_message is not None:
+            msg = self._feedback_message
+            max_len = 80
+            if len(msg) > max_len:
+                msg = msg[: max_len - 3] + "…"
+            parts.append(f"[yellow]⚡ Feedback[/yellow]: {escape(msg)}")
+
+        # Base text (middle)
+        parts.append(base_text)
+
+        # Artifact count suffix (right side)
+        if self._artifact_count > 0:
+            n = self._artifact_count
+            label = f"{n} upstream artifact{'s' if n != 1 else ''}"
+            parts.append(f"[cyan]📦 {label}[/cyan]")
+
+        return "  ·  ".join(parts)
 
     def update_details(self, **fields: str) -> None:
         """Merge run metadata into the Progress tab and refresh the title."""
@@ -520,14 +670,14 @@ class ExecutionScreen(Screen[None]):
             task = self._details.get("task", "")
             if task and task != "(waiting)":
                 badge.update(f"[dim]{task}[/dim]")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"ExecutionScreen update_details badge update failed: {exc!r}")
         self._refresh_summary_widgets()
         # Refresh the animated title so it shows the new task label immediately.
         try:
             self.query_one("#exec_anim_title", Static).update(self._render_anim_title())
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"ExecutionScreen update_details anim title update failed: {exc!r}")
 
     def update_settings(self, settings: dict[str, str]) -> None:
         """Replace the Settings tab content with run-scoped execution settings."""
@@ -544,7 +694,8 @@ class ExecutionScreen(Screen[None]):
         self._costs = {k: v for k, v in costs.items() if v is not None}
         try:
             self.query_one("#exec_costs_text", Static).update(self._render_costs())
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"ExecutionScreen update_costs widget update failed (buffering): {exc!r}")
             self._pending_costs = costs
 
     def update_tasks_table(self, tasks: list[dict[str, str]]) -> None:
@@ -567,16 +718,18 @@ class ExecutionScreen(Screen[None]):
 
         try:
             table = self.query_one("#exec_tasks_table", DataTable)
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"ExecutionScreen update_tasks_table DataTable query failed: {exc!r}")
             return
 
         table.clear(columns=True)
-        table.add_columns("Task", "Title", "Status", "Tokens", "Model", "Circuit")
+        table.add_columns("Task", "Title", "Status", "Priority", "Tokens", "Model", "Circuit")
 
         for task in tasks:
             prefix = task.get("prefix", "")
             title = task.get("title", "")
             status = task.get("status", "pending")
+            priority = task.get("priority", "")
             tokens_raw = task.get("tokens", "")
             model = task.get("model", "")
 
@@ -588,6 +741,14 @@ class ExecutionScreen(Screen[None]):
                     tokens_str = _fmt_tokens(token_count)
                 except (ValueError, TypeError):
                     tokens_str = tokens_raw
+
+            # Priority display — color-coded indicator
+            priority_str = {
+                "critical": "[red]● Critical[/]",
+                "high": "[yellow]● High[/]",
+                "medium": "[dim]○ Medium[/]",
+                "low": "[dim]○ Low[/]",
+            }.get(priority or "medium", "[dim]○ Medium[/]")
 
             # Shorten model name for display
             model_short = model.split("/")[-1] if "/" in model else model
@@ -603,22 +764,67 @@ class ExecutionScreen(Screen[None]):
                 "pending": "CLOSED",
             }.get(status, "CLOSED")
 
-            table.add_row(prefix, title, status.upper(), tokens_str, model_short, circuit_str)
+            table.add_row(
+                prefix, title, status.upper(), priority_str, tokens_str, model_short, circuit_str
+            )
+
+    def update_validation_gate(self, gate_result: object) -> None:
+        """Display validation gate status in the Diagnostics tab.
+
+        Accepts a ValidationGateResult (passed as ``object`` to avoid
+        circular imports). The result has ``passed: bool`` and
+        ``checks: list[GateCheckResult]`` where each check has
+        ``name``, ``status``, ``output``, and ``duration``.
+
+        Args:
+            gate_result: A ValidationGateResult instance (typed as object).
+        """
+        try:
+            passed = getattr(gate_result, "passed", None)
+            checks = getattr(gate_result, "checks", [])
+        except Exception as exc:
+            logger.debug(f"ExecutionScreen update_validation_gate getattr failed: {exc!r}")
+            return
+
+        if passed is True:
+            total = len(checks)
+            icon = "[green]✓[/green]"
+            status_text = f"[green]passed[/green] ({total}/{total})"
+            line = f"Validation Gate: {icon} {status_text}"
+        else:
+            # Failed — show which checks failed
+            failed_checks = []
+            for c in checks:
+                name = getattr(c, "name", "?")
+                status = getattr(c, "status", "?")
+                if status != "pass":
+                    failed_checks.append(f"{name}: {status}")
+            if failed_checks:
+                detail = ", ".join(failed_checks)
+            else:
+                detail = "unknown"
+            icon = "[red]✗[/red]"
+            line = f"Validation Gate: {icon} [red]failed[/red] ({detail})"
+
+        try:
+            self.push_event_line("validation_gate", {"result": line})
+        except Exception as exc:
+            logger.debug(f"ExecutionScreen validation_gate event push failed: {exc!r}")
 
     def _refresh_summary_widgets(self) -> None:
         """Refresh cached progress/settings/costs state after mount or updates."""
         try:
             self.query_one("#exec_progress_text", Static).update(self._render_progress())
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"ExecutionScreen refresh progress widget failed: {exc!r}")
         try:
             self.query_one("#exec_settings_text", Static).update(self._render_settings())
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"ExecutionScreen refresh settings widget failed: {exc!r}")
         try:
             self.query_one("#exec_costs_text", Static).update(self._render_costs())
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"ExecutionScreen refresh costs widget failed: {exc!r}")
 
     # ── Actions ────────────────────────────────────────────────────────
 
@@ -631,10 +837,8 @@ class ExecutionScreen(Screen[None]):
         """
         try:
             self.app.show_pause_menu()  # type: ignore[attr-defined]
-        except Exception:
-            # If the app doesn't expose the hook (tests with a bare
-            # harness), ignore — ESC simply does nothing.
-            pass
+        except Exception as exc:
+            logger.debug(f"ExecutionScreen pause menu dispatch failed: {exc!r}")
 
     # ── Internal ──────────────────────────────────────────────────────
 
@@ -694,6 +898,7 @@ class ExecutionScreen(Screen[None]):
                 prefix = item.get("prefix", "")
                 title = item.get("title", "")
                 status = item.get("status", "pending")
+                priority = item.get("priority", "")
                 colour = {
                     "running": "yellow",
                     "done": "#7cc800",
@@ -703,9 +908,16 @@ class ExecutionScreen(Screen[None]):
                 }.get(status, "dim")
                 marker = ">" if status == "running" else " "
                 status_label = status.upper()
+                # Priority indicator — color-coded
+                priority_indicator = {
+                    "critical": "[red]●[/] ",
+                    "high": "[yellow]●[/] ",
+                    "medium": "",
+                    "low": "[dim]○[/] ",
+                }.get(priority or "medium", "")
                 task_line = (
                     f"  {marker} [{colour}]{prefix:<6} {status_label:<8}[/{colour}] "
-                    f"[dim]{title}[/dim]"
+                    f"{priority_indicator}[dim]{title}[/dim]"
                 )
                 lines.append(task_line)
         else:

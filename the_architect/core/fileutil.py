@@ -178,3 +178,8 @@ def safe_atomic_write_json(
     except Exception as exc:
         logger.debug(f"{log_label} atomic write failed (non-fatal): {exc!r}")
         return False
+
+
+# ---------------------------------------------------------------------------
+# Instruction size capping — defense-in-depth against E2BIG
+# ---------------------------------------------------------------------------

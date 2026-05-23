@@ -726,3 +726,206 @@ class TestFreeModelModalityFilter:
         model_ids = [m.id for m in rotator.models]
         assert "openrouter/text-model" in model_ids
         assert "openrouter/vision-model" in model_ids
+
+
+# ---------------------------------------------------------------------------
+# Canonical text helpers — is_rate_limit_text / is_model_not_found_text
+# ---------------------------------------------------------------------------
+
+
+class TestIsRateLimitText:
+    """Tests for the canonical is_rate_limit_text() plain-text detector."""
+
+    def test_detects_all_canonical_phrases(self) -> None:
+        """Every phrase in RATE_LIMIT_PHRASES must be detected."""
+        from the_architect.core.free_models import RATE_LIMIT_PHRASES, is_rate_limit_text
+
+        for phrase in RATE_LIMIT_PHRASES:
+            assert is_rate_limit_text(phrase) is True, f"Failed to detect: {phrase!r}"
+
+    def test_case_insensitive(self) -> None:
+        """Detection must be case-insensitive."""
+        from the_architect.core.free_models import is_rate_limit_text
+
+        assert is_rate_limit_text("RATE LIMIT exceeded") is True
+        assert is_rate_limit_text("Rate_Limit hit") is True
+
+    def test_no_false_positives(self) -> None:
+        """Normal text must not trigger detection."""
+        from the_architect.core.free_models import is_rate_limit_text
+
+        assert is_rate_limit_text("File not found") is False
+        assert is_rate_limit_text("Hello world") is False
+        assert is_rate_limit_text("") is False
+
+
+class TestIsModelNotFoundText:
+    """Tests for the canonical is_model_not_found_text() plain-text detector."""
+
+    def test_detects_all_canonical_phrases(self) -> None:
+        """Every phrase in MODEL_NOT_FOUND_PHRASES must be detected."""
+        from the_architect.core.free_models import (
+            MODEL_NOT_FOUND_PHRASES,
+            is_model_not_found_text,
+        )
+
+        for phrase in MODEL_NOT_FOUND_PHRASES:
+            assert is_model_not_found_text(phrase) is True, f"Failed to detect: {phrase!r}"
+
+    def test_case_insensitive(self) -> None:
+        """Detection must be case-insensitive."""
+        from the_architect.core.free_models import is_model_not_found_text
+
+        assert is_model_not_found_text("MODEL NOT FOUND") is True
+        assert is_model_not_found_text("Model_Not_Found error") is True
+
+    def test_no_false_positives(self) -> None:
+        """Normal text must not trigger detection."""
+        from the_architect.core.free_models import is_model_not_found_text
+
+        assert is_model_not_found_text("SyntaxError: invalid syntax") is False
+        assert is_model_not_found_text("") is False
+
+
+# ---------------------------------------------------------------------------
+# Cross-provider consistency — all four providers use the same phrase lists
+# ---------------------------------------------------------------------------
+
+
+class TestCrossProviderConsistency:
+    """Verify all four providers detect rate limits and model-not-found identically.
+
+    T04.1: The canonical phrase lists in free_models.py must be the single
+    source of truth.  Every provider's parse_output_line() should produce
+    identical rate_limit / model_not_found flags for the same input text.
+    """
+
+    def test_claude_code_uses_canonical_detector(self) -> None:
+        """Claude Code's _is_rate_limit_text must be free_models.is_rate_limit_text."""
+        from the_architect.core import claude_code_provider as cc
+        from the_architect.core.free_models import is_rate_limit_text
+
+        assert cc._is_rate_limit_text("rate limit exceeded") == is_rate_limit_text(
+            "rate limit exceeded"
+        )
+        assert cc._is_rate_limit_text("server is busy") == is_rate_limit_text("server is busy")
+        assert cc._is_rate_limit_text("temporarily unavailable") == is_rate_limit_text(
+            "temporarily unavailable"
+        )
+
+    def test_codex_uses_canonical_detector(self) -> None:
+        """Codex CLI's _is_rate_limit_text must be free_models.is_rate_limit_text."""
+        from the_architect.core import codex_cli_provider as cx
+        from the_architect.core.free_models import is_rate_limit_text
+
+        assert cx._is_rate_limit_text("rate limit exceeded") == is_rate_limit_text(
+            "rate limit exceeded"
+        )
+        assert cx._is_rate_limit_text("server is busy") == is_rate_limit_text("server is busy")
+        assert cx._is_rate_limit_text("capacity reached") == is_rate_limit_text("capacity reached")
+
+    def test_gemini_uses_canonical_detector(self) -> None:
+        """Gemini CLI's _is_rate_limit_text must be free_models.is_rate_limit_text."""
+        from the_architect.core import gemini_cli_provider as gm
+        from the_architect.core.free_models import is_rate_limit_text
+
+        assert gm._is_rate_limit_text("rate limit exceeded") == is_rate_limit_text(
+            "rate limit exceeded"
+        )
+        assert gm._is_rate_limit_text("try again later") == is_rate_limit_text("try again later")
+        assert gm._is_rate_limit_text("usage limit reached") == is_rate_limit_text(
+            "usage limit reached"
+        )
+
+    def test_all_providers_detect_new_phrases(self) -> None:
+        """All providers must detect phrases that were previously only in free_models.py.
+
+        Before T04, Claude Code / Codex / Gemini missed these phrases:
+        'capacity', 'temporarily unavailable', 'server is busy', 'try again later'.
+        After deduplication they all use the superset from free_models.py.
+        """
+        from the_architect.core.claude_code_provider import ClaudeCodeProvider
+        from the_architect.core.codex_cli_provider import CodexCliProvider
+        from the_architect.core.gemini_cli_provider import GeminiCliProvider
+
+        new_phrases = [
+            "capacity",
+            "temporarily unavailable",
+            "server is busy",
+            "try again later",
+        ]
+
+        # Each provider's parse_output_line must detect these in error events
+        for provider_cls in (ClaudeCodeProvider, CodexCliProvider, GeminiCliProvider):
+            prov = provider_cls()
+            for phrase in new_phrases:
+                # Simulate an error event containing the phrase
+                if provider_cls == ClaudeCodeProvider:
+                    line = json.dumps(
+                        {"type": "result", "subtype": "error", "is_error": True, "result": phrase}
+                    )
+                elif provider_cls == CodexCliProvider:
+                    line = json.dumps({"type": "error", "message": phrase})
+                else:  # GeminiCliProvider — uses "error" type
+                    line = json.dumps({"type": "error", "message": phrase})
+
+                parsed = prov.parse_output_line(line)
+                assert parsed is not None, f"{provider_cls.__name__} returned None for {phrase!r}"
+                assert parsed.rate_limit is True, (
+                    f"{provider_cls.__name__} did not detect rate limit for {phrase!r}"
+                )
+
+    def test_opencode_display_text_fallback(self) -> None:
+        """OpenCode must detect rate limits in display text via the fallback check.
+
+        Before T04, OpenCode only detected rate limits when etype == "error"
+        using is_rate_limit_event().  After T04 it also checks display_lines
+        for rate-limit phrases so non-error events with error-like text are caught.
+        """
+        from the_architect.core.opencode_provider import OpenCodeProvider
+
+        prov = OpenCodeProvider()
+
+        # A "text" event containing a rate-limit phrase should be detected
+        line = json.dumps(
+            {"type": "text", "part": {"text": "Error: server is busy, try again later"}}
+        )
+        parsed = prov.parse_output_line(line)
+        assert parsed is not None
+        assert parsed.rate_limit is True
+
+    def test_opencode_model_not_found_fallback(self) -> None:
+        """OpenCode must detect model-not-found in display text via the fallback check."""
+        from the_architect.core.opencode_provider import OpenCodeProvider
+
+        prov = OpenCodeProvider()
+
+        # A "text" event containing a model-not-found phrase should be detected
+        line = json.dumps(
+            {"type": "text", "part": {"text": "Error: Model not found: openrouter/foo/bar"}}
+        )
+        parsed = prov.parse_output_line(line)
+        assert parsed is not None
+        assert parsed.model_not_found is True
+
+    def test_all_providers_model_not_found_consistent(self) -> None:
+        """All providers must detect model-not-found phrases identically."""
+        from the_architect.core.claude_code_provider import ClaudeCodeProvider
+        from the_architect.core.codex_cli_provider import CodexCliProvider
+        from the_architect.core.gemini_cli_provider import GeminiCliProvider
+
+        model_not_found_phrases = [
+            "model not found",
+            "no such model",
+            "does not exist",
+        ]
+
+        for provider_cls in (ClaudeCodeProvider, CodexCliProvider, GeminiCliProvider):
+            prov = provider_cls()
+            for phrase in model_not_found_phrases:
+                # Non-JSON fallback path — all providers handle this
+                parsed = prov.parse_output_line(phrase)
+                assert parsed is not None
+                assert parsed.model_not_found is True, (
+                    f"{provider_cls.__name__} missed model-not-found: {phrase!r}"
+                )

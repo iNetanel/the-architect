@@ -1,19 +1,19 @@
 """Claude Code CLI provider implementation for The Architect.
 
 Wraps all Claude Code-specific logic: binary detection, command building,
-plain-text output parsing, and planning setup.
+stream-json output parsing, and planning setup.
 
 Key differences from OpenCode:
   - Binary: ``claude`` (not ``opencode``)
   - No named-agent system — roles injected as prompt prefixes
-  - No JSON event stream — plain text output
+  - JSON event stream via ``--output-format stream-json --verbose`` —
+    emits structured events including token counts in the ``result`` event
   - Model list extracted from the Claude Code binary (instant) or
     via ``claude models`` API call (slow fallback)
   - Agent list via ``claude agents`` (plain text output)
   - No config file equivalent — uses CLAUDE.md for project context
   - Non-interactive mode: ``claude --print`` / ``-p``
   - Permissions: ``--dangerously-skip-permissions`` (same flag name)
-  - Token counts: not available per-event (no structured output)
 """
 
 from __future__ import annotations
@@ -25,6 +25,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from loguru import logger
+
+from the_architect.core.free_models import (
+    is_model_not_found_text as _is_model_not_found_text,
+)
+from the_architect.core.free_models import (
+    is_rate_limit_text as _is_rate_limit_text,
+)
 
 if TYPE_CHECKING:
     from the_architect.config import ArchitectConfig
@@ -71,8 +78,10 @@ class ClaudeCodeProvider:
     """Provider implementation for the Claude Code CLI.
 
     Claude Code is Anthropic's official CLI for Claude models.
-    It does not have a named-agent system or JSON event output —
-    The Architect handles both differences transparently.
+    It does not have a named-agent system (roles are injected as prompt
+    prefixes).  It *does* emit structured JSON events via stream-json mode
+    including token counts in the ``result`` event — The Architect parses
+    these for display rendering and usage tracking.
     """
 
     def __init__(self) -> None:
@@ -122,7 +131,7 @@ class ClaudeCodeProvider:
             result = subprocess.run(
                 ["claude", "--version"],
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
                 timeout=10,
             )
             if result.returncode == 0:
@@ -147,7 +156,7 @@ class ClaudeCodeProvider:
             result = subprocess.run(
                 ["claude", "--version"],
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
                 timeout=10,
             )
             return result.returncode == 0
@@ -182,7 +191,7 @@ class ClaudeCodeProvider:
             result = subprocess.run(
                 ["claude", "models"],
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
                 timeout=15,
             )
             if result.returncode == 0:
@@ -231,7 +240,7 @@ class ClaudeCodeProvider:
             result = subprocess.run(
                 ["claude", "agents"],
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
                 timeout=15,
             )
             if result.returncode == 0:
@@ -308,7 +317,7 @@ class ClaudeCodeProvider:
             result = subprocess.run(
                 ["claude", "models"],
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
                 timeout=15,
             )
             if result.returncode == 0:
@@ -763,7 +772,7 @@ class ClaudeCodeProvider:
                 headers={"Accept": "application/json"},
             )
             with urllib.request.urlopen(req, timeout=5) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+                data = json.loads(resp.read().decode("utf-8", errors="replace"))
                 latest = data.get("version", "")
                 if not latest:
                     return ""
@@ -1151,54 +1160,3 @@ def _pick_default_model(models: list[str]) -> str:
 
     # Fallback: return the last (highest-sorted) model
     return candidates[-1] if candidates else ""
-
-
-# ---------------------------------------------------------------------------
-# Rate-limit / model-not-found detection for plain text
-# ---------------------------------------------------------------------------
-
-_RATE_LIMIT_PHRASES = [
-    "rate limit",
-    "rate_limit",
-    "429",
-    "too many requests",
-    "overloaded",
-    "529",
-    "quota exceeded",
-    "usage limit",
-]
-
-_MODEL_NOT_FOUND_PHRASES = [
-    "model not found",
-    "model_not_found",
-    "no such model",
-    "unknown model",
-    "invalid model",
-    "does not exist",
-]
-
-
-def _is_rate_limit_text(text: str) -> bool:
-    """Return True if the text signals a provider rate limit.
-
-    Args:
-        text: A plain-text line from Claude Code output.
-
-    Returns:
-        True if a rate-limit phrase is found.
-    """
-    lower = text.lower()
-    return any(phrase in lower for phrase in _RATE_LIMIT_PHRASES)
-
-
-def _is_model_not_found_text(text: str) -> bool:
-    """Return True if the text signals that the requested model is unavailable.
-
-    Args:
-        text: A plain-text line from Claude Code output.
-
-    Returns:
-        True if a model-not-found phrase is found.
-    """
-    lower = text.lower()
-    return any(phrase in lower for phrase in _MODEL_NOT_FOUND_PHRASES)

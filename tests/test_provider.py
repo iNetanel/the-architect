@@ -166,6 +166,7 @@ class TestOpenCodeProviderCommand:
         assert "--format" in cmd
         assert "json" in cmd
         assert "--dangerously-skip-permissions" in cmd
+        # Instruction IS included in the command list after --
         assert "do something" in cmd
 
     def test_build_command_with_model(self) -> None:
@@ -1026,7 +1027,7 @@ class TestInstructionViaStdin:
     """Tests for ArchitectProvider.instruction_via_stdin default behaviour."""
 
     def test_opencode_instruction_via_stdin_false(self) -> None:
-        """OpenCode delivers instruction via CLI args, not stdin."""
+        """OpenCode delivers instruction as a CLI argument (not via stdin)."""
         assert OpenCodeProvider().instruction_via_stdin is False
 
     def test_claude_code_instruction_via_stdin_true(self) -> None:

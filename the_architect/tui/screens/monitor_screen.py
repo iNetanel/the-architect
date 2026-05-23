@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -10,6 +11,9 @@ from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Footer, Header, Static
 
 from the_architect.core.monitor_state import read_monitor_state
+
+if TYPE_CHECKING:
+    from textual.timer import Timer
 
 
 def _as_int(value: object, default: int = 0) -> int:
@@ -46,6 +50,9 @@ class MonitorApp(App[None]):
     def __init__(self, project: Path) -> None:
         super().__init__()
         self._project = project
+        # Timer handle for the polling interval — stopped on unmount
+        # to prevent leaks.
+        self._timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -60,7 +67,13 @@ class MonitorApp(App[None]):
 
         apply_architect_theme(self)
         self._refresh()
-        self.set_interval(self.POLL_INTERVAL, self._refresh)
+        self._timer = self.set_interval(self.POLL_INTERVAL, self._refresh)
+
+    def on_unmount(self) -> None:
+        """Stop the polling timer to prevent leaks after exit."""
+        if self._timer is not None:
+            self._timer.stop()
+            self._timer = None
 
     def action_refresh(self) -> None:
         self._refresh()

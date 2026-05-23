@@ -943,11 +943,12 @@ class TestPreRunScreen:
             await pilot.pause(0.05)
 
     @pytest.mark.asyncio
-    async def test_right_key_binding_wired_to_next_tab(self) -> None:
-        """The ``right`` key binding is wired to ``next_tab`` (always switches tabs).
+    async def test_arrow_keys_not_intercepted_by_screen(self) -> None:
+        """Arrow keys are not handled by the screen — they belong to widgets.
 
-        Left/right arrows always switch tabs — there is no "smart" deferral
-        to cursor movement any more, even when the Goal TextArea has focus.
+        All four arrow keys (up/down/left/right) are absent from BINDINGS
+        and _on_key does not intercept them.  Widgets own cursor movement
+        and item navigation.  Tab / Shift+Tab move focus between fields.
         """
         providers = [_mock_provider("opencode")]
         screen = PreRunScreen(
@@ -956,10 +957,13 @@ class TestPreRunScreen:
             project_dir=Path("/tmp/test"),
         )
         bindings = {b.key: b.action for b in screen.BINDINGS}
-        assert bindings.get("right") == "next_tab"
-        assert bindings.get("left") == "prev_tab"
-        assert bindings.get("up") == "focus_previous"
-        assert bindings.get("down") == "focus_next"
+        assert bindings.get("up") is None
+        assert bindings.get("down") is None
+        assert bindings.get("left") is None
+        assert bindings.get("right") is None
+        # Tab navigation bindings still present
+        assert bindings.get("tab") == "next_tab"
+        assert bindings.get("shift+tab") == "prev_tab"
 
     @pytest.mark.asyncio
     async def test_up_down_move_focus_between_prerun_sections(self) -> None:
@@ -1149,12 +1153,11 @@ class TestPreRunScreen:
 
     @pytest.mark.asyncio
     async def test_options_tab_left_right_switches_tabs(self) -> None:
-        """Left/right keys always switch tabs regardless of which widget has focus.
+        """Tab navigation works correctly across all tabs.
 
-        Regression guard: even from the Options tab, arrow keys must
-        navigate tabs — they must NOT move focus among the checkboxes.
-        Tests action_next_tab and action_prev_tab are callable without error,
-        and that down/up move focus within the tab (not switch tabs).
+        Tests action_next_tab and action_focus_next are callable without error,
+        and that focus moves between widgets within the Options tab using the
+        internal focus-next/previous actions. Arrow keys belong to widgets.
         """
         from textual.app import App
         from textual.widgets import TabbedContent
@@ -1193,7 +1196,7 @@ class TestPreRunScreen:
             assert getattr(screen.focused, "id", None) == "chk_free"
 
             # down key → moves focus within Options tab
-            # New order: Free, Persistent, Infinite Loop, Budget, Budget Run,
+            # New order: Free, Persistent, Infinite Loop, Budget, Budget Run, Task Timeout,
             #   Integrity, Force Reassessment, Notify Complete, Notify Fail
             screen.action_focus_next()
             await pilot.pause(0.05)
@@ -1210,6 +1213,10 @@ class TestPreRunScreen:
             screen.action_focus_next()
             await pilot.pause(0.05)
             assert getattr(screen.focused, "id", None) == "inp_budget_run"
+
+            screen.action_focus_next()
+            await pilot.pause(0.05)
+            assert getattr(screen.focused, "id", None) == "inp_task_timeout"
 
             screen.action_focus_next()
             await pilot.pause(0.05)
@@ -1231,14 +1238,15 @@ class TestPreRunScreen:
             await pilot.pause(0.05)
 
     @pytest.mark.asyncio
-    async def test_arrow_always_switches_tab_even_from_goal_textarea(self) -> None:
-        """Left/right arrows always switch tabs, even when focus is in the Goal TextArea.
+    async def test_arrow_defers_to_textarea_for_cursor_movement(self) -> None:
+        """Arrow keys belong to widgets — not intercepted by the screen.
 
-        The old "smart" deferral has been replaced with unconditional tab
-        switching.  This test verifies:
+        Arrow keys are not in BINDINGS and _on_key does not intercept them.
+        They always reach the focused widget for cursor movement or item
+        navigation.  This test verifies:
         1. ``action_next_tab`` / ``action_prev_tab`` are callable from any state.
-        2. The ``right`` binding is ``next_tab`` (not ``next_tab_smart``).
-        3. ``_focus_is_in_goal_textarea`` no longer exists.
+        2. Arrow keys are NOT in BINDINGS (widgets own them entirely).
+        3. Ctrl+Left / Ctrl+Right still switch tabs even inside a TextArea.
         """
         from textual.app import App
 
@@ -1260,9 +1268,10 @@ class TestPreRunScreen:
             area.text = "hello world"
             await pilot.pause(0.05)
 
-            # Verify the binding targets next_tab (not next_tab_smart)
+            # Arrow keys are NOT in BINDINGS — handled conditionally in _on_key
             bindings = {b.key: b.action for b in screen.BINDINGS}
-            assert bindings.get("right") == "next_tab"
+            assert bindings.get("right") is None
+            assert bindings.get("left") is None
 
             # action_next_tab callable without raising, even with goal focused
             tabs = screen.query_one("#prerun_tabs", TabbedContent)
@@ -1278,23 +1287,23 @@ class TestPreRunScreen:
             await pilot.pause(0.05)
             assert tabs.active == "tab_goal"
 
-            # Smart methods no longer exist
-            assert not hasattr(screen, "action_next_tab_smart")
-            assert not hasattr(screen, "_focus_is_in_goal_textarea")
+            # Ctrl+Left / Ctrl+Right still in BINDINGS for tab switching from TextArea
+            assert bindings.get("ctrl+left") == "prev_tab"
+            assert bindings.get("ctrl+right") == "next_tab"
 
             screen.action_cancel()
             await pilot.pause(0.05)
 
     @pytest.mark.asyncio
-    async def test_right_arrow_actually_switches_tab_from_radioset(self) -> None:
-        """Right arrow key actually changes the active tab when RadioSet has focus.
+    async def test_tab_switches_tab_from_radioset(self) -> None:
+        """Tab key actually changes the active tab when RadioSet has focus.
 
         Regression guard: the previous implementation called
         ``_auto_focus_active_tab()`` synchronously inside ``action_next_tab``,
         which focused a widget in the new tab before the tab-switch event had
         settled. Textual's ``TabbedContent._on_tab_pane_focused`` then fired
         for the OLD focused widget and reset ``active`` back — making the first
-        right-arrow press a no-op. The fix defers ``_auto_focus_active_tab``
+        tab press a no-op. The fix defers ``_auto_focus_active_tab``
         with ``call_after_refresh`` so the tab switch lands before focus moves.
         """
         from textual.app import App
@@ -1307,11 +1316,11 @@ class TestPreRunScreen:
             project_dir=Path("/tmp/test"),
         )
 
-        class ArrowApp(App[None]):
+        class TabApp(App[None]):
             def on_mount(self) -> None:
                 self.push_screen(screen, lambda v: None)
 
-        async with ArrowApp().run_test(size=(120, 40)) as pilot:
+        async with TabApp().run_test(size=(120, 40)) as pilot:
             await pilot.pause(0.05)
             await pilot.pause(0.05)
 
@@ -1323,20 +1332,20 @@ class TestPreRunScreen:
             rs.focus()
             await pilot.pause(0.05)
 
-            # Press right — must switch to the next tab (tab_models, no Provider tab)
-            await pilot.press("right")
+            # Press Tab — must switch to the next tab (tab_models, no Provider tab)
+            await pilot.press("tab")
             await pilot.pause(0.05)
             assert tabs.active == "tab_models", (
-                f"right arrow from RadioSet did not switch tab: still on {tabs.active!r}"
+                f"Tab from RadioSet did not switch tab: still on {tabs.active!r}"
             )
 
-            # Press right again — should reach Options tab
-            await pilot.press("right")
+            # Press Tab again — should reach Options tab
+            await pilot.press("tab")
             await pilot.pause(0.05)
             assert tabs.active == "tab_mode"
 
-            # Press left — back to Models
-            await pilot.press("left")
+            # Press Shift+Tab — back to Models
+            await pilot.press("shift+tab")
             await pilot.pause(0.05)
             assert tabs.active == "tab_models"
 

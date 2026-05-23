@@ -69,6 +69,24 @@ class StreamRenderer:
             message: Feedback text to display, or ``None`` to clear.
         """
 
+    def set_artifacts(self, count: int) -> None:
+        """Set the upstream artifact count displayed in the TUI footer.
+
+        Args:
+            count: Number of upstream artifacts for the current task.
+        """
+
+    def push_event_line(self, event: str, data: dict[str, object] | None = None) -> None:
+        """Push an operational event to the diagnostics tab.
+
+        No-op on plain renderers; overridden by TUI renderer to display
+        events in the Diagnostics tab.
+
+        Args:
+            event: Event type identifier (e.g., "hooks", "retry").
+            data: Optional event payload dict for display.
+        """
+
     def close(self) -> None:
         """Release renderer resources."""
 
@@ -86,6 +104,12 @@ class PlainStreamRenderer(StreamRenderer):
         return
 
     def set_feedback(self, message: str | None) -> None:
+        return
+
+    def set_artifacts(self, count: int) -> None:
+        return
+
+    def push_event_line(self, event: str, data: dict[str, object] | None = None) -> None:
         return
 
     def close(self) -> None:
@@ -226,6 +250,14 @@ class TaskResult(BaseModel):
     skip_reason: str = Field(
         default="",
         description="Reason the task was skipped (e.g. dependency unmet). Empty when not skipped.",
+    )
+    validation_gate: object | None = Field(
+        default=None,
+        description=(
+            "ValidationGateResult from the post-task validation gate. "
+            "None when the gate was disabled, skipped, or not yet run. "
+            "Present when the gate executed — check .passed for outcome."
+        ),
     )
 
 
@@ -776,6 +808,63 @@ def _clear_idle_timeout(task_prefix: str) -> None:
         _IDLE_TIMEOUT_TASKS.discard(task_prefix)
 
 
+# Registry of task prefixes whose last failure was caused exclusively by a
+# wall-clock task timeout (not a real agent error).  The Infinite Loop driver
+# reads this after a failed run to decide whether to reset those tasks to
+# Pending and continue the loop rather than dying.  Cleared at the start
+# of each ``run_task`` call so stale entries from previous iterations don't linger.
+_TASK_TIMEOUT_TASKS: set[str] = set()
+_TASK_TIMEOUT_TASKS_LOCK = threading.Lock()
+
+# Per-task wall-clock timeout start times.  Maps task prefix to monotonic
+# timestamp when the current attempt began.  Used by the runner to detect
+# when a task has exceeded its configured wall-clock budget.
+_TASK_TIMEOUT_START: dict[str, float] = {}
+_TASK_TIMEOUT_START_LOCK = threading.Lock()
+
+
+def get_task_timeout_tasks() -> frozenset[str]:
+    """Return the set of task prefixes that failed only due to wall-clock task timeouts.
+
+    Thread-safe snapshot.  Used by the Infinite Loop driver to detect
+    runs that failed because a task exceeded its wall-clock timeout (not
+    because the agent produced wrong output), so it can reset those tasks
+    to Pending and continue instead of exiting.
+    """
+    with _TASK_TIMEOUT_TASKS_LOCK:
+        return frozenset(_TASK_TIMEOUT_TASKS)
+
+
+def _mark_task_timeout(task_prefix: str) -> None:
+    """Record that ``task_prefix`` was killed by a wall-clock task timeout."""
+    with _TASK_TIMEOUT_TASKS_LOCK:
+        _TASK_TIMEOUT_TASKS.add(task_prefix)
+
+
+def _clear_task_timeout(task_prefix: str) -> None:
+    """Clear the task-timeout flag for ``task_prefix`` (e.g. on success)."""
+    with _TASK_TIMEOUT_TASKS_LOCK:
+        _TASK_TIMEOUT_TASKS.discard(task_prefix)
+
+
+def _set_task_timeout_start(task_prefix: str) -> None:
+    """Record the wall-clock start time for ``task_prefix``'s current attempt."""
+    with _TASK_TIMEOUT_START_LOCK:
+        _TASK_TIMEOUT_START[task_prefix] = time.monotonic()
+
+
+def _clear_task_timeout_start(task_prefix: str) -> None:
+    """Clear the wall-clock start time for ``task_prefix`` (e.g. on success or timeout)."""
+    with _TASK_TIMEOUT_START_LOCK:
+        _TASK_TIMEOUT_START.pop(task_prefix, None)
+
+
+def _get_task_timeout_start(task_prefix: str) -> float | None:
+    """Return the wall-clock start time for ``task_prefix``, or None if not set."""
+    with _TASK_TIMEOUT_START_LOCK:
+        return _TASK_TIMEOUT_START.get(task_prefix)
+
+
 def _register_process(proc: asyncio.subprocess.Process) -> None:
     with _ACTIVE_PROCS_LOCK:
         _ACTIVE_PROCS.add(proc)
@@ -894,14 +983,18 @@ def _idle_timeout_retry_pause_seconds() -> float:
 
 
 def _provider_read_probe_seconds(
-    idle_timeout_seconds: float, sleep_wake_gap_seconds: float
+    idle_timeout_seconds: float,
+    sleep_wake_gap_seconds: float,
+    task_timeout_seconds: float = 0.0,
 ) -> float:
-    """Return short readline probe interval for idle and sleep/wake detection."""
+    """Return short readline probe interval for idle, sleep/wake, and task timeout detection."""
     candidates = [_PROVIDER_READ_PROBE_SECONDS]
     if idle_timeout_seconds > 0:
         candidates.append(idle_timeout_seconds)
     if sleep_wake_gap_seconds > 0:
         candidates.append(sleep_wake_gap_seconds)
+    if task_timeout_seconds > 0:
+        candidates.append(task_timeout_seconds)
     return max(0.01, min(candidates))
 
 
@@ -915,6 +1008,7 @@ async def stream_provider(
     config_override: Path | None = None,
     on_first_output: Callable[[], None] | None = None,
     renderer: StreamRenderer | None = None,
+    task_timeout_seconds: float = 0.0,
 ) -> StreamResult:
     """Run any supported AI CLI provider, parse output, and render to terminal.
 
@@ -944,6 +1038,9 @@ async def stream_provider(
         log_path: Optional path to write the raw output log.
         config_override: Provider-specific config override (e.g. OpenCode's
             ``OPENCODE_CONFIG``).  Passed to ``provider.get_env_overrides()``.
+        task_timeout_seconds: Wall-clock timeout in seconds for the entire task
+            attempt. 0 (default) means no timeout.  When exceeded, the provider
+            subprocess is killed with ``interruption_reason = "task_timeout"``.
 
     Returns:
         StreamResult with exit code, accumulated token usage, and accumulated
@@ -964,22 +1061,14 @@ async def stream_provider(
     # Determine instruction delivery: stdin pipe vs command-line argument.
     # Providers that set instruction_via_stdin=True do not include the
     # instruction in the command list — we write it to the process stdin
-    # instead.  This is the correct solution for the Windows CreateProcess
-    # command-line length limit (32 767 chars), which is reliably exceeded
-    # when planning prompts + ARCHITECT.md + execution.md are all
-    # concatenated into one argument (FileNotFoundError error 206 on Windows).
+    # instead.  This avoids OS command-line length limits on all platforms.
     _use_stdin = getattr(provider, "instruction_via_stdin", False)
-    _stdin_mode = asyncio.subprocess.PIPE if _use_stdin else None
 
-    # Warn when passing a large instruction as a command-line argument on any
-    # platform so operators are alerted before hitting OS limits.
-    _WIN_CMDLINE_LIMIT = 32_767
-    if not _use_stdin and len(instruction) > _WIN_CMDLINE_LIMIT // 2:
-        logger.warning(
-            f"Instruction for {provider.display_name} is {len(instruction)} chars — "
-            f"approaching the Windows CreateProcess command-line limit of {_WIN_CMDLINE_LIMIT}. "
-            "Consider enabling instruction_via_stdin on the provider."
-        )
+    # Always pipe stdin so the provider subprocess never detects a TTY.
+    # This prevents the provider CLI from configuring the terminal (raw mode,
+    # mouse tracking) which would corrupt Textual's alternate-screen state and
+    # break mouse clicks and keyboard input during execution.
+    _stdin_mode = asyncio.subprocess.PIPE
 
     # Build environment: inherit parent env + provider-specific overrides
     env = {
@@ -1015,9 +1104,12 @@ async def stream_provider(
     read_probe_seconds = _provider_read_probe_seconds(
         idle_timeout_seconds,
         sleep_wake_gap_seconds,
+        task_timeout_seconds,
     )
     interrupted: bool = False
     interruption_reason: str = ""
+    # Wall-clock task timeout tracking — monotonic clock for elapsed time
+    task_wall_start: float = time.monotonic() if task_timeout_seconds > 0 else 0.0
 
     def _fire_first_output() -> None:
         """Fire the on_first_output callback exactly once, swallowing errors."""
@@ -1046,7 +1138,7 @@ async def stream_provider(
             cwd=str(project_dir),
             stdin=_stdin_mode,
             stdout=asyncio.subprocess.PIPE,
-            stderr=None,
+            stderr=asyncio.subprocess.PIPE,
             limit=_SUBPROCESS_READ_LIMIT,
             **_spawn_kwargs,
         )
@@ -1056,19 +1148,50 @@ async def stream_provider(
         # close the write end so the CLI sees EOF and starts processing.
         # asyncio.StreamWriter.write() is synchronous; drain() and
         # wait_closed() are coroutines.
-        if _use_stdin and process.stdin is not None:
+        # Always close stdin immediately so the provider sees EOF on a
+        # non-TTY pipe. When _use_stdin=False this signals start without
+        # instruction data.
+        if process.stdin is not None:
+            if _use_stdin:
+                try:
+                    process.stdin.write(instruction.encode("utf-8"))
+                    await process.stdin.drain()
+                except Exception as stdin_exc:
+                    logger.debug(f"stdin write failed: {stdin_exc!r}")
+            # Close stdin immediately so the provider sees EOF on a non-TTY pipe.
             try:
-                process.stdin.write(instruction.encode("utf-8"))
-                await process.stdin.drain()
                 process.stdin.close()
                 await process.stdin.wait_closed()
             except Exception as stdin_exc:
-                logger.debug(f"stdin write failed: {stdin_exc!r}")
+                logger.debug(f"stdin close failed: {stdin_exc!r}")
 
         if process.stdout is None:
             raise RuntimeError(f"Failed to capture {provider.display_name} stdout")
 
         stdout_reader = process.stdout
+
+        # Drain stderr asynchronously to prevent pipe buffer exhaustion.
+        # stderr output is not parsed as events (providers emit structured
+        # events on stdout), but we must drain the pipe or the subprocess
+        # blocks when the OS pipe buffer fills. Log at debug for diagnostics.
+        _stderr_stream = process.stderr
+
+        if _stderr_stream is not None:
+
+            async def _drain_stderr() -> None:
+                """Drain stderr to prevent the subprocess from blocking on a full pipe."""
+                try:
+                    while True:
+                        line = await _stderr_stream.readline()
+                        if not line:
+                            break
+                        stderr_text = line.decode("utf-8", errors="replace").rstrip()
+                        if stderr_text:
+                            logger.debug(f"{provider.display_name} stderr: {stderr_text}")
+                except Exception as exc:
+                    logger.debug(f"stderr drain failed: {exc!r}")
+
+            asyncio.create_task(_drain_stderr())
 
         async def _read_stdout() -> None:
             """Read stdout line by line, parse events, render to terminal, and log."""
@@ -1116,6 +1239,23 @@ async def stream_provider(
                             if process is not None and process.returncode is None:
                                 _kill_process_tree(process)
                             break
+
+                        # Wall-clock task timeout — entire attempt exceeded budget
+                        if task_timeout_seconds > 0:
+                            task_elapsed = now_wall - task_wall_start
+                            if task_elapsed >= task_timeout_seconds:
+                                message = (
+                                    f"Task wall-clock timeout exceeded "
+                                    f"({int(task_elapsed)}s >= {int(task_timeout_seconds)}s); "
+                                    "terminating subprocess so the attempt can retry."
+                                )
+                                interrupted = True
+                                interruption_reason = "task_timeout"
+                                accumulated_text_parts.append(message)
+                                logger.warning(message)
+                                if process is not None and process.returncode is None:
+                                    _kill_process_tree(process)
+                                break
 
                         if idle_timeout_seconds > 0 and idle_elapsed >= idle_timeout_seconds:
                             message = (
@@ -2056,12 +2196,13 @@ def build_instruction(
     architect_md_content: str = "",
     run_tokens_used_so_far: int = 0,
     user_feedback: str | None = None,
+    upstream_artifacts: str | None = None,
 ) -> str:
     """Build the instruction string for opencode run.
 
-    Prepends the The Architect execution protocol so the user's agent understands
-    how PROGRESS.md works, how Done is detected, and what rules to follow.
-    Then gives the specific task instruction with a project-root boundary.
+    References The Architect execution protocol by file path (instead of
+    embedding it inline) so the provider AI CLI reads it itself.  This keeps
+    instructions small — a few KB instead of ~130KB.
 
     On retry attempts (attempt > 1), injects a structured summary of what
     the previous attempt did — files written, errors detected, bash commands
@@ -2081,33 +2222,27 @@ def build_instruction(
         config: The The Architect configuration.
         previous_summary: Optional summary of the previous attempt's work,
             injected into the retry instruction.
-        architect_md_content: Optional ARCHITECT.md content to inject into
-            the instruction so the build agent can read accumulated project
-            knowledge.
+        architect_md_content: When non-empty, a path reference to ARCHITECT.md
+            is injected so the build agent reads accumulated project knowledge.
+            The actual content is NOT embedded — only truthiness is checked.
         run_tokens_used_so_far: Cumulative tokens consumed by previous tasks
             in this run. Used to inform the agent of remaining budget.
         user_feedback: Optional user feedback message to inject into the
             instruction. Loaded from ``.architect/feedback.json`` by the runner
             and cleared after one-time consumption.
+        upstream_artifacts: Optional formatted upstream artifact content to
+            inject into the instruction. Produced by
+            ``format_upstream_artifacts()`` from the artifacts module. Empty
+            string or ``None`` means no section is injected.
 
     Returns:
         A complete instruction string for opencode.
     """
-    import importlib.resources as resources
-
     lines: list[str] = []
 
-    # --- Execution protocol (explains The Architect to the user's agent) ---
+    # --- Execution protocol — tell the agent where to read it from ---
     local_protocol = config.project_root / ".architect" / "prompts" / "execution.md"
-    protocol_text = ""
-    try:
-        protocol_text = local_protocol.read_text(encoding="utf-8").strip()
-    except OSError:
-        protocol_text = ""
-    if not protocol_text:
-        protocol_source = resources.files("the_architect.resources.prompts") / "execution.md"
-        protocol_text = protocol_source.read_text(encoding="utf-8").strip()
-    lines.append(protocol_text)
+    lines.append(f"Read {local_protocol} for The Architect execution protocol.")
 
     lines.append("")
     lines.append("---")
@@ -2147,10 +2282,38 @@ def build_instruction(
         lines.append("---")
         lines.append("")
 
-    # --- ARCHITECT.md — persistent project intelligence ---
+    # --- Upstream artifacts — injected by runner from dependency tasks ---
+    if upstream_artifacts:
+        # Truncate large artifacts to a summary to keep instructions small
+        _UPSTREAM_ARTIFACT_MAX = 5 * 1024  # 5 KB
+        artifact_content = upstream_artifacts
+        if len(upstream_artifacts) > _UPSTREAM_ARTIFACT_MAX:
+            artifact_content = (
+                upstream_artifacts[:_UPSTREAM_ARTIFACT_MAX]
+                + f"\n...(truncated, {len(upstream_artifacts)} chars total)"
+            )
+        lines.append(artifact_content)
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+    # --- Assigned model — injected when task has a per-task model assignment ---
+    if task.model:
+        lines.append("=== ASSIGNED MODEL ===")
+        lines.append(
+            "This task has been assigned a specific model by the planner. "
+            "The Architect runner will execute this task using the model below."
+        )
+        lines.append("")
+        lines.append(f"Model: {task.model}")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+    # --- ARCHITECT.md — persistent project intelligence (referenced by path) ---
     if architect_md_content:
-        lines.append("=== ARCHITECT.md — Persistent Project Intelligence ===")
-        lines.append(architect_md_content)
+        architect_path = config.project_root / "ARCHITECT.md"
+        lines.append(f"Read {architect_path} for persistent project intelligence.")
         lines.append("")
         lines.append("---")
         lines.append("")
@@ -2291,6 +2454,26 @@ def build_instruction(
                 "do not redo work just because this is a retry."
             )
 
+            # Failure reporting — injected only on retry, not in the static prompt
+            lines.append("")
+            lines.append(
+                "FAILURE REPORTING (this attempt is a retry — previous attempt(s) failed):"
+            )
+            lines.append(
+                "If you cannot complete this task, you MUST write a `## Failure Report` "
+                "section in PROGRESS.md. This is mandatory — the reviewer and future planner "
+                "depend on it."
+            )
+            lines.append(
+                "The Failure Report must include: What Was Tried, Root Cause, Technical Errors "
+                "(exact messages), Environment State, What Has NOT Been Tried, "
+                "Blocking Dependencies. Use bullet points — keep it scannable."
+            )
+            lines.append(
+                "If a `## Failure Report` already exists from a previous attempt, read it "
+                "and try a DIFFERENT approach. Do not repeat what already failed."
+            )
+
         if previous_summary:
             lines.append("")
             lines.append("=== PREVIOUS ATTEMPT CONTEXT ===")
@@ -2312,7 +2495,9 @@ def build_instruction(
             lines.append("")
             lines.append(f"Project documentation is available at: {docs_path}")
 
-    return "\n".join(lines)
+    result = "\n".join(lines)
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -2324,24 +2509,30 @@ def select_model(
     attempt: int,
     config: ArchitectConfig,
     model_override: str | None = None,
+    task_model: str | None = None,
 ) -> str | None:
     """Determine which model to use for this attempt.
 
     Priority order:
     1. model_override — explicit override (used for retries), highest priority
-    2. config.standalone_mode — bypass provider config entirely
-    3. None — let the provider use its configured default model
+    2. task_model — per-task assignment from task file ``## Model`` section
+    3. config.standalone_mode — bypass provider config entirely
+    4. None — let the provider use its configured default model
 
     Args:
         attempt: The current attempt number (1-based).
         config: The The Architect configuration.
-        model_override: Optional explicit model override.
+        model_override: Optional explicit model override (retry fallback).
+        task_model: Optional per-task model assignment from the task file.
+            Takes priority over standalone_mode but below model_override.
 
     Returns:
         Model name string to pass via ``--model``, or None to use the provider's default.
     """
     if model_override:
         return model_override
+    if task_model:
+        return task_model
     if config.standalone_mode:
         return config.standalone_mode
     return None
@@ -2426,6 +2617,94 @@ def _task_outcome_summary_for_exit(text: str, exit_code: int | None) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Artifact capture — post-task artifact declaration parsing
+# ---------------------------------------------------------------------------
+
+
+_ARTIFACT_DECLARATION_MARKER = "=== ARTIFACTS ==="
+
+
+def _capture_task_artifacts(
+    project: Path,
+    task_prefix: str,
+    agent_output: str,
+) -> int:
+    """Parse artifact declarations from the agent's output and store them.
+
+    Agents declare artifacts using a structured block in their output:
+
+    ```
+    === ARTIFACTS ===
+    - name: schema
+      type: json
+      content: |
+        {"fields": [...]}
+    ```
+
+    Only artifacts from completed tasks are stored.  Returns the number of
+    artifacts stored (0 when no declarations found or parsing fails).
+
+    Args:
+        project: The project root directory.
+        task_prefix: Task prefix that produced the artifacts (e.g. ``"T01"``).
+        agent_output: The agent's accumulated text output.
+
+    Returns:
+        Number of artifacts successfully stored.
+    """
+    import re as _re
+
+    if _ARTIFACT_DECLARATION_MARKER not in agent_output:
+        return 0
+
+    # Extract the artifact section
+    section = agent_output.split(_ARTIFACT_DECLARATION_MARKER, 1)[1]
+
+    # Parse individual artifact declarations
+    # Each starts with "- name:" and continues until the next "- name:" or end
+    artifact_pattern = _re.compile(
+        r"^- name:\s*(.+)$"
+        r"\s*type:\s*(.+)$"
+        r"\s*content:\s*\|?"
+        r"\s*([\s\S]*?)(?=^- name:|$)",
+        _re.MULTILINE,
+    )
+
+    count = 0
+    try:
+        from the_architect.core.artifacts import store_task_artifact
+
+        for match in artifact_pattern.finditer(section):
+            name = match.group(1).strip()
+            atype = match.group(2).strip()
+            content = match.group(3).strip()
+            # Remove leading indentation from content lines
+            content_lines = content.split("\n")
+            content_lines = [
+                line[4:] if len(line) >= 4 and line[:4].isspace() else line
+                for line in content_lines
+            ]
+            content = "\n".join(content_lines).strip()
+
+            if name and content:
+                store_task_artifact(
+                    project=project,
+                    task_id=task_prefix,
+                    name=name,
+                    content=content,
+                    artifact_type=atype or "text",
+                )
+                count += 1
+    except Exception as exc:
+        logger.warning(
+            f"Task {task_prefix}: artifact capture failed — "
+            f"continuing without storing artifacts: {exc!r}"
+        )
+
+    return count
+
+
+# ---------------------------------------------------------------------------
 # Single attempt
 # ---------------------------------------------------------------------------
 
@@ -2441,6 +2720,8 @@ async def run_task_once(
     renderer: StreamRenderer | None = None,
     run_tokens_used_so_far: int = 0,
     user_feedback: str | None = None,
+    upstream_artifacts: str | None = None,
+    task_model: str | None = None,
 ) -> TaskResult:
     """Run one attempt of a task.
 
@@ -2459,6 +2740,12 @@ async def run_task_once(
             in this run, passed to build_instruction for budget context.
         user_feedback: Optional user feedback message to inject into the
             instruction, loaded from ``.architect/feedback.json``.
+        upstream_artifacts: Optional formatted upstream artifact content to
+            inject into the instruction. Produced by
+            ``format_upstream_artifacts()`` from the artifacts module.
+        task_model: Optional per-task model assignment from the task file.
+            Used in the model resolution chain between model_override and
+            config.standalone_mode.
 
     Returns:
         TaskResult with status, duration, tokens, and model info.
@@ -2496,8 +2783,9 @@ async def run_task_once(
         architect_md_content=architect_md_content,
         run_tokens_used_so_far=run_tokens_used_so_far,
         user_feedback=user_feedback,
+        upstream_artifacts=upstream_artifacts,
     )
-    model = select_model(attempt, config, model_override)
+    model = select_model(attempt, config, model_override, task_model)
 
     # When no explicit model override is set, resolve the actual model from
     # the provider so TaskResult.model is populated (for tasks/SUMMARY.md, terminal
@@ -2558,6 +2846,10 @@ async def run_task_once(
 
     start_time = time.monotonic()
 
+    # Set wall-clock timeout start for this attempt
+    if config.task_timeout > 0:
+        _set_task_timeout_start(task.prefix)
+
     try:
         stream_result = await stream_provider(
             instruction=instruction,
@@ -2568,6 +2860,7 @@ async def run_task_once(
             log_path=log_path,
             on_first_output=on_first_output,
             renderer=renderer,
+            task_timeout_seconds=float(config.task_timeout),
         )
 
         duration = time.monotonic() - start_time
@@ -2724,6 +3017,9 @@ async def run_task_once(
             outcome_summary="Downstream impact: none",
             baseline_path=baseline_path_str,
         )
+    finally:
+        # Always clear the wall-clock timeout start on attempt completion
+        _clear_task_timeout_start(task.prefix)
 
 
 # ---------------------------------------------------------------------------
@@ -2744,6 +3040,7 @@ async def run_task(
     on_first_output: Callable[[], None] | None = None,
     renderer: StreamRenderer | None = None,
     run_tokens_used_so_far: int = 0,
+    plan: TaskPlan | None = None,
 ) -> TaskResult:
     """Run a task with automatic retries, model fallbacks, and circuit breaking.
 
@@ -2781,6 +3078,8 @@ async def run_task(
         on_circuit_event: Optional callback for circuit/cooldown/replan events.
             Called with (event_name, data_dict) where event_name is one of:
             "circuit_state_change", "cooldown_start", "cooldown_end", "replan_start", "replan_end".
+        plan: Optional TaskPlan containing all tasks. Used to resolve
+            ``depends_on`` for upstream artifact loading.
 
     Returns:
         TaskResult with final status, accumulated tokens, and model info.
@@ -2835,6 +3134,34 @@ async def run_task(
     except Exception:
         pass  # Non-fatal — execution proceeds without feedback
 
+    # ── Load upstream artifacts for injection into execution instructions ──
+    upstream_artifacts: str | None = None
+    upstream_artifact_count = 0
+    if plan is not None:
+        try:
+            from the_architect.core.artifacts import (
+                format_upstream_artifacts,
+                load_upstream_artifacts,
+            )
+
+            upstream = load_upstream_artifacts(config.project_root, task.prefix, plan.tasks)
+            if upstream:
+                upstream_artifacts = format_upstream_artifacts(upstream)
+                upstream_artifact_count = len(upstream)
+                logger.info(
+                    f"Task {task.prefix}: loaded {len(upstream)} upstream artifact(s) "
+                    f"from dependency tasks"
+                )
+                # Push artifact count to the TUI footer for visibility
+                if renderer is not None:
+                    renderer.set_artifacts(upstream_artifact_count)
+        except Exception:
+            pass  # Non-fatal — execution proceeds without upstream artifacts
+    else:
+        # No plan — clear any leftover artifact indicator
+        if renderer is not None:
+            renderer.set_artifacts(0)
+
     # ── Pre-run circuit check ───────────────────────────────────────────
     if cb is not None:
         allowed, reason = cb.can_run(task.prefix)
@@ -2882,9 +3209,11 @@ async def run_task(
     # agent failure, so it should not burn a retry slot either.
     _MAX_SLEEP_WAKE_BONUS_RETRIES = 10
     _MAX_IDLE_TIMEOUT_BONUS_RETRIES = 5
+    _MAX_TASK_TIMEOUT_BONUS_RETRIES = 5
     attempt = 0
     sleep_wake_retries = 0
     idle_timeout_retries = 0
+    task_timeout_retries = 0
     while attempt < config.max_retries:
         attempt += 1
 
@@ -2910,7 +3239,7 @@ async def run_task(
 
         if on_attempt_start:
             try:
-                model_for_attempt = select_model(attempt, config, model_override)
+                model_for_attempt = select_model(attempt, config, model_override, task.model)
                 # When select_model returns None (no override, no standalone mode),
                 # resolve the actual model from the provider so the side panel shows
                 # the real model name instead of blank.  Mirrors what run_task_once
@@ -2949,6 +3278,8 @@ async def run_task(
                 renderer=renderer,
                 run_tokens_used_so_far=run_tokens_used_so_far,
                 user_feedback=user_feedback,
+                upstream_artifacts=upstream_artifacts,
+                task_model=task.model,
             )
         except Exception as exc:
             # run_task_once should never raise (it has its own catch-all),
@@ -3136,10 +3467,11 @@ async def run_task(
                 except Exception:
                     pass
 
-            # This task succeeded — clear any sleep-interrupted and idle-timeout
-            # flags so the Infinite Loop driver doesn't mistakenly reset it to Pending.
+            # This task succeeded — clear any sleep-interrupted, idle-timeout, and
+            # task-timeout flags so the Infinite Loop driver doesn't mistakenly reset it to Pending.
             _clear_sleep_interrupted(task.prefix)
             _clear_idle_timeout(task.prefix)
+            _clear_task_timeout(task.prefix)
 
             # Clear user feedback after successful consumption (one-time use)
             if user_feedback is not None:
@@ -3281,6 +3613,59 @@ async def run_task(
                     pass
             continue
 
+        # ── Wall-clock task timeout: don't consume a retry slot ──────────
+        # When the task exceeded its configured wall-clock timeout, the
+        # subprocess was killed by the task-timeout watchdog. This is a
+        # budget/environmental event — not a real agent failure.  Mirror
+        # the idle-timeout logic: grant up to
+        # ``_MAX_TASK_TIMEOUT_BONUS_RETRIES`` bonus retries so the agent
+        # gets a fair chance without burning normal retry slots.
+        if (
+            not success
+            and result.interruption_reason == "task_timeout"
+            and task_timeout_retries < _MAX_TASK_TIMEOUT_BONUS_RETRIES
+        ):
+            task_timeout_retries += 1
+            _mark_task_timeout(task.prefix)
+            _clear_task_timeout_start(task.prefix)
+            task_pause = _idle_timeout_retry_pause_seconds()
+            logger.warning(
+                f"Task {task.prefix} attempt {attempt} killed by wall-clock task timeout; "
+                f"pausing {int(task_pause)}s then granting bonus retry "
+                f"(task_timeout_retries={task_timeout_retries}/{_MAX_TASK_TIMEOUT_BONUS_RETRIES})"
+            )
+            if on_circuit_event:
+                try:
+                    on_circuit_event(
+                        "task_timeout_detected",
+                        {
+                            "task_id": task.prefix,
+                            "task_timeout_retries": str(task_timeout_retries),
+                        },
+                    )
+                except Exception:
+                    pass
+            _set_renderer_footer(
+                renderer,
+                _footer_text(
+                    f"{task.prefix} {task.title or task.name}",
+                    f"task timeout | waiting {int(task_pause)}s "
+                    f"(task-timeout-retry {task_timeout_retries})",
+                ),
+            )
+            try:
+                await asyncio.sleep(task_pause)
+            except asyncio.CancelledError:
+                logger.warning(f"Task-timeout retry pause cancelled for task {task.prefix}")
+                break
+            attempt -= 1  # don't consume the retry slot
+            if on_circuit_event:
+                try:
+                    on_circuit_event("task_timeout_resumed", {"task_id": task.prefix})
+                except Exception:
+                    pass
+            continue
+
         # ── Free mode: rotate model on rate limit or model-not-found ──────
         if (
             result.rate_limit_hit
@@ -3366,6 +3751,10 @@ async def run_task(
         # Belt-and-suspenders: ensure the Infinite Loop driver can detect
         # this even if idle_timeout_retries was somehow exhausted.
         _mark_idle_timeout(task.prefix)
+    if _last_reason == "task_timeout":
+        # Belt-and-suspenders: ensure the Infinite Loop driver can detect
+        # this even if task_timeout_retries was somehow exhausted.
+        _mark_task_timeout(task.prefix)
     return TaskResult(
         prefix=task.prefix,
         title=task.title or task.name,
@@ -3752,6 +4141,7 @@ async def run_all(
     provider: ArchitectProvider | None = None,
     on_first_output: Callable[[], None] | None = None,
     renderer: StreamRenderer | None = None,
+    verify_resume: bool = True,
 ) -> bool:
     """Run all pending tasks in order.
 
@@ -3777,6 +4167,10 @@ async def run_all(
         on_first_output: Called (at most once per task) the first time the
             provider produces a user-visible line of output.  Used by the CLI
             to stop the startup spinner the moment real output begins.
+        verify_resume: When ``True`` (default), verify completed tasks against
+            their baselines before resuming a partially-finished run.  Stale
+            tasks are re-executed; valid tasks are skipped.  Set to ``False``
+            via ``--no-verify-resume`` to disable.
 
     Returns:
         True if all tasks completed successfully.
@@ -3822,6 +4216,7 @@ async def run_all(
             provider=provider,
             on_first_output=on_first_output,
             renderer=renderer,
+            verify_resume=verify_resume,
         )
     finally:
         release_lock(project_dir)
@@ -3843,6 +4238,7 @@ async def _run_all_inner(
     provider: ArchitectProvider | None = None,
     on_first_output: Callable[[], None] | None = None,
     renderer: StreamRenderer | None = None,
+    verify_resume: bool = True,
 ) -> bool:
     """Inner run_all implementation (after lock acquisition).
 
@@ -3855,6 +4251,11 @@ async def _run_all_inner(
     are all satisfied) are launched concurrently via ``asyncio.gather``.
     Token budgets, PROGRESS.md reconciliation, and circuit breaker state are
     coordinated with ``asyncio.Lock`` to handle concurrent updates.
+
+    When *verify_resume* is ``True`` (default), completed tasks from a
+    previous run are verified against their baselines before the scheduler
+    pre-populates terminal states.  Valid tasks remain terminal (skipped);
+    stale or missing-baseline tasks are re-executed.
     """
     from the_architect.core.circuit import CircuitBreaker
     from the_architect.core.parallel_scheduler import ParallelScheduler
@@ -3906,10 +4307,84 @@ async def _run_all_inner(
     # so they are excluded from the final verdict check.
     from the_architect.core.progress import task_is_done
 
+    # ── Resume verification ──────────────────────────────────────────
+    # When resuming an interrupted run, verify completed tasks against
+    # their baselines before pre-populating terminal states.  Valid
+    # tasks remain terminal (skipped); stale or missing-baseline tasks
+    # are re-executed.  This replaces the binary Execute/Replan choice.
+    _verify_skip: set[str] = set()
+    if verify_resume:
+        _has_done = any(_t.status.value == "done" for _t in plan.tasks)
+        if _has_done:
+            try:
+                from the_architect.core.resume_verification import (
+                    verify_all_completed_tasks,
+                )
+
+                _verify_results = verify_all_completed_tasks(plan, config)
+                _valid_count = sum(1 for r in _verify_results if r.status == "valid")
+                _stale_count = sum(1 for r in _verify_results if r.status == "stale")
+                _missing_count = sum(1 for r in _verify_results if r.status == "missing")
+                logger.info(
+                    "Resume verification: %d valid, %d stale, %d missing",
+                    _valid_count,
+                    _stale_count,
+                    _missing_count,
+                )
+                for r in _verify_results:
+                    if r.status == "valid":
+                        logger.info(
+                            "Resume verification %s: valid — %s",
+                            r.task_id,
+                            r.reason,
+                        )
+                    elif r.status == "stale":
+                        logger.warning(
+                            "Resume verification %s: stale — %s (will re-execute)",
+                            r.task_id,
+                            r.reason,
+                        )
+                        _verify_skip.add(r.task_id)
+                    else:
+                        logger.warning(
+                            "Resume verification %s: missing baseline — %s (will re-execute)",
+                            r.task_id,
+                            r.reason,
+                        )
+                        _verify_skip.add(r.task_id)
+
+                # Push verification summary to execution screen Diagnostics tab
+                try:
+                    from the_architect.tui.runner import active_runner
+
+                    _ar = active_runner()
+                    if _ar is not None:
+                        _ar.app.push_event_line(
+                            "resume_verification",
+                            {
+                                "valid": _valid_count,
+                                "stale": _stale_count,
+                                "missing": _missing_count,
+                            },
+                        )
+                except Exception:
+                    pass
+
+            except Exception as _exc:
+                logger.warning("Resume verification failed — proceeding without it: {_exc!r}")
+
     _pre_existing_terminal: set[str] = set()
     for _t in plan.tasks:
         if _t.status.value == "done" or task_is_resolved(config.progress_file, _t.prefix):
             _pre_existing_terminal.add(_t.prefix)
+            # Stale or missing-baseline tasks must NOT be pre-populated
+            # as terminal — they need to be re-executed.
+            if _t.prefix in _verify_skip:
+                logger.debug(
+                    "Skipping terminal pre-population for %s (stale/missing baseline)",
+                    _t.prefix,
+                )
+                continue
             if task_is_done(config.progress_file, _t.prefix):
                 scheduler.complete_task(_t.prefix)
                 _task_result_statuses[_t.prefix] = "done"
@@ -4048,6 +4523,7 @@ async def _run_all_inner(
                 on_first_output=on_first_output,
                 renderer=renderer,
                 run_tokens_used_so_far=_run_tokens_so_far,
+                plan=plan,
             )
         except Exception as exc:
             logger.error(f"Task {prefix} raised unexpectedly during run_task: {exc!r}")
@@ -4060,6 +4536,145 @@ async def _run_all_inner(
                 tokens=TokenUsage(),
                 model="",
             )
+
+        # ── Validation gate: post-task CI checks ──────────────────────────
+        # Run after the agent signals done but before the runner proceeds.
+        # If the gate fails, attempt fix-up runs (if configured) before
+        # reclassifying the task from "done" to "failed".
+        # Gate subprocess tokens do NOT count against the token budget.
+        if task_result.status == "done" and config.validation_gate_config.enabled:
+            # Skip validation gate during pytest runs — existing tests
+            # were not designed around the gate and would spawn real
+            # CI subprocesses.  The gate has its own test suite (T03).
+            if os.environ.get("PYTEST_CURRENT_TEST"):
+                logger.debug(f"Task {prefix} — validation gate skipped during pytest run")
+            else:
+                from the_architect.core.validation_gate import (
+                    run_validation_gate_with_fixup,
+                )
+
+                logger.info(
+                    f"Task {prefix} — running validation gate "
+                    f"({len(config.validation_gate_config.checks)} check(s), "
+                    f"fail_fast={config.validation_gate_config.fail_fast}, "
+                    f"timeout={config.validation_gate_config.timeout}s, "
+                    f"fixup_attempts={config.validation_gate_config.fixup_attempts})"
+                )
+                gate_result = await run_validation_gate_with_fixup(
+                    project_root=config.project_root,
+                    config=config.validation_gate_config,
+                    provider=provider,
+                    task_prefix=prefix,
+                    agent_override=config.execution_agent or None,
+                    renderer=renderer,
+                    log_dir=config.project_root / ".architect" / "logs",
+                )
+                task_result.validation_gate = gate_result
+
+                if not gate_result.passed:
+                    failed_checks = [r.name for r in gate_result.checks if r.status != "pass"]
+                    skip_msg = f"validation gate failed: {', '.join(failed_checks)}"
+                    logger.warning(
+                        f"Task {prefix} — validation gate FAILED — "
+                        f"reclassifying from done to failed: {skip_msg}"
+                    )
+                    # Detail log for each failed check
+                    for check in gate_result.checks:
+                        if check.status != "pass":
+                            logger.warning(
+                                f"  Check '{check.name}': {check.status} "
+                                f"in {check.duration}s — {check.output[:200]}"
+                            )
+
+                    # Reclassify task from done to failed
+                    task_result.status = "failed"
+                    task_result.skip_reason = skip_msg
+
+                    # Notify circuit breaker of the gate-induced failure
+                    if on_circuit_event:
+                        try:
+                            on_circuit_event(
+                                "validation_gate_failed",
+                                {
+                                    "task_id": prefix,
+                                    "failed_checks": ", ".join(failed_checks),
+                                },
+                            )
+                        except Exception:
+                            pass
+
+        # ── Post-task artifact capture ─────────────────────────────────────
+        # Parse the agent's output for artifact declarations and store them
+        # so downstream tasks can consume them.  Only runs for completed tasks
+        # (after validation gate reclassification).
+        if task_result.status == "done":
+            artifact_count = _capture_task_artifacts(
+                config.project_root,
+                prefix,
+                task_result.accumulated_text,
+            )
+            if artifact_count > 0:
+                logger.info(
+                    f"Task {prefix}: captured {artifact_count} artifact(s) for downstream tasks"
+                )
+                # Push artifact count to the TUI for visibility
+                try:
+                    from the_architect.tui.runner import active_runner
+
+                    _ar = active_runner()
+                    if _ar is not None:
+                        _ar.app.push_event_line(
+                            "artifacts",
+                            {
+                                "task_id": prefix,
+                                "count": artifact_count,
+                                "sources": [prefix],
+                            },
+                        )
+                except Exception:
+                    pass
+
+        # ── Post-task hooks ─────────────────────────────────────────────
+        # Fire post_task hooks after each task completes (success or failure).
+        # Non-blocking, non-fatal — follows the notification silent-failure pattern.
+        try:
+            from the_architect.core.hooks import (
+                HookEvent,
+                execute_hooks_for_event,
+                load_hooks,
+            )
+
+            _hooks = load_hooks(config.project_root)
+            if _hooks:
+                _hook_context = {
+                    "TASK_ID": prefix,
+                    "TASK_STATUS": task_result.status,
+                    "TASK_TITLE": task_result.title,
+                }
+                _hook_results = await execute_hooks_for_event(
+                    _hooks, HookEvent.post_task, context=_hook_context
+                )
+                for _hr in _hook_results:
+                    if _hr.exit_code != 0:
+                        logger.warning(
+                            f"Post-task hook failed (exit {_hr.exit_code}) "
+                            f"for {prefix}: {_hr.command!r}"
+                        )
+                    else:
+                        logger.info(f"Post-task hook completed for {prefix}: {_hr.command!r}")
+                    # Push hook execution event to the TUI diagnostics tab
+                    if renderer is not None:
+                        renderer.push_event_line(
+                            "hooks",
+                            {
+                                "event": str(_hr.event),
+                                "command": _hr.command,
+                                "exit_code": str(_hr.exit_code),
+                                "duration": f"{_hr.duration_seconds:.1f}s",
+                            },
+                        )
+        except Exception as _hook_exc:
+            logger.debug(f"Post-task hook failed (non-fatal): {_hook_exc!r}")
 
         # ── Reconcile PROGRESS.md under lock ─────────────────────────────
         async with _progress_lock:

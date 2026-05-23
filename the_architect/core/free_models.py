@@ -38,13 +38,18 @@ def _get_openrouter_models_url() -> str:
     return f"{base}/models"
 
 
-# Rate-limit error patterns detected in opencode output / exit behaviour.
-# These are checked against the accumulated text and error events from
-# opencode to decide whether the current model hit its rate limit.
-_RATE_LIMIT_PATTERNS: list[str] = [
+# ---------------------------------------------------------------------------
+# Canonical rate-limit and model-not-found phrase lists.
+# These are the single source of truth used by all four providers
+# (OpenCode, Claude Code, Codex CLI, Gemini CLI) for consistent error
+# detection across the entire codebase.
+# ---------------------------------------------------------------------------
+
+RATE_LIMIT_PHRASES: list[str] = [
     "rate limit",
     "rate_limit",
     "429",
+    "529",
     "too many requests",
     "quota exceeded",
     "capacity",
@@ -52,18 +57,60 @@ _RATE_LIMIT_PATTERNS: list[str] = [
     "temporarily unavailable",
     "server is busy",
     "try again later",
+    "usage limit",
 ]
 
-# Model-not-found error patterns — these indicate the model doesn't exist
-# or isn't available for the requested use (e.g. non-text models used for
-# code generation).  In free mode, the rotator should skip to the next model.
-_MODEL_NOT_FOUND_PATTERNS: list[str] = [
+MODEL_NOT_FOUND_PHRASES: list[str] = [
     "model not found",
+    "model_not_found",
     "providermodelnotfounderror",
+    "no such model",
     "not available for this provider",
     "invalid model",
     "unknown model",
+    "does not exist",
 ]
+
+
+def is_rate_limit_text(text: str) -> bool:
+    """Return True if the text signals a provider rate limit.
+
+    This is the canonical plain-text rate-limit detector used by all four
+    providers.  It checks every phrase in ``RATE_LIMIT_PHRASES`` against
+    the lower-cased input string.
+
+    Args:
+        text: A plain-text line or error message to inspect.
+
+    Returns:
+        True if a rate-limit phrase is found.
+    """
+    lower = text.lower()
+    return any(phrase in lower for phrase in RATE_LIMIT_PHRASES)
+
+
+def is_model_not_found_text(text: str) -> bool:
+    """Return True if the text signals that the requested model is unavailable.
+
+    This is the canonical plain-text model-not-found detector used by all
+    four providers.  It checks every phrase in ``MODEL_NOT_FOUND_PHRASES``
+    against the lower-cased input string.
+
+    Args:
+        text: A plain-text line or error message to inspect.
+
+    Returns:
+        True if a model-not-found phrase is found.
+    """
+    lower = text.lower()
+    return any(phrase in lower for phrase in MODEL_NOT_FOUND_PHRASES)
+
+
+# Legacy aliases — kept for backward compatibility with existing callers
+# that reference the underscore-prefixed names.  They point to the same
+# canonical lists above so no external code breaks.
+_RATE_LIMIT_PATTERNS = RATE_LIMIT_PHRASES
+_MODEL_NOT_FOUND_PATTERNS = MODEL_NOT_FOUND_PHRASES
 
 
 @dataclass
@@ -295,7 +342,7 @@ def is_rate_limit_error(accumulated_text: str, exit_code: int) -> bool:
     text_lower = accumulated_text.lower()
 
     # Check accumulated text for rate-limit patterns
-    for pattern in _RATE_LIMIT_PATTERNS:
+    for pattern in RATE_LIMIT_PHRASES:
         if pattern in text_lower:
             return True
 
@@ -330,7 +377,7 @@ def is_rate_limit_event(event_line: str) -> bool:
         return False
 
     message = str(event.get("message", event.get("error", ""))).lower()
-    for pattern in _RATE_LIMIT_PATTERNS:
+    for pattern in RATE_LIMIT_PHRASES:
         if pattern in message:
             return True
 
@@ -356,7 +403,7 @@ def is_model_not_found_error(accumulated_text: str, exit_code: int) -> bool:
         True if a model-not-found error is detected.
     """
     text_lower = accumulated_text.lower()
-    for pattern in _MODEL_NOT_FOUND_PATTERNS:
+    for pattern in MODEL_NOT_FOUND_PHRASES:
         if pattern in text_lower:
             return True
     return False
@@ -386,7 +433,7 @@ def is_model_not_found_event(event_line: str) -> bool:
         return False
 
     message = str(event.get("message", event.get("error", ""))).lower()
-    for pattern in _MODEL_NOT_FOUND_PATTERNS:
+    for pattern in MODEL_NOT_FOUND_PHRASES:
         if pattern in message:
             return True
 

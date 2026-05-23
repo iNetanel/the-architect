@@ -17,15 +17,20 @@ from __future__ import annotations
 import datetime
 from typing import TYPE_CHECKING
 
+from loguru import logger
+from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Static
 
+from the_architect.tui.constants import ANIMATION_TICK_INTERVAL
 from the_architect.tui.widgets import MatrixRain, next_matrix_frame
 
 if TYPE_CHECKING:
+    from textual.timer import Timer
+
     from the_architect.core.runner import TaskResult, TokenUsage
     from the_architect.core.success import RetrospectiveRound
 
@@ -152,6 +157,7 @@ class SuccessScreen(Screen[bool]):
         self._retrospective_rounds = retrospective_rounds or []
         self._frame_index = 0
         self._current_frame = next_matrix_frame(self._frame_index)
+        self._timer: Timer | None = None
         self._session_cost_usd = session_cost_usd
         self._token_budget_per_run = token_budget_per_run
         # If cost was not supplied, try to compute it from results
@@ -170,7 +176,8 @@ class SuccessScreen(Screen[bool]):
                             model=r.model,
                         )
                 self._session_cost_usd = _computed
-            except Exception:
+            except Exception as exc:
+                logger.debug(f"SuccessScreen cost estimation failed: {exc!r}")
                 self._session_cost_usd = 0.0
 
     def compose(self) -> ComposeResult:
@@ -196,7 +203,34 @@ class SuccessScreen(Screen[bool]):
 
     def on_mount(self) -> None:
         """Start the spinner and paint the initial frame."""
-        self.set_interval(0.1, self._tick_spinner)
+        self._timer = self.set_interval(ANIMATION_TICK_INTERVAL, self._tick_spinner)
+
+    def on_hide(self) -> None:
+        """Pause the spinner animation while the screen is hidden behind an overlay."""
+        if self._timer is not None:
+            self._timer.pause()
+
+    def on_resume(self) -> None:
+        """Restart the spinner animation when the screen becomes visible again."""
+        if self._timer is not None:
+            self._timer.resume()
+
+    def on_unmount(self) -> None:
+        """Stop the spinner timer to prevent leaks after removal."""
+        if self._timer is not None:
+            self._timer.stop()
+            self._timer = None
+
+    def on_resize(self, event: events.Resize) -> None:
+        """Refresh task table layout after terminal resize.
+
+        The text-art task table is rendered once during compose().
+        On resize, we refresh the widget so column widths recalculate.
+        """
+        try:
+            self.query_one("#success_task_table", Static).update(self._render_task_table())
+        except Exception as exc:
+            logger.debug(f"SuccessScreen resize task table update failed: {exc!r}")
 
     # ── Actions ────────────────────────────────────────────────────────
 
@@ -212,8 +246,8 @@ class SuccessScreen(Screen[bool]):
         self._current_frame = next_matrix_frame(self._frame_index)
         try:
             self.query_one("#success_title", Static).update(self._render_title())
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"SuccessScreen tick spinner update failed: {exc!r}")
 
     def _render_title(self) -> str:
         return f"{self._current_frame}  Run complete"

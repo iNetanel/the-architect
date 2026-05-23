@@ -80,3 +80,18 @@ def isolate_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     ``monkeypatch.chdir(...)`` themselves — the later chdir wins.
     """
     monkeypatch.chdir(tmp_path)
+
+
+@pytest.fixture(autouse=True)
+def reset_sigint_counter() -> None:
+    """Reset SIGINT handler state between tests.
+
+    The _sigint_kill_handler uses module-level counters for its
+    second-Ctrl+C forced-kill logic. Tests that exercise this handler
+    may leave the counter in a non-zero state, causing subsequent
+    tests to trigger os._exit(130) unexpectedly. Reset to clean state.
+    """
+    import the_architect.tui.runner as runner_mod
+
+    runner_mod._SIGINT_COUNT = 0
+    runner_mod._SIGINT_FIRST_AT = 0.0
