@@ -320,7 +320,7 @@ class TestExecuteHook:
         assert result.exit_code == 0
         assert "hello" in result.stdout
         assert result.error == ""
-        assert result.duration_seconds > 0
+        assert result.duration_seconds >= 0  # can be 0.0 on fast systems/commands
 
     @pytest.mark.asyncio
     async def test_hook_with_nonzero_exit(self) -> None:
