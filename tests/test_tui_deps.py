@@ -57,13 +57,13 @@ def _make_project(
 
     # architect.toml — minimal so load_config returns defaults
     config_file = project / "architect.toml"
-    config_file.write_text("[architect]\n")
+    config_file.write_text("[architect]\n", encoding="utf-8")
 
     if tasks:
         tasks_dir = project / "tasks"
         tasks_dir.mkdir()
         for filename, content in tasks.items():
-            (tasks_dir / filename).write_text(content)
+            (tasks_dir / filename).write_text(content, encoding="utf-8")
 
     return project
 

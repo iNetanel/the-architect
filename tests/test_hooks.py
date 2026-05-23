@@ -17,6 +17,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -342,6 +343,10 @@ class TestExecuteHook:
         assert "error_msg" in result.stderr
 
     @pytest.mark.asyncio
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="POSIX env var syntax ($TASK_ID) not supported on Windows CMD",
+    )
     async def test_hook_with_context_env_vars(self) -> None:
         hook = HookConfig(
             event=HookEvent.post_task,
@@ -371,7 +376,8 @@ class TestExecuteHook:
             command="nonexistent_command_xyz_12345",
         )
         result = await execute_hook(hook)
-        assert result.exit_code == 127
+        expected_exit = 1 if sys.platform == "win32" else 127
+        assert result.exit_code == expected_exit
         assert "not found" in result.stderr.lower()
         assert result.error == ""
 
@@ -476,6 +482,10 @@ class TestExecuteHooksForEvent:
         assert results[2].command == "echo second"
 
     @pytest.mark.asyncio
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="POSIX env var syntax ($TASK_ID) not supported on Windows CMD",
+    )
     async def test_passes_context_to_hooks(self) -> None:
         hooks = [
             HookConfig(event=HookEvent.post_task, command="echo $TASK_ID"),
@@ -848,6 +858,10 @@ class TestIntegration:
         assert loaded[0].command == cmd
 
     @pytest.mark.asyncio
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="POSIX env var syntax ($TASK_ID) not supported on Windows CMD",
+    )
     async def test_execute_hook_with_multiple_context_vars(self) -> None:
         hook = HookConfig(
             event=HookEvent.post_task,

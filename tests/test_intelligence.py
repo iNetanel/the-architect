@@ -921,7 +921,8 @@ class TestPlanningInstructionContext:
         instruction = build_planning_instruction(request, "project context")
         assert "ARCHITECT.md" in instruction
         # Content is referenced by path, not embedded inline
-        assert str(tmp_path / "ARCHITECT.md") in instruction
+        # Normalize separators for cross-platform comparison (Windows uses \)
+        assert str(tmp_path / "ARCHITECT.md").replace("\\", "/") in instruction
         assert "Use REST only" not in instruction
 
     def test_instruction_includes_structure_report(self, tmp_path: Path) -> None:

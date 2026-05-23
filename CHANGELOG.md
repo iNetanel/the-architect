@@ -9,6 +9,12 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- Cross-platform test fixes: path separator normalization for ARCHITECT.md assertions, POSIX env var syntax skipped on Windows, exit code 127 vs 1 handling, provider detection mocked in TUI cancel test (build 10658)
+
 ## [1.4.0] (build 10657) — 2026-05-23
 
 ### What's New

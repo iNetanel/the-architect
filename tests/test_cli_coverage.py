@@ -1165,6 +1165,7 @@ class TestCollectPlanningPrompts:
                 "the_architect.tui.screens.pre_run.run_pending_tasks_screen",
                 return_value=False,
             ),
+            patch("the_architect.cli.detect_provider"),
         ):
             with pytest.raises(SystemExit) as exc_info:
                 _collect_planning_prompts(
