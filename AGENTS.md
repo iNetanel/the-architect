@@ -45,7 +45,7 @@ CI runs: `ruff check .` → `mypy the_architect/` → `pytest tests/` on Python 
 
 ```python
 # /version.py — find this line and add 1:
-__build__ = 10001   # was 10000
+__build__ = 10001  # was 10000
 ```
 
 - File: `/workspaces/the-architect/version.py` — **NOT** `the_architect/version.py`

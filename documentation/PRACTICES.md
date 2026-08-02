@@ -90,7 +90,7 @@ The build counter lives in the **project root** `version.py`, NOT in
 
 ```python
 # /version.py — find this line and add 1:
-__build__   = 1042   # was 1041
+__build__ = 1042  # was 1041
 ```
 
 That's the only change needed. `__full_version__` and `__banner__` are derived

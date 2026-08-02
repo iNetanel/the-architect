@@ -53,7 +53,7 @@ This includes:
 ```python
 # version.py (repo root) — bump __build__ for every PR
 __version__ = "1.0.0"
-__build__   = 10043   # <- always increment this
+__build__ = 10043  # <- always increment this
 ```
 
 > `the_architect/version.py` is a different file. It reads the SemVer from

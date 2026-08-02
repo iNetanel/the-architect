@@ -1506,10 +1506,10 @@ Retrospective is **skipped** when:
 
 ```python
 class RetrospectiveRequest(BaseModel):
-    round_number: int          # 1-based round number
+    round_number: int  # 1-based round number
     project_dir: Path
-    original_goal: str         # User's original goal for context
-    model_override: str | None # Optional explicit model for reviewer
+    original_goal: str  # User's original goal for context
+    model_override: str | None  # Optional explicit model for reviewer
 ```
 
 ### What the Reviewer Is NOT Allowed to Do
