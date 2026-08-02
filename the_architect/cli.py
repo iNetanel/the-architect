@@ -42,6 +42,7 @@ from datetime import UTC
 
 import click
 from loguru import logger
+from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.layout.dimension import D
 from rich.console import Console
 from rich.markup import escape
@@ -1061,8 +1062,8 @@ def _prompt_provider_selection(available: list[ArchitectProvider]) -> ArchitectP
         cancelled = True
         event.app.exit()
 
-    def _render() -> list[tuple[str, str]]:
-        lines: list[tuple[str, str]] = []
+    def _render() -> StyleAndTextTuples:
+        lines: StyleAndTextTuples = []
         lines.append(("class:header", "\n The Architect  "))
         lines.append(("class:dim", "select provider\n\n"))
         lines.append(("class:dim", "  Multiple AI CLI providers are installed.\n"))
@@ -1176,7 +1177,7 @@ def _prompt_update_action(update_msg: str, install_hint: str) -> str:
         result = "exit"
         event.app.exit()
 
-    def _render() -> list[tuple[str, str]]:
+    def _render() -> StyleAndTextTuples:
         return [
             ("class:warning", f"\n  ⚠  {update_msg}\n\n"),
             ("class:dim", f"  Update:  {install_hint}\n\n"),
@@ -1334,7 +1335,7 @@ def _prompt_provider_issue_warning(message: str) -> None:
     def _(event: KeyPressEvent) -> None:
         event.app.exit()
 
-    def _render() -> list[tuple[str, str]]:
+    def _render() -> StyleAndTextTuples:
         return [
             ("class:warning", f"\n  ⚠  Provider issue detected\n\n  {message}\n\n"),
             (
@@ -1408,7 +1409,7 @@ def _prompt_self_update_action(current_version: str, latest_version: str) -> str
         result = "update"
         event.app.exit()
 
-    def _render() -> list[tuple[str, str]]:
+    def _render() -> StyleAndTextTuples:
         return [
             ("class:title", "\n  The Architect — update available\n\n"),
             ("class:dim", "  Version "),
@@ -1638,8 +1639,8 @@ def _prompt_mode_selection(
             budget_text = ""
 
     # ── Layout ───────────────────────────────────────────────────────────
-    def _render() -> list[tuple[str, str]]:
-        lines: list[tuple[str, str]] = []
+    def _render() -> StyleAndTextTuples:
+        lines: StyleAndTextTuples = []
 
         # Header
         lines.append(("class:header", "\n The Architect  "))
@@ -1897,8 +1898,8 @@ def _prompt_resume_screen(
             budget_text = ""
 
     # ── Layout ───────────────────────────────────────────────────────────
-    def _render() -> list[tuple[str, str]]:
-        lines: list[tuple[str, str]] = []
+    def _render() -> StyleAndTextTuples:
+        lines: StyleAndTextTuples = []
 
         # Header
         lines.append(("class:header", "\n The Architect  "))
