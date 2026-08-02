@@ -239,6 +239,29 @@ What you did, what changed, what decisions you made.
 
 ---
 
+## Mid-Task Checkpointing — Don't Wait Until the End
+
+Long tasks — many tool calls, large file reads, complex multi-step work — put real
+pressure on your own context window. Do not treat PROGRESS.md as something you only
+write once, at the very end, from memory. Update it as you go.
+
+At natural sub-task boundaries within a single task (after finishing one sub-task,
+before starting the next; after a large exploration or delegation; after finalizing
+a shared contract other tasks will depend on), rewrite the "Current State" and
+"Last Task Summary" sections in PROGRESS.md with what is true right now — not just
+your plan for what you intend to do. Treat this as insurance, not extra work: if
+something interrupts the run, or your own context becomes unreliable deep into a
+long task, PROGRESS.md is the one place that is not subject to whatever your
+underlying session does internally — it is a real file, not part of your
+in-context memory.
+
+This does not change when you output the completion promise (still only at genuine
+completion, per the Anti-Hallucination Guard) — it changes how often you write down
+what is actually true, so that truth does not depend on you remembering it correctly
+hours of tool calls later.
+
+---
+
 ## Task file format
 
 Your task file is in `tasks/TXX_name.md`, `tasks/TXXA_name.md`, or `tasks/TXXRn_name.md`.

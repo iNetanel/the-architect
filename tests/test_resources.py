@@ -115,3 +115,33 @@ def test_opencode_template_loads() -> None:
     assert "reviewer" in config["agent"]
     # Execution uses user's opencode agents, not The Architect's internal agents.
     assert "build" not in config["agent"]
+
+
+def test_execution_protocol_requires_mid_task_checkpointing() -> None:
+    """Execution protocol should require mid-task checkpointing of PROGRESS.md."""
+    from the_architect.resources import get_prompt
+
+    prompt = get_prompt("execution.md")
+    assert "Mid-Task Checkpointing" in prompt
+    assert "PROGRESS.md is the one place that is not subject to whatever your" in prompt
+    assert "does not change when you output the completion promise" in prompt
+
+
+def test_architect_prompt_requires_incremental_task_writing() -> None:
+    """Architect prompt should require writing task files incrementally."""
+    from the_architect.resources import get_prompt
+
+    prompt = get_prompt("architect.md")
+    assert "Write task files as you finalize them" in prompt
+    assert "do not hold the entire" in prompt
+    assert "is not lost if the session ends" in prompt
+
+
+def test_reviewer_prompt_requires_incremental_fixup_writing() -> None:
+    """Reviewer prompt should require writing fix-up tasks incrementally."""
+    from the_architect.resources import get_prompt
+
+    prompt = get_prompt("reviewer.md")
+    assert "Write fix-up tasks as you find them" in prompt
+    assert "do not review everything first" in prompt
+    assert "is not lost if the session ends" in prompt

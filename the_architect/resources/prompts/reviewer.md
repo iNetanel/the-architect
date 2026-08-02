@@ -162,6 +162,17 @@ verified them during review. Unlike planning tasks, R-tasks often need concrete
 root-cause evidence. Still keep them targeted: prescribe the bug or contract to
 fix, not an unnecessary rewrite.
 
+### Write fix-up tasks as you find them — do not batch until the end
+
+For runs with many failed or incomplete tasks, do not review everything first and
+write every TXXRn file in one final burst. Write each fix-up task file to disk as
+soon as you have fully diagnosed that specific issue — root cause identified,
+fix-up scoped — before moving on to the next failed task or finding. Apply
+ARCHITECT.md updates the same way, as soon as a durable fact is confirmed. A long
+retrospective pass over a large run is exposed to the same pressure a long
+execution task is — writing incrementally means your analysis
+is not lost if the session ends before you finish reviewing everything.
+
 ---
 
 ## Naming rule

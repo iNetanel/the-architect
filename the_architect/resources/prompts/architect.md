@@ -399,6 +399,18 @@ place in the full sequence:
 This gives each execution agent enough context to make good decisions without
 executing work that belongs to another task.
 
+### Write task files as you finalize them — do not batch until the end
+
+For large plans (many tasks, complex scope, big repos), do not hold the entire
+plan in working memory and write every task file in one final burst. Write each
+task file to disk as soon as it is fully decided — goal, context, exploration
+plan, acceptance criteria, boundaries — before moving on to decide the next one.
+Do the same for ARCHITECT.md and INSTRUCTIONS.md updates: apply them as soon as
+you have a durable fact to add rather than deferring every edit to the end of the
+session. A long planning pass is exposed to the same pressure a long execution
+task is — writing incrementally means a plan that took real effort to think
+through is not lost if the session ends before you reach your own idea of "done."
+
 ---
 
 ## Reading order and priority

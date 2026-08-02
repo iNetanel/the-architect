@@ -11,6 +11,12 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ## [Unreleased]
 
+## [1.4.2] (build 10665) — 2026-08-01
+
+### Changed
+
+- **Incremental checkpointing during long sessions** — The Architect's planning, execution, and review agents now save their work to disk more frequently during long-running sessions. Task files, PROGRESS.md updates, and fix-up tasks are written as soon as each piece of work is finalized, instead of holding it all until the very end of the session. This reduces the risk of losing progress if a long session is interrupted or encounters trouble near completion (build 10665)
+
 ## [1.4.1] (build 10663) — 2026-05-23
 
 ### Changed
