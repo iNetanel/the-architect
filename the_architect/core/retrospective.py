@@ -692,6 +692,17 @@ async def run_retrospective(
 
     model_override = request.model_override or config.standalone_mode or None
 
+    # Log the resolved model for observability — zero behaviour change.
+    try:
+        _resolved_model = model_override or provider.get_resolved_model(project_dir, "reviewer")
+    except Exception:
+        _resolved_model = ""
+    _model_label = (
+        _resolved_model
+        or "provider default (could not determine — run `opencode debug config` to check)"
+    )
+    logger.info(f"Reviewer model resolved to: {_model_label}")
+
     # Config override for OpenCode (points to .architect/architect.json)
     config_override: Path | None = None
     agent_override: str | None = None
@@ -911,6 +922,17 @@ async def run_task_reassessment(
         agent_override = "architect"
     else:
         instruction = _prepend_provider_prompt(provider, instruction, "get_architect_prompt")
+
+    # Log the resolved model for observability — zero behaviour change.
+    try:
+        _resolved_model = model_override or provider.get_resolved_model(project_dir, "architect")
+    except Exception:
+        _resolved_model = ""
+    _model_label = (
+        _resolved_model
+        or "provider default (could not determine — run `opencode debug config` to check)"
+    )
+    logger.info(f"Intelligence (reassessment) model resolved to: {_model_label}")
 
     stream_result = await stream_provider(
         instruction=instruction,

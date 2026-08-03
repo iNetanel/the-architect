@@ -247,6 +247,125 @@ class InfiniteLoopConfirmScreen(ModalScreen[bool]):
         self.action_choose(False)
 
 
+class ArchitectModelConfirmScreen(ModalScreen[bool]):
+    """Confirmation modal when no architect model is selected."""
+
+    DEFAULT_CSS = """
+    ArchitectModelConfirmScreen {
+        align: center middle;
+    }
+
+    #architect_model_body {
+        width: 64;
+        height: auto;
+        padding: 1 2;
+        border: round $panel;
+        background: $panel 20%;
+    }
+
+    #architect_model_title {
+        color: $warning;
+        text-style: bold;
+    }
+
+    #architect_model_warning {
+        color: $text;
+        padding: 1 0;
+    }
+
+    #architect_model_buttons {
+        width: 100%;
+        height: auto;
+        padding: 0 0 1 0;
+    }
+
+    ArchitectModelConfirmScreen MatrixButton {
+        width: 100%;
+        margin: 0;
+    }
+
+    #architect_model_footer {
+        color: $text-muted;
+    }
+    """
+
+    BINDINGS = [
+        Binding("y", "confirm_architect_model", "Continue"),
+        Binding("Y", "confirm_architect_model", "Continue"),
+        Binding("c", "cancel_architect_model", "Go back"),
+        Binding("C", "cancel_architect_model", "Go back"),
+        Binding("escape", "cancel_architect_model", "Go back", priority=True),
+        Binding("ctrl+c", "cancel_architect_model", "Go back", priority=True),
+        Binding("up", "focus_previous", "Previous", show=False),
+        Binding("down", "focus_next", "Next", show=False),
+        Binding("enter", "activate_focused", "Select", show=False),
+    ]
+
+    def compose(self) -> ComposeResult:
+        """Compose the centered warning card."""
+        with Vertical(id="architect_model_body"):
+            yield Static("No Architect Model Selected", id="architect_model_title")
+            yield Static(
+                "No architect model was selected. Planning, retrospective review, and "
+                "project-memory updates will use OpenCode's own default model resolution "
+                "for the architect/reviewer/intelligence roles — this may not be the model "
+                "you expect, especially for long unattended runs.\n\n"
+                "You can pick an explicit model in the Models tab, or continue with the "
+                "provider default.",
+                id="architect_model_warning",
+            )
+            with Vertical(id="architect_model_buttons"):
+                yield MatrixButton(
+                    "Continue with provider default",
+                    key="Y",
+                    id="btn_architect_model_confirm",
+                )
+                yield MatrixButton(
+                    "Go back and pick a model", key="C", id="btn_architect_model_cancel"
+                )
+            yield Static(
+                "Enter selects the focused option. Esc goes back.",
+                id="architect_model_footer",
+            )
+
+    def on_mount(self) -> None:
+        """Focus the safer Go-back option by default."""
+        try:
+            self.query_one("#btn_architect_model_cancel", MatrixButton).focus()
+        except Exception as exc:
+            logger.debug(f"ArchitectModelConfirmScreen initial focus failed: {exc!r}")
+
+    def action_focus_previous(self) -> None:
+        """Move focus to the previous button."""
+        self.focus_previous()
+
+    def action_focus_next(self) -> None:
+        """Move focus to the next button."""
+        self.focus_next()
+
+    def action_activate_focused(self) -> None:
+        """Activate the focused MatrixButton with Enter."""
+        focused = self.focused
+        if isinstance(focused, MatrixButton):
+            focused.action_press()
+
+    def on_matrix_button_pressed(self, event: MatrixButton.Pressed) -> None:
+        """Route button presses to the modal result."""
+        self.action_choose(event.button.id == "btn_architect_model_confirm")
+
+    def action_choose(self, confirmed: bool) -> None:
+        """Dismiss with the user's confirmation choice."""
+        self.dismiss(confirmed)
+
+    def action_confirm_architect_model(self) -> None:
+        """Confirm and continue with the provider default."""
+        self.action_choose(True)
+
+    def action_cancel_architect_model(self) -> None:
+        """Go back and let the user pick a model."""
+        self.action_choose(False)
+
+
 # ══════════════════════════════════════════════════════════════════════
 # Constants
 # ══════════════════════════════════════════════════════════════════════
@@ -482,9 +601,13 @@ class PreRunScreen(Screen[PreRunValues]):
 
         # Warning message for footer
         self._warning_text = ""
+        self._architect_model_confirmed = False
+        self._architect_model_confirmation_active = False
         self._infinite_loop_confirmed = False
         self._infinite_loop_confirmation_active = False
         self._infinite_loop_submit_after_confirm = False
+        # Cached goal text for _all_complete fallback when widget is inaccessible
+        self._cached_goal_text: str = goal_text
 
         # Load templates synchronously so they are available during compose()
         self._templates: list[GoalTemplate] = []
@@ -972,7 +1095,12 @@ class PreRunScreen(Screen[PreRunValues]):
         self._update_footer()
 
     def _update_models_tab(self) -> None:
-        """Update Models tab UI in-place — no remove+remount."""
+        """Update Models tab UI in-place — no remove+remount.
+
+        Also refreshes the model and agent labels to show the currently
+        committed selection so the user can always see which value is
+        active without relying on the small dot prefix in the list.
+        """
         provider = self._get_active_provider()
         supports_agents = provider is not None and provider.supports_agents()
 
@@ -996,20 +1124,31 @@ class PreRunScreen(Screen[PreRunValues]):
         except Exception as exc:
             logger.debug(f"PreRunScreen: status line update failed: {exc!r}")
 
-        # Update Architect model list
+        # Update Architect model label + list
         try:
+            model_label = self.query_one("#model_label", Label)
+            if self._values.architect_model is not None:
+                model_label.update(f"Architect model — Selected: {self._values.architect_model}")
+            else:
+                model_label.update("Architect model — Selected: (provider default)")
             model_list = self.query_one("#model_list", ListView)
             self._populate_list(model_list, self._models, self._values.architect_model)
         except Exception as exc:
             logger.debug(f"PreRunScreen: model_list update failed: {exc!r}")
 
-        # Update Execution agent list + label (hidden when not supported)
+        # Update Execution agent label + list (hidden when not supported)
         try:
             agent_label = self.query_one("#agent_label", Label)
             agent_list = self.query_one("#agent_list", ListView)
             if supports_agents:
                 agent_label.display = True
                 agent_list.display = True
+                if self._values.execution_agent is not None:
+                    agent_label.update(
+                        f"Execution agent — Selected: {self._values.execution_agent}"
+                    )
+                else:
+                    agent_label.update("Execution agent — Selected: (provider default)")
                 self._populate_list(agent_list, self._agents, self._values.execution_agent)
             else:
                 agent_label.display = False
@@ -1273,14 +1412,19 @@ class PreRunScreen(Screen[PreRunValues]):
 
     # ── Completion state ─────────────────────────────────────────────
 
+    @staticmethod
+    def _goal_text_sufficient(text: str) -> bool:
+        """True when goal text meets the minimum length requirement."""
+        return len(text.strip()) >= 10
+
     @property
     def _goal_complete(self) -> bool:
         """Goal tab is complete when required goal text is present."""
         if self._pending_tasks and self._selected_action() == "execute":
             return True
         try:
-            text = self.query_one("#goal_text", TextArea).text.strip()
-            return len(text) >= 10
+            text = self.query_one("#goal_text", TextArea).text
+            return self._goal_text_sufficient(text)
         except Exception as exc:
             logger.debug(f"PreRunScreen _goal_complete query failed: {exc!r}")
             return False
@@ -1302,8 +1446,20 @@ class PreRunScreen(Screen[PreRunValues]):
 
     @property
     def _all_complete(self) -> bool:
-        """True when every visible tab is complete."""
-        return self._goal_complete  # only Goal has a required-field rule
+        """True when every visible tab is complete.
+
+        Falls back to the cached goal text when the goal_text widget is not
+        directly queryable (e.g. when called from a modal callback where the
+        PreRunScreen is not the top screen), instead of duplicating
+        ``_goal_complete``'s query logic.
+        """
+        if self._pending_tasks and self._selected_action() == "execute":
+            return True
+        try:
+            self.query_one("#goal_text", TextArea)
+        except Exception:
+            return self._goal_text_sufficient(self._cached_goal_text)
+        return self._goal_complete
 
     def _completion_count(self) -> tuple[int, int]:
         """Return (complete_count, total_count) for the footer."""
@@ -1383,6 +1539,7 @@ class PreRunScreen(Screen[PreRunValues]):
             goal = self.query_one("#goal_text", TextArea).text.strip()
         except Exception as exc:
             logger.debug(f"PreRunScreen collect goal text failed: {exc!r}")
+        self._cached_goal_text = goal
 
         # Scope
         scope = "standard"
@@ -1578,10 +1735,36 @@ class PreRunScreen(Screen[PreRunValues]):
             return
 
         values = self._collect_values()
+        if not values.architect_model and not self._architect_model_confirmed:
+            self._show_architect_model_confirmation()
+            return
         if values.infinite_loop and not self._infinite_loop_confirmed:
             self._show_infinite_loop_confirmation(submit_after_confirm=True)
             return
         self.dismiss(values)
+
+    def _show_architect_model_confirmation(self) -> None:
+        """Open the architect model confirmation modal once for the current request."""
+        if self._architect_model_confirmation_active:
+            return
+        self._architect_model_confirmation_active = True
+        self.app.push_screen(
+            ArchitectModelConfirmScreen(), self._handle_architect_model_confirmation
+        )
+
+    def _handle_architect_model_confirmation(self, confirmed: bool | None) -> None:
+        """Continue submit after architect model warning, or return to form on cancel."""
+        self._architect_model_confirmation_active = False
+
+        if confirmed is True:
+            self._architect_model_confirmed = True
+            # Re-run the full submit flow — the flag now lets this check pass.
+            self.action_submit()
+            return
+
+        self._show_footer_warning(
+            "Pick a model in the Models tab, or submit again to confirm the provider default."
+        )
 
     def _show_infinite_loop_confirmation(self, *, submit_after_confirm: bool) -> None:
         """Open the Infinite Loop confirmation modal once for the current request."""
@@ -1658,6 +1841,7 @@ class PreRunScreen(Screen[PreRunValues]):
                 if event.index > 0 and event.index - 1 < len(self._models)
                 else None
             )
+            self._architect_model_confirmed = False
         elif list_id == "agent_list":
             self._values.execution_agent = (
                 self._agents[event.index - 1]
@@ -1759,11 +1943,35 @@ class PreRunScreen(Screen[PreRunValues]):
         self._update_footer()
 
     def _on_provider_changed(self) -> None:
-        """Handle provider selection change — refresh model/agent lists."""
+        """Handle provider selection change — refresh model/agent lists.
+
+        If the user had an explicit architect model or execution agent
+        selection, a footer warning is shown before the values are reset
+        to provider defaults (different providers have different lists).
+        """
+        had_architect_model = self._values.architect_model is not None
+        had_execution_agent = self._values.execution_agent is not None
+
         values = self._collect_values()
         self._values.provider_name = values.provider_name
         self._values.architect_model = None
         self._values.execution_agent = None
+        self._architect_model_confirmed = False
+
+        # Warn the user if an explicit selection was just wiped
+        if had_architect_model and had_execution_agent:
+            self._show_footer_warning(
+                "Provider changed — architect model/agent selections "
+                "were reset to provider default."
+            )
+        elif had_architect_model:
+            self._show_footer_warning(
+                "Provider changed — architect model selection was reset to provider default."
+            )
+        elif had_execution_agent:
+            self._show_footer_warning(
+                "Provider changed — execution agent selection was reset to provider default."
+            )
 
         # Refresh Models tab from new provider
         self._refresh_provider_data()
@@ -1979,6 +2187,7 @@ def run_pre_run_tabbed(
 
 
 __all__ = [
+    "ArchitectModelConfirmScreen",
     "InfiniteLoopConfirmScreen",
     "PreRunScreen",
     "PreRunValues",

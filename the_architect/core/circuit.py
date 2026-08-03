@@ -353,6 +353,19 @@ _UPDATE_REQUIRED_PATTERNS: list[str] = [
     "please upgrade",
 ]
 
+# CLI tool names used to confirm an update-required phrase is about the
+# provider itself (not some unrelated instruction the model echoed).
+# An UPDATE_REQUIRED match is only classified as such when one of these
+# names appears within ±_UPDATE_PROXIMITY_CHARS of the matched phrase.
+# This prevents false positives like "...the task agents must update it."
+# which contains "must update" but refers to a task file, not a CLI tool.
+_UPDATE_REQUIRED_TOOL_NAMES: list[str] = ["opencode", "claude", "codex", "gemini"]
+
+# Window size (in characters on each side of the pattern match) within which
+# a CLI tool name must appear for the match to be considered a genuine
+# provider-update signal.
+_UPDATE_PROXIMITY_CHARS = 80
+
 # Text patterns that indicate waiting/retrying will not help without user action.
 # These are intentionally checked before transient cooldown handling so provider
 # budget/billing failures do not turn into a misleading 1-hour wait loop.
@@ -392,6 +405,34 @@ _MISCONFIGURED_PATTERNS: list[str] = [
 ]
 
 
+def _has_tool_name_near_match(text_lower: str, match_start: int, match_length: int) -> bool:
+    """Check whether a CLI tool name appears near a pattern match.
+
+    Prevents false positives in UPDATE_REQUIRED detection. Phrases like
+    "must update" can appear in innocuous sentences (e.g. an AI model
+    echoing task instructions: "the task agents must update it").
+    A match is only classified as UPDATE_REQUIRED if a known CLI tool
+    name ("opencode", "claude", "codex", "gemini") appears within a
+    bounded window around the matched phrase.
+
+    Args:
+        text_lower: The full accumulated text, already lower-cased.
+        match_start: Start index of the matched pattern in ``text_lower``.
+        match_length: Length of the matched pattern.
+
+    Returns:
+        True if a CLI tool name was found within ±_UPDATE_PROXIMITY_CHARS
+        of the match boundaries.
+    """
+    window_start = max(0, match_start - _UPDATE_PROXIMITY_CHARS)
+    window_end = min(len(text_lower), match_start + match_length + _UPDATE_PROXIMITY_CHARS)
+    window = text_lower[window_start:window_end]
+    for tool_name in _UPDATE_REQUIRED_TOOL_NAMES:
+        if tool_name in window:
+            return True
+    return False
+
+
 def detect_provider_error(text: str, exit_code: int) -> ProviderError | None:
     """Detect actionable provider errors from accumulated output.
 
@@ -414,23 +455,31 @@ def detect_provider_error(text: str, exit_code: int) -> ProviderError | None:
 
     text_lower = text.lower()
 
-    # Check for update-required patterns first (most actionable)
+    # Check for update-required patterns first (most actionable).
+    # Each pattern match requires a CLI tool name nearby to avoid false
+    # positives (e.g. "...the task agents must update it." contains
+    # "must update" but is not about a provider needing an update).
     for pattern in _UPDATE_REQUIRED_PATTERNS:
-        if pattern in text_lower:
-            # Determine which provider based on text content
-            if "opencode" in text_lower:
-                action = "Run: opencode upgrade"
-            elif "claude" in text_lower:
-                action = "Run: claude update"
-            else:
-                action = "Update your AI CLI tool to the latest version"
+        idx = text_lower.find(pattern)
+        if idx == -1:
+            continue
+        # Verify a CLI tool name appears within the proximity window.
+        if not _has_tool_name_near_match(text_lower, idx, len(pattern)):
+            continue
+        # Determine which provider based on text content
+        if "opencode" in text_lower:
+            action = "Run: opencode upgrade"
+        elif "claude" in text_lower:
+            action = "Run: claude update"
+        else:
+            action = "Update your AI CLI tool to the latest version"
 
-            return ProviderError(
-                kind=ProviderErrorKind.UPDATE_REQUIRED,
-                message=f'Provider requires an update (matched: "{pattern}")',
-                action=action,
-                raw_text=text[:500],
-            )
+        return ProviderError(
+            kind=ProviderErrorKind.UPDATE_REQUIRED,
+            message=f'Provider requires an update (matched: "{pattern}")',
+            action=action,
+            raw_text=text[:500],
+        )
 
     # Check for account quota / billing exhaustion before generic
     # misconfiguration. These are not transient cooldowns: the user must switch

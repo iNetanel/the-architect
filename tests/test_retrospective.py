@@ -1971,3 +1971,193 @@ class TestRetrospectiveReadProgressException:
         assert "PROJECT ROOT:" in instruction
         # T00 fallback means the exception in read_progress was swallowed correctly
         assert "T00R1" in instruction
+
+
+class TestRetrospectiveResolvedModelLogging:
+    """Tests for the resolved-model INFO log in run_retrospective and run_task_reassessment."""
+
+    @pytest.mark.asyncio
+    async def test_run_retrospective_logs_resolved_model_from_provider(
+        self, tmp_path: Path, config: ArchitectConfig
+    ) -> None:
+        """When model_override is falsy, get_resolved_model is called and logged."""
+        from io import StringIO
+
+        progress_file = tmp_path / "tasks" / "PROGRESS.md"
+        progress_file.parent.mkdir(parents=True, exist_ok=True)
+        progress_file.write_text(
+            "**Tasks completed:** 1\n**Next task to run:** —\n"
+            "## Task Log\n| Task | Title | Status |\n"
+            "|----- -|----- -|-------|\n",
+            encoding="utf-8",
+        )
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+
+        request = RetrospectiveRequest(
+            round_number=1,
+            project_dir=tmp_path,
+            original_goal="test",
+        )
+
+        provider = MagicMock()
+        provider.name = "opencode"
+        provider.display_name = "OpenCode"
+        provider.supports_agents.return_value = True
+        provider.get_resolved_model.return_value = "anthropic/claude-opus-4-20250514"
+
+        async def fake_stream(**kwargs: object) -> StreamResult:
+            return StreamResult(exit_code=0, tokens=TokenUsage())
+
+        sink = StringIO()
+        handler_id = logger.add(sink, level="INFO", format="{message}")
+
+        with patch("the_architect.core.retrospective.stream_provider", side_effect=fake_stream):
+            await run_retrospective(request, config, provider=provider)
+
+        logger.remove(handler_id)
+        output = sink.getvalue()
+        assert "Reviewer model resolved to:" in output
+        assert "anthropic/claude-opus-4-20250514" in output
+
+    @pytest.mark.asyncio
+    async def test_run_retrospective_logs_provider_default_on_resolve_exception(
+        self, tmp_path: Path, config: ArchitectConfig
+    ) -> None:
+        """When get_resolved_model raises, the fallback message is logged."""
+        from io import StringIO
+
+        progress_file = tmp_path / "tasks" / "PROGRESS.md"
+        progress_file.parent.mkdir(parents=True, exist_ok=True)
+        progress_file.write_text(
+            "**Tasks completed:** 1\n**Next task to run:** —\n"
+            "## Task Log\n| Task | Title | Status |\n"
+            "|----- -|----- -|-------|\n",
+            encoding="utf-8",
+        )
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+
+        request = RetrospectiveRequest(
+            round_number=1,
+            project_dir=tmp_path,
+            original_goal="test",
+        )
+
+        provider = MagicMock()
+        provider.name = "opencode"
+        provider.display_name = "OpenCode"
+        provider.supports_agents.return_value = True
+        provider.get_resolved_model.side_effect = RuntimeError("config unreadable")
+
+        async def fake_stream(**kwargs: object) -> StreamResult:
+            return StreamResult(exit_code=0, tokens=TokenUsage())
+
+        sink = StringIO()
+        handler_id = logger.add(sink, level="INFO", format="{message}")
+
+        with patch("the_architect.core.retrospective.stream_provider", side_effect=fake_stream):
+            await run_retrospective(request, config, provider=provider)
+
+        logger.remove(handler_id)
+        output = sink.getvalue()
+        assert "Reviewer model resolved to:" in output
+        assert "provider default" in output
+        assert "opencode debug config" in output
+
+    @pytest.mark.asyncio
+    async def test_run_task_reassessment_logs_resolved_model_from_provider(
+        self, tmp_path: Path, config: ArchitectConfig
+    ) -> None:
+        """When model_override is falsy, get_resolved_model is called and logged."""
+        from io import StringIO
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        task_file = tasks_dir / "T02_followup.md"
+        task_file.write_text("# T02 - Follow up\noriginal\n", encoding="utf-8")
+        (tmp_path / "tasks" / "PROGRESS.md").write_text(
+            "**Tasks completed:** 1\n"
+            "**Next task to run:** T02\n"
+            "## Task Log\n"
+            "| Task | Title | Status | Completed |\n"
+            "|------|-------|--------|-----------|\n"
+            "| T01 | Done thing | Done | 2026-04-29 |\n"
+            "| T02 | Follow up | Pending | — |\n",
+            encoding="utf-8",
+        )
+
+        provider = MagicMock()
+        provider.get_resolved_model.return_value = "openrouter/anthropic/claude-sonnet-4"
+
+        async def fake_stream(**kwargs: object) -> StreamResult:
+            task_file.write_text("# T02 - Follow up\nupdated\n", encoding="utf-8")
+            return StreamResult(exit_code=0, tokens=TokenUsage())
+
+        sink = StringIO()
+        handler_id = logger.add(sink, level="INFO", format="{message}")
+
+        with patch("the_architect.core.retrospective.stream_provider", side_effect=fake_stream):
+            result = await run_task_reassessment(
+                project_dir=tmp_path,
+                provider=provider,
+                config=config,
+                completed_task="T01",
+                outcome_summary="Downstream impact: possible",
+                original_goal="test goal",
+            )
+
+        logger.remove(handler_id)
+        output = sink.getvalue()
+        assert "Intelligence (reassessment) model resolved to:" in output
+        assert "openrouter/anthropic/claude-sonnet-4" in output
+        assert result.tasks_updated == ["T02"]
+
+    @pytest.mark.asyncio
+    async def test_run_task_reassessment_logs_provider_default_on_resolve_exception(
+        self, tmp_path: Path, config: ArchitectConfig
+    ) -> None:
+        """When get_resolved_model raises, the fallback message is logged."""
+        from io import StringIO
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(exist_ok=True)
+        task_file = tasks_dir / "T02_followup.md"
+        task_file.write_text("# T02 - Follow up\noriginal\n", encoding="utf-8")
+        (tmp_path / "tasks" / "PROGRESS.md").write_text(
+            "**Tasks completed:** 1\n"
+            "**Next task to run:** T02\n"
+            "## Task Log\n"
+            "| Task | Title | Status | Completed |\n"
+            "|------|-------|--------|-----------|\n"
+            "| T01 | Done thing | Done | 2026-04-29 |\n"
+            "| T02 | Follow up | Pending | — |\n",
+            encoding="utf-8",
+        )
+
+        provider = MagicMock()
+        provider.get_resolved_model.side_effect = RuntimeError("config unreadable")
+
+        async def fake_stream(**kwargs: object) -> StreamResult:
+            task_file.write_text("# T02 - Follow up\nupdated\n", encoding="utf-8")
+            return StreamResult(exit_code=0, tokens=TokenUsage())
+
+        sink = StringIO()
+        handler_id = logger.add(sink, level="INFO", format="{message}")
+
+        with patch("the_architect.core.retrospective.stream_provider", side_effect=fake_stream):
+            result = await run_task_reassessment(
+                project_dir=tmp_path,
+                provider=provider,
+                config=config,
+                completed_task="T01",
+                outcome_summary="Downstream impact: possible",
+                original_goal="test goal",
+            )
+
+        logger.remove(handler_id)
+        output = sink.getvalue()
+        assert "Intelligence (reassessment) model resolved to:" in output
+        assert "provider default" in output
+        assert "opencode debug config" in output
+        assert result.tasks_updated == ["T02"]

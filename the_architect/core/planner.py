@@ -1316,6 +1316,17 @@ async def run_planner(
     # Priority: explicit request override > standalone mode > provider default
     model_override = request.model_override or config.standalone_mode or None
 
+    # Log the resolved model for observability — zero behaviour change.
+    try:
+        _resolved_model = model_override or provider.get_resolved_model(project_dir, "architect")
+    except Exception:
+        _resolved_model = ""
+    _model_label = (
+        _resolved_model
+        or "provider default (could not determine — run `opencode debug config` to check)"
+    )
+    logger.info(f"Architect (planning) model resolved to: {_model_label}")
+
     # Config override for OpenCode planning (points to .architect/architect.json)
     # For Claude Code this is None (ignored by the provider)
     config_override: Path | None = None

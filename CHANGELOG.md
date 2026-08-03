@@ -11,6 +11,19 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ## [Unreleased]
 
+## [1.4.3] (build 10669) — 2026-08-03
+
+### Fixed
+
+- **Provider-update-required false positive** — `detect_provider_error()` no longer misclassifies an AI model quoting phrases like "must update" in its own conversational output as a fatal `UPDATE_REQUIRED` provider error. The check now requires a CLI tool name (opencode, claude, codex, or gemini) to appear near the matched phrase before classifying it as an update requirement, preventing Infinite Loop runs from aborting on false alarms (build 10668)
+- **Pre-run Models tab selection visibility** — a highlighted-but-uncommitted row in the model/agent list could be mistaken for a saved selection. The Models tab now shows a persistent "Selected: \<model\>" / "Selected: (provider default)" summary that only updates when a selection is actually committed (build 10668)
+- **Pre-run screen silent model reset** — changing the CLI provider previously reset any previously chosen architect model or execution agent back to provider defaults with no visible feedback. A footer warning is now shown when this reset actually discards a prior selection (build 10668)
+
+### Added
+
+- **Pre-run confirmation for unselected architect model** — submitting a run with no explicit architect model selected now shows an explicit "No Architect Model Selected" confirmation before launching, so unattended runs (e.g. Infinite Loop) do not silently fall back to an unresolved provider-default model for planning, review, or intelligence roles (build 10668)
+- **Agent model resolution logged at INFO level** — the architect (planning), reviewer (retrospective), and intelligence (reassessment) agent roles now log their resolved model at INFO level at the start of each run (e.g. "Architect (planning) model resolved to: \<model\>"), instead of this only being visible in DEBUG-level subprocess command lines (build 10668)
+
 ## [1.4.2] (build 10665) — 2026-08-01
 
 ### Changed

@@ -2189,3 +2189,86 @@ class TestBuildPlanningInstructionWorkspaceContext:
             pos = instruction.index(section)
             assert pos > last_pos, f"{section} should appear after previous section"
             last_pos = pos
+
+
+class TestPlannerResolvedModelLogging:
+    """Tests for the resolved-model INFO log added to run_planner."""
+
+    @pytest.mark.asyncio
+    async def test_run_planner_logs_resolved_model_from_provider(self, tmp_path: Path) -> None:
+        """When model_override is falsy, get_resolved_model is called and logged."""
+        from io import StringIO
+        from unittest.mock import MagicMock
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        config = ArchitectConfig().resolve(tmp_path)
+
+        provider = MagicMock()
+        provider.name = "opencode"
+        provider.display_name = "OpenCode"
+        provider.supports_agents.return_value = True
+        provider.get_resolved_model.return_value = "anthropic/claude-sonnet-4-20250514"
+
+        request = PlanningRequest(
+            goal="Test goal",
+            scope=TaskScope.STANDARD,
+            project_dir=tmp_path,
+        )
+
+        async def fake_stream(**kwargs: object) -> StreamResult:  # type: ignore[misc]
+            (tasks_dir / "T01_test.md").write_text("# T01", encoding="utf-8")
+            return StreamResult(exit_code=0, tokens=TokenUsage(), accumulated_text="")
+
+        sink = StringIO()
+        handler_id = logger.add(sink, level="INFO", format="{message}")
+
+        with patch("the_architect.core.planner.stream_provider", side_effect=fake_stream):
+            await run_planner(request, config, provider=provider)
+
+        logger.remove(handler_id)
+        output = sink.getvalue()
+        assert "Architect (planning) model resolved to:" in output
+        assert "anthropic/claude-sonnet-4-20250514" in output
+
+    @pytest.mark.asyncio
+    async def test_run_planner_logs_provider_default_on_resolve_exception(
+        self, tmp_path: Path
+    ) -> None:
+        """When get_resolved_model raises, the fallback message is logged and run proceeds."""
+        from io import StringIO
+        from unittest.mock import MagicMock
+
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        config = ArchitectConfig().resolve(tmp_path)
+
+        provider = MagicMock()
+        provider.name = "opencode"
+        provider.display_name = "OpenCode"
+        provider.supports_agents.return_value = True
+        provider.get_resolved_model.side_effect = RuntimeError("config unreadable")
+
+        request = PlanningRequest(
+            goal="Test goal",
+            scope=TaskScope.STANDARD,
+            project_dir=tmp_path,
+        )
+
+        async def fake_stream(**kwargs: object) -> StreamResult:  # type: ignore[misc]
+            (tasks_dir / "T01_test.md").write_text("# T01", encoding="utf-8")
+            return StreamResult(exit_code=0, tokens=TokenUsage(), accumulated_text="")
+
+        sink = StringIO()
+        handler_id = logger.add(sink, level="INFO", format="{message}")
+
+        with patch("the_architect.core.planner.stream_provider", side_effect=fake_stream):
+            result = await run_planner(request, config, provider=provider)
+
+        logger.remove(handler_id)
+        output = sink.getvalue()
+        assert "Architect (planning) model resolved to:" in output
+        assert "provider default" in output
+        assert "opencode debug config" in output
+        # Run should still succeed
+        assert result.tasks_created == ["T01_test"]

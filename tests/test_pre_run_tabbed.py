@@ -25,6 +25,7 @@ from textual.widgets import (
 
 from the_architect.core.provider import ArchitectProvider
 from the_architect.tui.screens.pre_run_tabbed import (
+    ArchitectModelConfirmScreen,
     GoalTextArea,
     InfiniteLoopConfirmScreen,
     PreRunScreen,
@@ -278,6 +279,7 @@ class TestPreRunScreen:
             providers=providers,
             config=config,
             project_dir=Path("/tmp/test_project"),
+            architect_model="model-a",
         )
 
         result: Any = None
@@ -338,6 +340,7 @@ class TestPreRunScreen:
             providers=[_mock_provider("opencode")],
             config=_mock_config(),
             project_dir=Path("/tmp/test_project"),
+            architect_model="model-a",
         )
         result: Any = "<not-dismissed>"
 
@@ -378,6 +381,7 @@ class TestPreRunScreen:
             providers=[_mock_provider("opencode")],
             config=_mock_config(),
             project_dir=Path("/tmp/test_project"),
+            architect_model="model-a",
         )
         result: Any = "<not-dismissed>"
 
@@ -425,6 +429,7 @@ class TestPreRunScreen:
             project_dir=Path("/tmp/test_project"),
             pending_tasks=[task],
             action="execute",
+            architect_model="model-a",
         )
         result: Any = None
 
@@ -470,6 +475,7 @@ class TestPreRunScreen:
             project_dir=Path("/tmp/test_project"),
             pending_tasks=[task],
             action="replan",
+            architect_model="model-a",
         )
         result: Any = "<not-dismissed>"
 
@@ -864,6 +870,151 @@ class TestPreRunScreen:
             await pilot.pause(0.05)
 
     @pytest.mark.asyncio
+    async def test_provider_change_warns_when_architect_model_set(
+        self,
+    ) -> None:
+        """Footer warning appears when provider change resets a model selection."""
+        from textual.app import App
+
+        prov_a = _mock_provider("opencode", "OpenCode")
+        prov_b = _mock_provider("claude-code", "Claude Code")
+        screen = PreRunScreen(
+            providers=[prov_a, prov_b],
+            config=_mock_config(),
+            project_dir=Path("/tmp/test"),
+        )
+
+        class WarnApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(screen, lambda v: None)
+
+        async with WarnApp().run_test() as pilot:
+            await pilot.pause(0.05)
+            # Simulate user having selected an architect model
+            screen._values.architect_model = "gpt-4o"
+            # Switch provider — should trigger warning
+            rb2 = screen.query_one("#rb_prov_1")
+            rb2.value = True
+            screen._on_provider_changed()
+            await pilot.pause(0.05)
+            # Warning should mention architect model reset
+            assert "architect model" in screen._warning_text
+            assert "reset" in screen._warning_text
+            # Values should be cleared
+            assert screen._values.architect_model is None
+            screen.action_cancel()
+            await pilot.pause(0.05)
+
+    @pytest.mark.asyncio
+    async def test_provider_change_warns_when_execution_agent_set(
+        self,
+    ) -> None:
+        """Footer warning appears when provider change resets an agent selection."""
+        from textual.app import App
+
+        prov_a = _mock_provider("opencode", "OpenCode")
+        prov_b = _mock_provider("claude-code", "Claude Code")
+        screen = PreRunScreen(
+            providers=[prov_a, prov_b],
+            config=_mock_config(),
+            project_dir=Path("/tmp/test"),
+        )
+
+        class WarnApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(screen, lambda v: None)
+
+        async with WarnApp().run_test() as pilot:
+            await pilot.pause(0.05)
+            # Simulate user having selected an execution agent
+            screen._values.execution_agent = "backend"
+            # Switch provider — should trigger warning
+            rb2 = screen.query_one("#rb_prov_1")
+            rb2.value = True
+            screen._on_provider_changed()
+            await pilot.pause(0.05)
+            # Warning should mention execution agent reset
+            assert "execution agent" in screen._warning_text
+            assert "reset" in screen._warning_text
+            # Values should be cleared
+            assert screen._values.execution_agent is None
+            screen.action_cancel()
+            await pilot.pause(0.05)
+
+    @pytest.mark.asyncio
+    async def test_provider_change_warns_when_both_model_and_agent_set(
+        self,
+    ) -> None:
+        """Footer warning mentions both when both model and agent are reset."""
+        from textual.app import App
+
+        prov_a = _mock_provider("opencode", "OpenCode")
+        prov_b = _mock_provider("claude-code", "Claude Code")
+        screen = PreRunScreen(
+            providers=[prov_a, prov_b],
+            config=_mock_config(),
+            project_dir=Path("/tmp/test"),
+        )
+
+        class WarnApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(screen, lambda v: None)
+
+        async with WarnApp().run_test() as pilot:
+            await pilot.pause(0.05)
+            # Simulate user having selected both
+            screen._values.architect_model = "gpt-4o"
+            screen._values.execution_agent = "backend"
+            # Switch provider — should trigger warning mentioning both
+            rb2 = screen.query_one("#rb_prov_1")
+            rb2.value = True
+            screen._on_provider_changed()
+            await pilot.pause(0.05)
+            assert "architect model" in screen._warning_text
+            assert "agent" in screen._warning_text
+            assert "reset" in screen._warning_text
+            screen.action_cancel()
+            await pilot.pause(0.05)
+
+    @pytest.mark.asyncio
+    async def test_provider_change_no_warning_when_nothing_to_reset(
+        self,
+    ) -> None:
+        """No footer warning when both model and agent were already None."""
+        from textual.app import App
+
+        prov_a = _mock_provider("opencode", "OpenCode")
+        prov_b = _mock_provider("claude-code", "Claude Code")
+        screen = PreRunScreen(
+            providers=[prov_a, prov_b],
+            config=_mock_config(),
+            project_dir=Path("/tmp/test"),
+        )
+
+        class WarnApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(screen, lambda v: None)
+
+        async with WarnApp().run_test() as pilot:
+            await pilot.pause(0.05)
+            # Both are None by default — no selection to lose
+            assert screen._values.architect_model is None
+            assert screen._values.execution_agent is None
+            # Record footer state before switch
+            footer_before = screen._warning_text
+            # Switch provider — should NOT trigger a reset warning
+            rb2 = screen.query_one("#rb_prov_1")
+            rb2.value = True
+            screen._on_provider_changed()
+            await pilot.pause(0.05)
+            # Footer should not contain a reset warning
+            assert "reset" not in screen._warning_text.lower() or (
+                screen._warning_text == footer_before
+            )
+            screen.action_cancel()
+            await pilot.pause(0.05)
+
+    @pytest.mark.asyncio
     async def test_enter_submits_from_goal_textarea(self) -> None:
         """Pressing Enter in the Goal TextArea submits the form.
 
@@ -878,6 +1029,7 @@ class TestPreRunScreen:
             providers=providers,
             config=_mock_config(),
             project_dir=Path("/tmp/test"),
+            architect_model="model-a",
         )
         result: Any = "<not-dismissed>"
 
@@ -1381,5 +1533,400 @@ class TestPreRunScreen:
             await pilot.pause(0.05)
             assert tabs.active == "tab_goal"
 
+            screen.action_cancel()
+            await pilot.pause(0.05)
+
+    # ── Model/agent label tests ──────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_model_label_shows_committed_model(self) -> None:
+        """model_label shows the committed architect model after selection."""
+        from textual.app import App
+
+        prov = _mock_provider("opencode")
+        prov.list_models = MagicMock(return_value=["model-a", "model-b"])
+
+        screen = PreRunScreen(
+            providers=[prov],
+            config=_mock_config(),
+            project_dir=Path("/tmp/test"),
+            architect_model="model-a",
+        )
+
+        class ModelLabelApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(screen, lambda v: None)
+
+        async with ModelLabelApp().run_test() as pilot:
+            await pilot.pause(0.05)
+            await pilot.pause(0.05)
+            label = screen.query_one("#model_label", Label)
+            assert "Selected: model-a" in label.render_str(label.render()).plain
+            screen.action_cancel()
+            await pilot.pause(0.05)
+
+    @pytest.mark.asyncio
+    async def test_model_label_shows_provider_default_when_none(self) -> None:
+        """model_label shows (provider default) when architect_model is None."""
+        from textual.app import App
+
+        prov = _mock_provider("opencode")
+        prov.list_models = MagicMock(return_value=["model-a", "model-b"])
+
+        screen = PreRunScreen(
+            providers=[prov],
+            config=_mock_config(),
+            project_dir=Path("/tmp/test"),
+            architect_model="",
+        )
+
+        class DefaultModelApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(screen, lambda v: None)
+
+        async with DefaultModelApp().run_test() as pilot:
+            await pilot.pause(0.05)
+            await pilot.pause(0.05)
+            label = screen.query_one("#model_label", Label)
+            assert "Selected: (provider default)" in label.render_str(label.render()).plain
+            screen.action_cancel()
+            await pilot.pause(0.05)
+
+    @pytest.mark.asyncio
+    async def test_agent_label_shows_committed_agent(self) -> None:
+        """agent_label shows the committed execution agent when supported."""
+        from textual.app import App
+
+        prov = _mock_provider("opencode")
+        prov.list_models = MagicMock(return_value=["model-a", "model-b"])
+        prov.list_agents = MagicMock(return_value=["build", "backend"])
+        prov.supports_agents = MagicMock(return_value=True)
+
+        screen = PreRunScreen(
+            providers=[prov],
+            config=_mock_config(),
+            project_dir=Path("/tmp/test"),
+            architect_model="model-a",
+            execution_model="build",
+        )
+
+        class AgentLabelApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(screen, lambda v: None)
+
+        async with AgentLabelApp().run_test() as pilot:
+            await pilot.pause(0.05)
+            await pilot.pause(0.05)
+            agent_label = screen.query_one("#agent_label", Label)
+            assert agent_label.display is True
+            assert "Selected: build" in agent_label.render_str(agent_label.render()).plain
+            screen.action_cancel()
+            await pilot.pause(0.05)
+
+    @pytest.mark.asyncio
+    async def test_agent_label_shows_provider_default_when_none(self) -> None:
+        """agent_label shows (provider default) when execution_agent is None."""
+        from textual.app import App
+
+        prov = _mock_provider("opencode")
+        prov.list_models = MagicMock(return_value=["model-a", "model-b"])
+        prov.list_agents = MagicMock(return_value=["build", "backend"])
+        prov.supports_agents = MagicMock(return_value=True)
+
+        screen = PreRunScreen(
+            providers=[prov],
+            config=_mock_config(),
+            project_dir=Path("/tmp/test"),
+            execution_model="",
+        )
+
+        class DefaultAgentApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(screen, lambda v: None)
+
+        async with DefaultAgentApp().run_test() as pilot:
+            await pilot.pause(0.05)
+            await pilot.pause(0.05)
+            agent_label = screen.query_one("#agent_label", Label)
+            assert agent_label.display is True
+            assert (
+                "Selected: (provider default)" in agent_label.render_str(agent_label.render()).plain
+            )
+            screen.action_cancel()
+            await pilot.pause(0.05)
+
+    @pytest.mark.asyncio
+    async def test_agent_label_hidden_when_provider_no_agents(self) -> None:
+        """agent_label is hidden when the provider does not support agents."""
+        from textual.app import App
+
+        prov = _mock_provider("opencode")
+        prov.list_models = MagicMock(return_value=["model-a"])
+        prov.list_agents = MagicMock(return_value=[])
+        prov.supports_agents = MagicMock(return_value=False)
+
+        screen = PreRunScreen(
+            providers=[prov],
+            config=_mock_config(),
+            project_dir=Path("/tmp/test"),
+        )
+
+        class NoAgentsApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(screen, lambda v: None)
+
+        async with NoAgentsApp().run_test() as pilot:
+            await pilot.pause(0.05)
+            await pilot.pause(0.05)
+            agent_label = screen.query_one("#agent_label", Label)
+            assert agent_label.display is False
+            screen.action_cancel()
+            await pilot.pause(0.05)
+
+
+# ── Architect model confirmation tests ─────────────────────────────────
+
+
+class TestArchitectModelConfirmation:
+    """ArchitectModelConfirmScreen — shown when architect_model is None at submit."""
+
+    @pytest.mark.asyncio
+    async def test_submit_blank_model_shows_confirmation(self) -> None:
+        """Submit with architect_model=None shows ArchitectModelConfirmScreen."""
+        from textual.app import App
+
+        screen = PreRunScreen(
+            providers=[_mock_provider("opencode")],
+            config=_mock_config(),
+            project_dir=Path("/tmp/test_project"),
+        )
+
+        class ConfirmApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(screen, lambda v: None)
+
+        async with ConfirmApp().run_test() as pilot:
+            await pilot.pause(0.05)
+            # Fill in goal so _all_complete is True
+            screen.query_one("#goal_text", TextArea).text = "Build the feature"
+            await pilot.pause(0.05)
+            # architect_model is None by default
+            assert screen._values.architect_model is None
+            screen.action_submit()
+            await pilot.pause(0.05)
+            assert isinstance(screen.app.screen, ArchitectModelConfirmScreen)
+
+    @pytest.mark.asyncio
+    async def test_confirm_architect_model_proceeds_to_dismiss(self) -> None:
+        """Confirming architect model warning dismisses the screen with values."""
+        from textual.app import App
+
+        screen = PreRunScreen(
+            providers=[_mock_provider("opencode")],
+            config=_mock_config(),
+            project_dir=Path("/tmp/test_project"),
+        )
+        result: Any = "<not-dismissed>"
+
+        class ConfirmApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(screen, self._cb)
+
+            def _cb(self, value: Any) -> None:
+                nonlocal result
+                result = value
+
+        async with ConfirmApp().run_test() as pilot:
+            await pilot.pause(0.05)
+            screen.query_one("#goal_text", TextArea).text = "Build the feature"
+            await pilot.pause(0.05)
+            screen.action_submit()
+            await pilot.pause(0.05)
+            assert isinstance(screen.app.screen, ArchitectModelConfirmScreen)
+            # Confirm the warning
+            screen._handle_architect_model_confirmation(True)
+            await pilot.pause(0.05)
+
+        assert isinstance(result, PreRunValues)
+        assert result.goal == "Build the feature"
+        assert result.architect_model is None
+        assert result.infinite_loop is False
+
+    @pytest.mark.asyncio
+    async def test_cancel_architect_model_stays_on_form(self) -> None:
+        """Cancelling architect model warning keeps the form open."""
+        from textual.app import App
+
+        screen = PreRunScreen(
+            providers=[_mock_provider("opencode")],
+            config=_mock_config(),
+            project_dir=Path("/tmp/test_project"),
+        )
+        result: Any = "<not-dismissed>"
+
+        class ConfirmApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(screen, self._cb)
+
+            def _cb(self, value: Any) -> None:
+                nonlocal result
+                result = value
+
+        async with ConfirmApp().run_test() as pilot:
+            await pilot.pause(0.05)
+            screen.query_one("#goal_text", TextArea).text = "Build the feature"
+            await pilot.pause(0.05)
+            screen.action_submit()
+            await pilot.pause(0.05)
+            assert isinstance(screen.app.screen, ArchitectModelConfirmScreen)
+            # Cancel the warning
+            screen._handle_architect_model_confirmation(False)
+            await pilot.pause(0.05)
+            # Screen should NOT be dismissed
+            assert result == "<not-dismissed>"
+            assert screen._architect_model_confirmed is False
+            # Footer should show a hint message
+            assert "Models tab" in screen._warning_text or "model" in screen._warning_text.lower()
+            screen.action_cancel()
+            await pilot.pause(0.05)
+
+    @pytest.mark.asyncio
+    async def test_explicit_architect_model_skips_confirmation(self) -> None:
+        """Submit with an explicit architect_model skips the confirmation modal."""
+        from textual.app import App
+
+        screen = PreRunScreen(
+            providers=[_mock_provider("opencode")],
+            config=_mock_config(),
+            project_dir=Path("/tmp/test_project"),
+            architect_model="model-a",
+        )
+        result: Any = "<not-dismissed>"
+
+        class SkipApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(screen, self._cb)
+
+            def _cb(self, value: Any) -> None:
+                nonlocal result
+                result = value
+
+        async with SkipApp().run_test() as pilot:
+            await pilot.pause(0.05)
+            await pilot.pause(0.05)
+            screen.query_one("#goal_text", TextArea).text = "Build the feature"
+            await pilot.pause(0.05)
+            assert screen._values.architect_model == "model-a"
+            screen.action_submit()
+            await pilot.pause(0.05)
+            # Should have dismissed directly — no modal shown
+            assert not isinstance(screen.app.screen, ArchitectModelConfirmScreen)
+
+        assert isinstance(result, PreRunValues)
+        assert result.architect_model == "model-a"
+
+    @pytest.mark.asyncio
+    async def test_blank_model_then_infinite_loop_shows_model_modal_first(self) -> None:
+        """When both architect_model=None and infinite_loop=True, model modal comes first."""
+        from textual.app import App
+
+        screen = PreRunScreen(
+            providers=[_mock_provider("opencode")],
+            config=_mock_config(),
+            project_dir=Path("/tmp/test_project"),
+        )
+        result: Any = "<not-dismissed>"
+
+        class ChainApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(screen, self._cb)
+
+            def _cb(self, value: Any) -> None:
+                nonlocal result
+                result = value
+
+        async with ChainApp().run_test() as pilot:
+            await pilot.pause(0.05)
+            screen.query_one("#goal_text", TextArea).text = "Build the feature"
+            # Check infinite loop — the on_checkbox_changed handler fires the IL
+            # modal which cancels and unchecks the box. Re-check so _collect_values
+            # sees True at submit time.
+            screen.query_one("#chk_infinite_loop", Checkbox).value = True
+            await pilot.pause(0.05)
+            screen.query_one("#chk_infinite_loop", Checkbox).value = True
+            await pilot.pause(0.05)
+            # First submit — architect_model=None, so model modal appears first
+            screen.action_submit()
+            await pilot.pause(0.05)
+            assert isinstance(screen.app.screen, ArchitectModelConfirmScreen)
+            # Confirm the model modal — dismiss(True) triggers the callback which
+            # sets _architect_model_confirmed and re-runs action_submit().
+            screen.app.screen.dismiss(True)
+            await pilot.pause(0.05)
+            assert isinstance(screen.app.screen, InfiniteLoopConfirmScreen)
+            # Cancel infinite loop
+            screen.app.screen.action_choose(False)
+            await pilot.pause(0.05)
+            assert result == "<not-dismissed>"
+            screen.action_cancel()
+            await pilot.pause(0.05)
+
+    @pytest.mark.asyncio
+    async def test_model_selection_resets_confirmation_flag(self) -> None:
+        """Changing the model selection resets _architect_model_confirmed to False."""
+        from textual.app import App
+
+        screen = PreRunScreen(
+            providers=[_mock_provider("opencode")],
+            config=_mock_config(),
+            project_dir=Path("/tmp/test_project"),
+        )
+
+        class ModelApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(screen, lambda v: None)
+
+        async with ModelApp().run_test() as pilot:
+            await pilot.pause(0.05)
+            # Simulate a prior confirmation
+            screen._architect_model_confirmed = True
+            # Select a model from the list (index 1 = first real model)
+            model_list = screen.query_one("#model_list", ListView)
+            model_list.focus()
+            model_list.index = 1
+            await pilot.press("space")
+            await pilot.pause(0.05)
+            # Flag should be reset
+            assert screen._architect_model_confirmed is False
+            screen.action_cancel()
+            await pilot.pause(0.05)
+
+    @pytest.mark.asyncio
+    async def test_provider_change_resets_architect_model_confirmation(self) -> None:
+        """Switching provider resets _architect_model_confirmed to False."""
+        from textual.app import App
+
+        prov_a = _mock_provider("opencode", "OpenCode")
+        prov_b = _mock_provider("claude-code", "Claude Code")
+        screen = PreRunScreen(
+            providers=[prov_a, prov_b],
+            config=_mock_config(),
+            project_dir=Path("/tmp/test_project"),
+        )
+
+        class ProvApp(App[None]):
+            def on_mount(self) -> None:
+                self.push_screen(screen, lambda v: None)
+
+        async with ProvApp().run_test() as pilot:
+            await pilot.pause(0.05)
+            # Simulate a prior confirmation
+            screen._architect_model_confirmed = True
+            # Switch provider
+            rb2 = screen.query_one("#rb_prov_1")
+            rb2.value = True
+            screen._on_provider_changed()
+            await pilot.pause(0.05)
+            assert screen._architect_model_confirmed is False
             screen.action_cancel()
             await pilot.pause(0.05)

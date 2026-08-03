@@ -68,8 +68,8 @@ class TestDetectProviderError:
         assert "claude update" in result.action
 
     def test_update_required_generic(self) -> None:
-        """Detect update-required error without provider name."""
-        result = detect_provider_error("Update required to continue.", 1)
+        """Detect update-required error with a generic provider name."""
+        result = detect_provider_error("codex: Update required to continue.", 1)
         assert result is not None
         assert result.kind == ProviderErrorKind.UPDATE_REQUIRED
         assert "latest version" in result.action
@@ -97,7 +97,7 @@ class TestDetectProviderError:
     def test_update_required_takes_priority_over_misconfigured(self) -> None:
         """Update-required should be detected before misconfiguration."""
         result = detect_provider_error(
-            "A new version is available. Please update. Also invalid API key.", 1
+            "opencode: A new version is available. Please update. Also invalid API key.", 1
         )
         assert result is not None
         assert result.kind == ProviderErrorKind.UPDATE_REQUIRED
@@ -107,6 +107,120 @@ class TestDetectProviderError:
         result = detect_provider_error("rate limit exceeded, try again in 60 seconds", 1)
         # This should either be None or not be UPDATE_REQUIRED
         assert result is None or result.kind != ProviderErrorKind.UPDATE_REQUIRED
+
+    def test_false_positive_must_update_no_tool_name(self) -> None:
+        """'must update' without a CLI tool name nearby must NOT trigger UPDATE_REQUIRED.
+
+        Regression: an AI model echoing its own instructions
+        ('the task agents must update it') was misclassified as
+        UPDATE_REQUIRED, aborting a healthy run.
+        """
+        result = detect_provider_error(
+            "the task agents must update it, and read PROGRESS.md before proceeding",
+            1,
+        )
+        assert result is None or result.kind != ProviderErrorKind.UPDATE_REQUIRED
+
+    def test_false_positive_must_be_updated_no_tool_name(self) -> None:
+        """'must be updated' without a CLI tool name nearby must NOT fire."""
+        result = detect_provider_error(
+            "The configuration file must be updated before the next deployment cycle",
+            1,
+        )
+        assert result is None or result.kind != ProviderErrorKind.UPDATE_REQUIRED
+
+    def test_false_positive_needs_to_be_updated_no_tool_name(self) -> None:
+        """'needs to be updated' without a CLI tool name nearby must NOT fire."""
+        result = detect_provider_error(
+            "This document needs to be updated each sprint to reflect current priorities",
+            1,
+        )
+        assert result is None or result.kind != ProviderErrorKind.UPDATE_REQUIRED
+
+    def test_false_positive_new_version_no_tool_name(self) -> None:
+        """'new version' without a CLI tool name nearby must NOT fire."""
+        result = detect_provider_error(
+            "We released a new version of the internal style guide today",
+            1,
+        )
+        assert result is None or result.kind != ProviderErrorKind.UPDATE_REQUIRED
+
+    def test_update_required_opencode_true_positive(self) -> None:
+        """Genuine opencode update message must still be detected."""
+        result = detect_provider_error(
+            "A new version of opencode is available. Please update.",
+            1,
+        )
+        assert result is not None
+        assert result.kind == ProviderErrorKind.UPDATE_REQUIRED
+        assert "opencode upgrade" in result.action
+
+    def test_update_required_claude_true_positive(self) -> None:
+        """Genuine claude update message must still be detected."""
+        result = detect_provider_error(
+            "Please update Claude Code to continue.",
+            1,
+        )
+        assert result is not None
+        assert result.kind == ProviderErrorKind.UPDATE_REQUIRED
+        assert "claude update" in result.action
+
+    def test_update_required_codex_true_positive(self) -> None:
+        """Genuine codex update message must still be detected."""
+        result = detect_provider_error(
+            "A new version of codex is available. Please update.",
+            1,
+        )
+        assert result is not None
+        assert result.kind == ProviderErrorKind.UPDATE_REQUIRED
+
+    def test_update_required_gemini_true_positive(self) -> None:
+        """Genuine gemini update message must still be detected."""
+        result = detect_provider_error(
+            "Gemini CLI needs to be updated to the latest version.",
+            1,
+        )
+        assert result is not None
+        assert result.kind == ProviderErrorKind.UPDATE_REQUIRED
+
+    def test_update_required_tool_name_far_away_is_not_enough(self) -> None:
+        """A tool name very far from the update phrase must NOT count as nearby.
+
+        The proximity window is 80 chars on each side. If the tool name
+        appears more than 80 chars away from the matched pattern, the
+        match should be rejected as a false positive.
+        """
+        # "must update" at position ~5, "opencode" at position ~200+
+        # The gap is well beyond the 80-char proximity window
+        long_text = (
+            "the task agents must update it, "
+            + "x" * 100  # 100 chars of padding
+            + "and then read the opencode documentation"
+        )
+        result = detect_provider_error(long_text, 1)
+        # "must update" has no tool name within 80 chars → not UPDATE_REQUIRED
+        # "opencode" appears far away, so the proximity check fails
+        assert result is None or result.kind != ProviderErrorKind.UPDATE_REQUIRED
+
+    def test_update_required_tool_name_within_window(self) -> None:
+        """A tool name within the proximity window should still trigger detection."""
+        # "must update" with "opencode" within 80 chars
+        text = "the task agents must update opencode to continue"
+        result = detect_provider_error(text, 1)
+        assert result is not None
+        assert result.kind == ProviderErrorKind.UPDATE_REQUIRED
+        assert "opencode upgrade" in result.action
+
+    def test_update_required_generic_still_works(self) -> None:
+        """Update-required without a specific provider name should use generic action."""
+        result = detect_provider_error(
+            "codex: update required to continue",
+            1,
+        )
+        assert result is not None
+        assert result.kind == ProviderErrorKind.UPDATE_REQUIRED
+        # codex is not opencode or claude → generic action
+        assert "latest version" in result.action
 
 
 # -------------------------------------------------------

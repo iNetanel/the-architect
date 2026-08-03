@@ -35,8 +35,8 @@
 # If using an AI agent to contribute, instruct it to increment __build__
 # once for each completed task/change. This is the intended workflow.
 
-__version__ = "1.4.2"
-__build__ = 10667  # was 10666
+__version__ = "1.4.3"
+__build__ = 10669  # was 10668
 __author__ = "Netanel Eliav"
 __email__ = "inetanel@me.com"
 __repo__ = "https://github.com/inetanel/the-architect"
