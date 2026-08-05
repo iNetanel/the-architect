@@ -1318,3 +1318,108 @@ class TestPromptSelfUpdateAction:
         ):
             result = _prompt_self_update_action("1.0.0", "2.0.0")
         assert result == "continue"
+
+
+# ---------------------------------------------------------------------------
+# _prompt_provider_issue_warning
+# ---------------------------------------------------------------------------
+
+
+class TestPromptProviderIssueWarning:
+    """Regression coverage for the persistent-run hang (provider health warning).
+
+    See documentation/PRACTICES.md history / bug report: a background worker
+    thread calling this function while a live ArchitectAppRunner owns the
+    terminal must never block on a raw prompt_toolkit Application.run().
+    """
+
+    def test_tui_fast_path_uses_screen(self) -> None:
+        """TUI mode routes through run_provider_issue_screen, not console.print."""
+        from the_architect.cli import _prompt_provider_issue_warning
+
+        with (
+            patch("the_architect.cli._tui_mode_enabled", return_value=True),
+            patch(
+                "the_architect.tui.screens.pre_run.run_provider_issue_screen",
+                return_value="continue",
+            ) as run_screen,
+        ):
+            _prompt_provider_issue_warning("boom")
+        run_screen.assert_called_once_with("boom")
+
+    def test_tui_fast_path_exception_falls_back(self) -> None:
+        """Exception in the TUI screen path falls back, still guarded by active_runner."""
+        from prompt_toolkit.output import DummyOutput
+
+        from the_architect.cli import _prompt_provider_issue_warning
+
+        with (
+            patch("the_architect.cli._tui_mode_enabled", return_value=True),
+            patch(
+                "the_architect.tui.screens.pre_run.run_provider_issue_screen",
+                side_effect=RuntimeError("boom"),
+            ),
+            patch("the_architect.tui.runner.active_runner", return_value=None),
+            patch("prompt_toolkit.application.application.Application.run", return_value=None),
+            patch("the_architect.cli._get_prompt_toolkit_output", return_value=DummyOutput()),
+        ):
+            _prompt_provider_issue_warning("boom")  # must not raise / hang
+
+    def test_no_tui_no_runner_uses_raw_prompt_toolkit(self) -> None:
+        """No TUI, no live runner: falls through to the raw prompt_toolkit app."""
+        from prompt_toolkit.output import DummyOutput
+
+        from the_architect.cli import _prompt_provider_issue_warning
+
+        with (
+            patch("the_architect.cli._tui_mode_enabled", return_value=False),
+            patch("the_architect.tui.runner.active_runner", return_value=None),
+            patch(
+                "prompt_toolkit.application.application.Application.run", return_value=None
+            ) as app_run,
+            patch("the_architect.cli._get_prompt_toolkit_output", return_value=DummyOutput()),
+        ):
+            _prompt_provider_issue_warning("boom")
+        app_run.assert_called_once()
+
+    def test_live_runner_skips_blocking_prompt_toolkit_app(self) -> None:
+        """CRITICAL regression: a live runner must never boot a blocking raw app.
+
+        Simulates a persistent/infinite-loop worker thread calling this
+        function after ARCHITECT_TUI is no longer set to True, while a
+        Textual ArchitectApp still owns the terminal. Must degrade to a
+        non-blocking console.print rather than calling Application.run(),
+        which previously hung forever waiting for a keypress nobody could
+        provide.
+        """
+        from the_architect.cli import _prompt_provider_issue_warning
+
+        fake_runner = MagicMock()
+
+        with (
+            patch("the_architect.cli._tui_mode_enabled", return_value=False),
+            patch("the_architect.tui.runner.active_runner", return_value=fake_runner),
+            patch(
+                "prompt_toolkit.application.application.Application.run", return_value=None
+            ) as app_run,
+        ):
+            _prompt_provider_issue_warning("provider timed out")
+
+        app_run.assert_not_called()
+
+    def test_import_error_falls_back_to_raw_prompt_toolkit(self) -> None:
+        """If the runner module cannot be imported, fall through safely (main thread only)."""
+        from prompt_toolkit.output import DummyOutput
+
+        from the_architect.cli import _prompt_provider_issue_warning
+
+        with (
+            patch("the_architect.cli._tui_mode_enabled", return_value=False),
+            patch.dict("sys.modules", {"the_architect.tui.runner": None}),
+            patch(
+                "prompt_toolkit.application.application.Application.run", return_value=None
+            ) as app_run,
+            patch("the_architect.cli._get_prompt_toolkit_output", return_value=DummyOutput()),
+        ):
+            _prompt_provider_issue_warning("boom")
+        app_run.assert_called_once()

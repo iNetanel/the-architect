@@ -16,6 +16,7 @@ from textual.widgets import ListView
 from the_architect.tui.screens.pre_run import (
     BACK_SENTINEL,
     PendingTasksScreen,
+    ProviderIssueScreen,
     ProviderOption,
     ProviderSelectionScreen,
     SelfUpdateScreen,
@@ -24,6 +25,7 @@ from the_architect.tui.screens.pre_run import (
     run_agent_picker,
     run_model_picker,
     run_pending_tasks_screen,
+    run_provider_issue_screen,
     run_provider_selection,
     run_self_update_screen,
     run_update_action_screen,
@@ -335,6 +337,27 @@ class TestRunPendingTasksScreen:
             assert result is False
 
 
+class TestRunProviderIssueScreen:
+    """Tests for run_provider_issue_screen wrapper function.
+
+    Regression coverage: this wrapper routes through run_single_screen(),
+    which is the thread-safe pattern (switches onto a live runner's app, or
+    degrades silently off the main thread) that prevents the persistent-run
+    hang described in the provider health-check warning bug report.
+    """
+
+    def test_returns_continue_action(self) -> None:
+        with patch("the_architect.tui.app.run_single_screen", return_value="continue") as mock_run:
+            result = run_provider_issue_screen("provider timed out")
+            assert result == "continue"
+            mock_run.assert_called_once()
+
+    def test_defaults_to_continue_on_none(self) -> None:
+        with patch("the_architect.tui.app.run_single_screen", return_value=None):
+            result = run_provider_issue_screen("provider timed out")
+            assert result == "continue"
+
+
 # ── SelfUpdateScreen tests ─────────────────────────────────────────────
 
 
@@ -373,6 +396,35 @@ class TestSelfUpdateScreen:
             screen.action_update()
             await pilot.pause(0.05)
         assert harness.dismissed == "update"
+
+
+# ── ProviderIssueScreen tests ───────────────────────────────────────────
+
+
+class TestProviderIssueScreen:
+    """Tests for ProviderIssueScreen class using _Harness pattern."""
+
+    @pytest.mark.asyncio
+    async def test_compose_renders_message(self) -> None:
+        screen = ProviderIssueScreen(message="OpenCode health check timed out after 30s")
+        harness = _Harness(screen)
+        async with harness.run_test() as pilot:
+            await pilot.pause(0.05)
+            assert screen.query_one("#providerissue_body") is not None
+            assert screen.query_one("#providerissue_title") is not None
+            assert screen.query_one("#providerissue_msg") is not None
+            assert screen.query_one("#providerissue_hint") is not None
+            assert screen.query_one("#providerissue_instructions") is not None
+
+    @pytest.mark.asyncio
+    async def test_action_continue_run_dismisses_continue(self) -> None:
+        screen = ProviderIssueScreen(message="quota exceeded")
+        harness = _Harness(screen)
+        async with harness.run_test() as pilot:
+            await pilot.pause(0.05)
+            screen.action_continue_run()
+            await pilot.pause(0.05)
+        assert harness.dismissed == "continue"
 
 
 # ── Exception paths in action_confirm ──────────────────────────────────

@@ -11,6 +11,12 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ## [Unreleased]
 
+## [1.4.4] (build 10670) — 2026-08-05
+
+### Fixed
+
+- **Persistent/infinite-loop hang on provider health-check warning** — `_prompt_provider_issue_warning()` could block forever when a pre-planning provider health check timed out during an unattended persistent run. The function relied solely on the `ARCHITECT_TUI` env var to decide whether it was safe to render, so once a background worker thread called it after startup (with `ARCHITECT_TUI` no longer effectively guarding a live app), it booted a brand-new raw `prompt_toolkit.Application.run()` that competed with the already-running Textual app for terminal control and waited indefinitely for a keypress nobody could provide. The TUI path now routes through a proper `ProviderIssueScreen` via the thread-safe `run_single_screen()` pattern (same as `_prompt_self_update_action`), and the raw `prompt_toolkit` fallback now checks `tui.runner.active_runner()` first — if a live runner exists, it degrades to a non-blocking `console.print` warning instead of booting a competing blocking application (build 10670)
+
 ## [1.4.3] (build 10669) — 2026-08-03
 
 ### Fixed

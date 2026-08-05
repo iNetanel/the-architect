@@ -487,6 +487,82 @@ def run_self_update_screen(current_version: str, latest_version: str) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# Provider issue warning
+# ══════════════════════════════════════════════════════════════════════
+
+
+class ProviderIssueScreen(Screen[str]):
+    """Warning screen shown when a provider health check fails or times out."""
+
+    DEFAULT_CSS = """
+    ProviderIssueScreen {
+        align: center middle;
+    }
+
+    #providerissue_body {
+        width: 100%;
+        max-width: 82;
+
+        height: auto;
+        padding: 1 2;
+        border: round $panel;
+        background: $panel 20%;
+    }
+
+    #providerissue_title { color: $warning; text-style: bold; }
+    #providerissue_msg { padding: 1 0; }
+    #providerissue_hint { color: $text-muted; padding: 0 0 1 0; }
+    #providerissue_instructions { color: $text-muted; padding: 1 0 0 0; }
+    """
+
+    BINDINGS = [
+        Binding("enter", "continue_run", "Continue"),
+        Binding("c", "continue_run", "Continue"),
+        Binding("C", "continue_run", "Continue"),
+    ]
+
+    def __init__(self, message: str) -> None:
+        super().__init__()
+        self._message = message
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Vertical(id="providerissue_body"):
+            yield Static("Provider issue detected", id="providerissue_title")
+            yield Static(self._message, id="providerissue_msg")
+            yield Static(
+                "The Architect will continue, but provider work may fail until this is fixed.",
+                id="providerissue_hint",
+            )
+            yield Static(
+                "[dim]Enter / c — continue[/dim]",
+                id="providerissue_instructions",
+                markup=True,
+            )
+        yield Footer()
+
+    def action_continue_run(self) -> None:
+        """Continue past the warning."""
+        self.dismiss("continue")
+
+
+def run_provider_issue_screen(message: str) -> str:
+    """Run the provider issue warning screen.
+
+    Args:
+        message: The health check error message.
+
+    Returns:
+        ``"continue"`` — user chose to proceed.
+    """
+    from the_architect.tui.app import run_single_screen
+
+    screen = ProviderIssueScreen(message=message)
+    result = run_single_screen(screen)
+    return str(result) if result else "continue"
+
+
+# ══════════════════════════════════════════════════════════════════════
 # Pending tasks warning
 # ══════════════════════════════════════════════════════════════════════
 
@@ -571,6 +647,7 @@ def run_pending_tasks_screen(pending: list[str]) -> bool:
 __all__ = [
     "BACK_SENTINEL",
     "PendingTasksScreen",
+    "ProviderIssueScreen",
     "ProviderOption",
     "ProviderSelectionScreen",
     "StringListPickerScreen",
@@ -578,6 +655,7 @@ __all__ = [
     "run_agent_picker",
     "run_model_picker",
     "run_pending_tasks_screen",
+    "run_provider_issue_screen",
     "run_provider_selection",
     "run_update_action_screen",
 ]

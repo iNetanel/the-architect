@@ -1316,11 +1316,33 @@ def _prompt_provider_issue_warning(message: str) -> None:
     """Show a provider health warning without exiting The Architect."""
     if _tui_mode_enabled():
         try:
-            console.print(f"\n[bold yellow]⚠  Provider issue: {message}[/bold yellow]")
-            console.print("[dim]Fix the provider if needed, then continue.[/dim]\n")
+            from the_architect.tui.screens.pre_run import run_provider_issue_screen
+
+            run_provider_issue_screen(message)
             return
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"TUI provider-issue screen failed, falling back: {exc!r}")
+
+    # Defensive belt-and-braces: never boot a raw prompt_toolkit Application
+    # from a background worker thread while a Textual app may own the
+    # terminal (e.g. a persistent/infinite-loop run whose worker thread
+    # calls this after ARCHITECT_TUI has already been consumed at startup).
+    # run_single_screen() has this guard for the TUI path above; replicate
+    # it here because the raw prompt_toolkit fallback below is a
+    # hand-rolled app that bypasses it entirely.
+    try:
+        from the_architect.tui.runner import active_runner
+    except ImportError:
+        active_runner = None  # type: ignore[assignment]
+
+    if active_runner is not None and active_runner() is not None:
+        # A live runner exists — a raw prompt_toolkit Application.run()
+        # would compete for terminal control and block forever waiting
+        # for a keypress nobody can provide. Degrade to non-blocking
+        # output instead.
+        console.print(f"\n[bold yellow]⚠  Provider issue: {message}[/bold yellow]")
+        console.print("[dim]Fix the provider if needed. Continuing...[/dim]\n")
+        return
 
     from prompt_toolkit import Application
     from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
