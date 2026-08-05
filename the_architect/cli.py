@@ -126,6 +126,11 @@ _PERSISTENT_MAX_RETRIES = 30
 _PERSISTENT_RETROSPECTIVE_ROUNDS = 3
 _PERSISTENT_FIXUP_ATTEMPTS = 5
 _INFINITE_LOOP_RETROSPECTIVE_ROUNDS = 2
+# Circuit-breaker for runaway busy-loop: a genuine planning pass takes
+# at minimum tens of seconds (5–18 min in real logs).  A sub-5-second
+# return with zero pending tasks means the provider was never invoked.
+_INFINITE_LOOP_PLANNING_MAX_SECONDS = 5.0
+_INFINITE_LOOP_NO_PROGRESS_MAX_ITERATIONS = 2
 
 
 @dataclass(frozen=True)
@@ -420,6 +425,50 @@ def _infinite_loop_has_clean_exit_state(project: Path, config: ArchitectConfig) 
     if check_pending_tasks(tasks_dir, config.progress_file):
         return False
     return _validate_cycle(tasks_dir, config.progress_file).passed
+
+
+def _infinite_loop_circuit_breaker(
+    consecutive_no_progress: int,
+    *,
+    was_planning: bool,
+    elapsed_seconds: float,
+    pending_count: int,
+) -> int:
+    """Evaluate the Infinite Loop runaway circuit breaker and return the new counter.
+
+    A planning iteration is considered "no-progress" when it completes in under
+    ``_INFINITE_LOOP_PLANNING_MAX_SECONDS`` and leaves zero pending tasks — a
+    genuine planning pass that invokes the provider CLI takes at minimum tens of
+    seconds (5–18 minutes in real logs).
+
+    Parameters
+    ----------
+    consecutive_no_progress:
+        Current count of consecutive no-progress planning iterations.
+    was_planning:
+        True if this iteration was a planning pass
+        (``plan_local["v"]`` was True going into ``_run_main``).
+    elapsed_seconds:
+        Wall-clock seconds the ``_run_main`` call took.
+    pending_count:
+        Number of pending tasks reported by ``check_pending_tasks`` after
+        the call returned.
+
+    Returns
+    -------
+    int
+        Updated consecutive-no-progress counter.  Callers should check if
+        the returned value equals ``_INFINITE_LOOP_NO_PROGRESS_MAX_ITERATIONS``
+        to decide whether to abort.
+    """
+    if not was_planning:
+        # Non-planning iterations (forced execution) never count.
+        return 0
+    if elapsed_seconds >= _INFINITE_LOOP_PLANNING_MAX_SECONDS or pending_count > 0:
+        # This iteration was either a real planning pass or produced work.
+        return 0
+    # No-progress planning iteration — increment the counter.
+    return consecutive_no_progress + 1
 
 
 def _infinite_loop_reset_sleep_interrupted_tasks(project: Path, config: ArchitectConfig) -> int:
@@ -1233,7 +1282,11 @@ def _check_provider_update_before_model_work(
 
         update_msg = provider.check_update_available()
         if update_msg:
-            if not headless:
+            if not headless and not _infinite_loop_active(config):
+                # Interactive, non-Infinite-Loop: offer the user a chance to
+                # update or exit. During Infinite Loop the goal/scope/model
+                # are already resolved from iteration 1; blocking here would
+                # hang an unattended run.
                 try:
                     hint = provider.install_hint()
                 except Exception:
@@ -1269,7 +1322,10 @@ def _check_provider_update_before_model_work(
     except ProviderHealthError as exc:
         message = str(exc)
         logger.warning(f"Provider health check warning: {message}")
-        if headless:
+        if headless or _infinite_loop_active(config):
+            # Headless or Infinite Loop: print a non-blocking warning and
+            # continue. Infinite Loop is an unattended mode — blocking on a
+            # modal that requires a human keypress would hang the run.
             console.print(f"\n[bold yellow]⚠  Provider issue: {message}[/bold yellow]")
             console.print()
         else:
@@ -4967,6 +5023,10 @@ def main(
 
             loop_iteration = 1
             infinite_loop_chain_enabled = _infinite_loop_active(config)
+            # Circuit-breaker counter for runaway busy-loop detection.
+            # Tracks consecutive planning iterations that complete in under
+            # _INFINITE_LOOP_PLANNING_MAX_SECONDS with zero pending tasks.
+            loop_no_progress_count = 0
             logger.info(
                 "Infinite Loop driver: entering loop "
                 f"(active={infinite_loop_chain_enabled}, plan={plan_local['v']})"
@@ -4981,6 +5041,7 @@ def main(
                     f"Infinite Loop driver: iteration {loop_iteration} starting "
                     f"(plan={plan_local['v']}, active={infinite_loop_enabled})"
                 )
+                loop_run_start = time.monotonic()
                 try:
                     _run_main(
                         project=resolved_project,
@@ -5080,6 +5141,10 @@ def main(
                     else:
                         logger.info("Infinite Loop driver: SystemExit absorbed, continuing loop")
 
+                # Compute elapsed time unconditionally — needed by circuit breaker
+                # below regardless of whether _run_main returned normally or
+                # raised SystemExit that was absorbed by the handler above.
+                loop_run_elapsed = time.monotonic() - loop_run_start
                 infinite_loop_chain_enabled = infinite_loop_enabled or _infinite_loop_active(config)
                 if not infinite_loop_chain_enabled:
                     logger.info(
@@ -5105,6 +5170,32 @@ def main(
                     )
                     plan_local["v"] = False
                     continue
+
+                # ── Runaway busy-loop circuit breaker ──────────────────────
+                # Detect consecutive planning iterations that complete in under
+                # the threshold with zero pending tasks — a sign that the
+                # provider CLI was never actually invoked.
+                loop_was_planning = plan_local["v"]
+                loop_no_progress_count = _infinite_loop_circuit_breaker(
+                    loop_no_progress_count,
+                    was_planning=loop_was_planning,
+                    elapsed_seconds=loop_run_elapsed,
+                    pending_count=0,
+                )
+                if loop_no_progress_count >= _INFINITE_LOOP_NO_PROGRESS_MAX_ITERATIONS:
+                    logger.error(
+                        "Infinite Loop driver: runaway busy-loop detected — "
+                        f"{loop_no_progress_count} consecutive planning iterations "
+                        f"completed in under {_INFINITE_LOOP_PLANNING_MAX_SECONDS}s "
+                        "with zero pending tasks (provider CLI likely never invoked). "
+                        "Safety abort. Check .architect/logs/architect_runtime.log "
+                        "and .architect/logs/the_architect.log for the underlying cause."
+                    )
+                    console.print(
+                        "[red]Infinite Loop aborted: runaway busy-loop detected.[/red] "
+                        f"[dim]{loop_no_progress_count} empty planning iterations[/dim]"
+                    )
+                    raise SystemExit(1)
 
                 loop_goal = _resolve_infinite_loop_goal(
                     goal_text or "",

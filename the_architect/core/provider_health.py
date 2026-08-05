@@ -67,36 +67,49 @@ async def check_provider_health(
     if cache_key in _HEALTH_CACHE:
         return
 
-    if not provider.is_installed():
-        raise ProviderHealthError(
-            f"{provider.display_name} is not installed. Install it with: {provider.install_hint()}"
-        )
-
-    if not provider.has_any_models():
-        raise ProviderHealthError(
-            f"{provider.display_name} is installed but does not appear configured. "
-            "Run the provider CLI once or configure its API key before using The Architect."
-        )
-
-    cmd = provider.build_command(_HEALTH_PROMPT, model_override, effective_agent)
-    env = {
-        **os.environ.copy(),
-        "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS": "900000",
-    }
-    env.update(provider.get_env_overrides(config_override))
-
     logger.debug(
         f"Running {provider.display_name} health check "
         f"model={model_override or 'default'} agent={effective_agent or 'default'}"
     )
 
-    process: asyncio.subprocess.Process | None = None
-    try:
+    # Mutable holder so the timeout handler can reach the process even when
+    # _run_probe() is cancelled before it returns.
+    process_holder: dict[str, asyncio.subprocess.Process | None] = {"proc": None}
+
+    async def _run_probe() -> tuple[bytes, bytes, int]:
+        """Execute the full probe pipeline under a single deadline.
+
+        Returns (stdout_bytes, stderr_bytes, exit_code).
+        The process is stored in process_holder for cleanup on timeout.
+        """
+        # Run blocking checks off the event loop so the outer wait_for deadline
+        # can actually enforce a hard end-to-end timeout.
+        is_installed = await asyncio.to_thread(provider.is_installed)
+        if not is_installed:
+            raise ProviderHealthError(
+                f"{provider.display_name} is not installed. "
+                f"Install it with: {provider.install_hint()}"
+            )
+
+        has_models = await asyncio.to_thread(provider.has_any_models)
+        if not has_models:
+            raise ProviderHealthError(
+                f"{provider.display_name} is installed but does not appear configured. "
+                "Run the provider CLI once or configure its API key before using The Architect."
+            )
+
+        cmd = provider.build_command(_HEALTH_PROMPT, model_override, effective_agent)
+        env = {
+            **os.environ.copy(),
+            "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS": "900000",
+        }
+        env.update(provider.get_env_overrides(config_override))
+
         # Respect provider's instruction delivery mechanism — providers like
         # OpenCode and Claude Code now read instructions from stdin.
         _use_stdin = getattr(provider, "instruction_via_stdin", False)
         _stdin_mode = asyncio.subprocess.PIPE if _use_stdin else None
-        process = await asyncio.create_subprocess_exec(
+        proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=str(project_dir.resolve()),
             env=env,
@@ -104,24 +117,34 @@ async def check_provider_health(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        process_holder["proc"] = proc
 
         # Write health prompt to stdin when provider reads from stdin pipe.
-        if _use_stdin and process.stdin is not None:
+        if _use_stdin and proc.stdin is not None:
             try:
-                process.stdin.write(_HEALTH_PROMPT.encode("utf-8"))
-                await process.stdin.drain()
-                process.stdin.close()
-                await process.stdin.wait_closed()
+                proc.stdin.write(_HEALTH_PROMPT.encode("utf-8"))
+                await proc.stdin.drain()
+                proc.stdin.close()
+                await proc.stdin.wait_closed()
             except Exception as stdin_exc:
                 logger.debug(f"Health check stdin write failed: {stdin_exc!r}")
 
-        stdout_bytes, stderr_bytes = await asyncio.wait_for(
-            process.communicate(), timeout=timeout_seconds
+        stdout_bytes, stderr_bytes = await proc.communicate()
+        exit_code = int(proc.returncode or 0)
+        return stdout_bytes, stderr_bytes, exit_code
+
+    try:
+        stdout_bytes, stderr_bytes, exit_code = await asyncio.wait_for(
+            _run_probe(), timeout=timeout_seconds
         )
     except TimeoutError as exc:
-        if process is not None and process.returncode is None:
-            process.kill()
-            await process.wait()
+        proc = process_holder["proc"]
+        if proc is not None and getattr(proc, "returncode", None) is None:
+            proc.kill()
+            await proc.wait()
+        logger.warning(
+            f"{provider.display_name} health check timed out after {int(timeout_seconds)}s"
+        )
         raise ProviderHealthError(
             f"{provider.display_name} health check timed out after {int(timeout_seconds)}s"
         ) from exc
@@ -132,7 +155,6 @@ async def check_provider_health(
     stderr = stderr_bytes.decode("utf-8", errors="replace")
     accumulated = _accumulate_probe_text(provider, stdout, stderr)
     combined = accumulated or "\n".join(part for part in (stdout, stderr) if part.strip())
-    exit_code = int(process.returncode or 0)
 
     provider_error = detect_provider_error(combined, exit_code)
     if provider_error is not None and provider_error.kind in (

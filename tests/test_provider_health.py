@@ -408,3 +408,50 @@ class TestProviderHealth:
         # model_not_found branch: raw line captured because display_lines is empty
         assert "model not_found" in result
         assert "other line" in result
+
+    # --- T01.3: End-to-end timeout coverage for blocking pre-subprocess steps ---
+
+    @pytest.mark.asyncio
+    async def test_slow_has_any_models_hits_timeout(self, tmp_path: Path) -> None:
+        """A blocking has_any_models() must be bounded by the outer wait_for deadline."""
+        import time
+
+        class _SlowModelsProvider:
+            name = "gemini-cli"
+            display_name = "Gemini CLI"
+            __module__ = "the_architect.core.gemini_cli_provider"
+
+            def is_installed(self) -> bool:
+                return True
+
+            def has_any_models(self) -> bool:
+                # Simulate a blocking subprocess call that hangs
+                time.sleep(10)
+                return True
+
+            def install_hint(self) -> str:
+                return "npm install -g @google/gemini-cli"
+
+            def supports_agents(self) -> bool:
+                return False
+
+            def build_command(
+                self,
+                instruction: str,
+                model_override: str | None = None,
+                agent_override: str | None = None,
+            ) -> list[str]:
+                return ["gemini"]
+
+            def get_env_overrides(self, config_override: Path | None = None) -> dict[str, str]:
+                return {}
+
+            def parse_output_line(self, line: str):  # noqa: ANN201
+                return None
+
+        with pytest.raises(ProviderHealthError, match="timed out"):
+            await check_provider_health(
+                provider=_SlowModelsProvider(),
+                project_dir=tmp_path,
+                timeout_seconds=0.3,
+            )

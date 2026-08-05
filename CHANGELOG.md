@@ -11,6 +11,14 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ## [Unreleased]
 
+## [1.4.5] (build 10671) — 2026-08-05
+
+### Fixed
+
+- **Infinite Loop hang on unbounded provider health-check probe** — `check_provider_health()` only bounded the final subprocess `communicate()` call with a timeout; the `is_installed()` / `has_any_models()` checks and subprocess spawn were unbounded, allowing the full probe to hang indefinitely (observed: ~18 minutes with no timeout warning) before Infinite Loop could even attempt to recover. The entire probe is now wrapped in a single `asyncio.wait_for(timeout_seconds)`, with blocking calls moved to `asyncio.to_thread` and the subprocess tracked for cleanup on timeout.
+- **Infinite Loop runaway busy-loop** — added a deterministic circuit breaker to the Infinite Loop driver's main loop that detects consecutive planning iterations completing in under 5 seconds with zero pending tasks (a sign the provider CLI was never actually invoked). After 2 such iterations, the loop aborts with a clear error message and `SystemExit(1)` rather than spinning indefinitely in a silent busy-loop (observed: ~27 no-op iterations in under 20 seconds).
+- **Infinite Loop hang on provider update/health prompts** — `_check_provider_update_before_model_work()` could block on an interactive modal during an unattended Infinite Loop run when a provider update was available or a health check failed. The function now detects active Infinite Loop mode via `_infinite_loop_active(config)` and skips the blocking prompt, falling back to a non-blocking console warning instead (matching the existing guard in `_collect_planning_prompts` for the same reason).
+
 ## [1.4.4] (build 10670) — 2026-08-05
 
 ### Fixed

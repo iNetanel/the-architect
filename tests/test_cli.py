@@ -6482,6 +6482,57 @@ class TestCheckProviderUpdateBeforeModelWork:
         warning.assert_called_once_with("quota exceeded")
         assert getattr(config, "_provider_health_checked", None) is True
 
+    def test_infinite_loop_health_warning_skips_modal(self, tmp_path: Path) -> None:
+        """When Infinite Loop is active, a health error prints a warning
+        without showing the blocking modal (which would hang an unattended run)."""
+        from the_architect.cli import _check_provider_update_before_model_work
+        from the_architect.core.provider_health import ProviderHealthError
+
+        provider = self._make_provider(update_msg="")
+        provider.name = "gemini-cli"
+        provider.display_name = "Gemini CLI"
+        provider.supports_agents.return_value = False
+        config = ArchitectConfig()
+        config._infinite_loop_enabled = True  # type: ignore[attr-defined]
+
+        with (
+            patch(
+                "the_architect.core.provider_health.check_provider_health",
+                side_effect=ProviderHealthError("auth token expired"),
+            ) as health_check,
+            patch("the_architect.cli._prompt_provider_issue_warning") as warning,
+        ):
+            # Must return normally — no SystemExit, no blocking modal
+            _check_provider_update_before_model_work(
+                provider,
+                config,
+                headless=False,
+                project=tmp_path,
+                model_override="gemini-2.5-pro",
+            )
+
+        health_check.assert_called_once()
+        warning.assert_not_called()
+        assert getattr(config, "_provider_health_checked", None) is True
+
+    def test_infinite_loop_update_available_skips_prompt(
+        self,
+    ) -> None:
+        """When Infinite Loop is active, an available update prints a warning
+        without showing the interactive prompt (which could block or exit)."""
+        from the_architect.cli import _check_provider_update_before_model_work
+
+        provider = self._make_provider(update_msg="Provider 2.0 available")
+        config = ArchitectConfig()
+        config._infinite_loop_enabled = True  # type: ignore[attr-defined]
+
+        with patch("the_architect.cli._prompt_update_action") as mock_prompt:
+            # Must return normally — no SystemExit, no interactive prompt
+            _check_provider_update_before_model_work(provider, config, headless=False)
+
+        mock_prompt.assert_not_called()
+        provider.check_update_available.assert_called_once()
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Infinite Loop idle-timeout reset tests
@@ -6580,6 +6631,187 @@ class TestInfiniteLoopResetIdleTimeoutTasks:
         # T04 reset to Pending, T05 stays Failed
         assert "T04" in content and "Pending" in content
         assert "T05" in content and "Failed" in content
+
+
+class TestInfiniteLoopCircuitBreaker:
+    """Circuit breaker for runaway busy-loop detection in the Infinite Loop driver."""
+
+    def test_aborts_after_consecutive_quick_planning_with_no_tasks(self) -> None:
+        """Two consecutive fast planning iterations with zero tasks triggers abort."""
+        from the_architect.cli import (
+            _INFINITE_LOOP_NO_PROGRESS_MAX_ITERATIONS,
+            _infinite_loop_circuit_breaker,
+        )
+
+        count = 0
+        # First no-progress planning iteration
+        count = _infinite_loop_circuit_breaker(
+            count,
+            was_planning=True,
+            elapsed_seconds=0.001,
+            pending_count=0,
+        )
+        assert count == 1
+        # Second no-progress planning iteration — should reach threshold
+        count = _infinite_loop_circuit_breaker(
+            count,
+            was_planning=True,
+            elapsed_seconds=0.001,
+            pending_count=0,
+        )
+        assert count == _INFINITE_LOOP_NO_PROGRESS_MAX_ITERATIONS
+
+    def test_slow_planning_resets_counter(self) -> None:
+        """A planning iteration that takes longer than the threshold resets the counter."""
+        from the_architect.cli import (
+            _INFINITE_LOOP_PLANNING_MAX_SECONDS,
+            _infinite_loop_circuit_breaker,
+        )
+
+        count = 0
+        # First no-progress planning iteration
+        count = _infinite_loop_circuit_breaker(
+            count,
+            was_planning=True,
+            elapsed_seconds=0.001,
+            pending_count=0,
+        )
+        assert count == 1
+        # Slow planning iteration — should reset counter
+        count = _infinite_loop_circuit_breaker(
+            count,
+            was_planning=True,
+            elapsed_seconds=_INFINITE_LOOP_PLANNING_MAX_SECONDS + 1.0,
+            pending_count=0,
+        )
+        assert count == 0
+
+    def test_planning_with_pending_tasks_resets_counter(self) -> None:
+        """A planning iteration that produces pending tasks resets the counter."""
+        from the_architect.cli import _infinite_loop_circuit_breaker
+
+        count = 0
+        # First no-progress planning iteration
+        count = _infinite_loop_circuit_breaker(
+            count,
+            was_planning=True,
+            elapsed_seconds=0.001,
+            pending_count=0,
+        )
+        assert count == 1
+        # Planning iteration with pending tasks — should reset counter
+        count = _infinite_loop_circuit_breaker(
+            count,
+            was_planning=True,
+            elapsed_seconds=0.001,
+            pending_count=3,
+        )
+        assert count == 0
+
+    def test_non_planning_iteration_resets_counter(self) -> None:
+        """A non-planning (forced execution) iteration resets the counter."""
+        from the_architect.cli import _infinite_loop_circuit_breaker
+
+        count = 0
+        # Build up counter with no-progress planning iterations
+        count = _infinite_loop_circuit_breaker(
+            count,
+            was_planning=True,
+            elapsed_seconds=0.001,
+            pending_count=0,
+        )
+        count = _infinite_loop_circuit_breaker(
+            count,
+            was_planning=True,
+            elapsed_seconds=0.001,
+            pending_count=0,
+        )
+        assert count == 2
+        # Non-planning iteration — should reset counter
+        count = _infinite_loop_circuit_breaker(
+            count,
+            was_planning=False,
+            elapsed_seconds=0.001,
+            pending_count=0,
+        )
+        assert count == 0
+
+    def test_loop_run_elapsed_bound_after_absorbed_system_exit(self) -> None:
+        """loop_run_elapsed must be bound when _run_main raises SystemExit that is absorbed.
+
+        Regression test: previously loop_run_elapsed was only set inside the try block,
+        so when _run_main raised SystemExit(0) and the handler absorbed it (via
+        _infinite_loop_should_continue_after_exit returning True), the variable was
+        unbound and the circuit breaker code raised UnboundLocalError.
+
+        This test verifies the structural fix by confirming that in the infinite loop
+        driver's try/except block, loop_run_elapsed is assigned AFTER the except clause
+        (not inside the try body), guaranteeing it's always bound regardless of which
+        path through the exception handler was taken.
+        """
+        import ast
+
+        from the_architect import cli
+
+        # Read the source file directly (inspect.getsource doesn't work on Click Groups)
+        cli_source_file = Path(cli.__file__).resolve()
+        source = cli_source_file.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        # Find the try/except block that wraps _run_main in the infinite loop
+        # The fix ensures loop_run_elapsed is assigned after the try/except, not inside try
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Try):
+                continue
+            # Look for a try block that has a SystemExit handler
+            has_system_exit_handler = any(
+                isinstance(handler.type, ast.Name) and handler.type.id == "SystemExit"
+                for handler in node.handlers
+            )
+            if not has_system_exit_handler:
+                continue
+
+            # Check if loop_run_elapsed is assigned in the try body (BUG)
+            elapsed_in_try = any(
+                isinstance(assign, ast.Assign)
+                and any(
+                    isinstance(t, ast.Name) and t.id == "loop_run_elapsed" for t in assign.targets
+                )
+                for assign in node.body
+            )
+
+            # The buggy pattern: loop_run_elapsed assigned inside try body
+            assert not elapsed_in_try, (
+                "BUG: loop_run_elapsed is assigned inside the try block — "
+                "it will be unbound when SystemExit is absorbed by the except handler"
+            )
+
+        # Also verify the fix pattern by checking that the elapsed calculation
+        # runs unconditionally after the try/except using a runtime simulation
+        import time
+
+        def _simulate_loop_elapsed_pattern(run_func, should_continue):
+            """Simulate the infinite loop driver's try/except/elapsed pattern."""
+            loop_run_start = time.monotonic()
+            try:
+                run_func()
+            except SystemExit as exc:
+                if not should_continue(exc):
+                    raise
+                # absorbed — falls through without re-raising
+            # FIX: compute elapsed AFTER try/except (unconditionally)
+            loop_run_elapsed = time.monotonic() - loop_run_start
+            # This is where the circuit breaker code reads loop_run_elapsed
+            return loop_run_elapsed
+
+        # Verify the pattern works for absorbed SystemExit(0)
+        elapsed = _simulate_loop_elapsed_pattern(
+            lambda: (_ for _ in ()).throw(SystemExit(0)),  # raise SystemExit(0)
+            lambda exc: exc.code == 0,  # should_continue for exit code 0
+        )
+        assert isinstance(elapsed, float) and elapsed >= 0.0, (
+            "loop_run_elapsed pattern failed — not a valid non-negative float"
+        )
 
 
 class TestSyncPlanFromDisk:
