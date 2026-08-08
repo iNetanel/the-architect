@@ -1637,14 +1637,25 @@ class TestAttemptReplan:
     async def test_replan_claude_code_prompt_prepending(
         self, config: ArchitectConfig, project_dir: Path
     ) -> None:
-        """Claude Code prompt prepending when provider doesn't support agents (lines 927-931)."""
+        """Claude Code prompt prepending when provider doesn't use OpenCode agent routing.
+
+        Regression test: ``ClaudeCodeProvider.supports_agents()`` genuinely
+        returns ``True`` (Claude Code does support ``--agent``, just with its
+        own agent names — ``claude``, ``Explore``, ``general-purpose``,
+        ``Plan``, ``statusline-setup`` — not OpenCode's ``"architect"``).
+        ``supports_agents()`` is intentionally left unmocked here so this test
+        exercises the real routing decision, not a faked one: the fix must
+        recognise Claude Code via ``provider_uses_architect_config`` (name ==
+        "opencode"), not via ``supports_agents()`` alone.
+        """
         from typing import Any
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from the_architect.core.claude_code_provider import ClaudeCodeProvider
 
-        # Use a real ClaudeCodeProvider instance with mocked methods
+        # Use a real ClaudeCodeProvider instance with mocked methods.
         real_claude = ClaudeCodeProvider()
+        assert real_claude.supports_agents() is True  # sanity: not mocked away
 
         cb = CircuitBreaker(config=config, project_root=project_dir, provider=real_claude)
 
@@ -1656,15 +1667,16 @@ class TestAttemptReplan:
         mock_stream_result.exit_code = 0
 
         captured_instruction: str | None = None
+        captured_kwargs: dict[str, Any] = {}
 
         async def capture_stream_provider(instruction: str, **kwargs: Any) -> MagicMock:
             nonlocal captured_instruction
             captured_instruction = instruction
+            captured_kwargs.update(kwargs)
             return mock_stream_result
 
         with (
             patch.object(real_claude, "ensure_setup"),
-            patch.object(real_claude, "supports_agents", return_value=False),
             patch.object(
                 real_claude,
                 "get_architect_prompt",
@@ -1686,6 +1698,13 @@ class TestAttemptReplan:
         assert captured_instruction is not None
         assert "# Architect Prompt" in captured_instruction
         assert "---" in captured_instruction
+
+        # Regression: must NOT pass OpenCode's "architect" agent name (or the
+        # architect.json config override) to the Claude Code CLI — Claude
+        # Code has no "architect" agent and the invocation would fail with
+        # "--agent 'architect' not found".
+        assert captured_kwargs.get("agent_override") is None
+        assert captured_kwargs.get("config_override") is None
 
     @pytest.mark.asyncio
     async def test_replan_nonzero_exit_code(self, cb: CircuitBreaker, project_dir: Path) -> None:

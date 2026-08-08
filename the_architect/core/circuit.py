@@ -935,7 +935,14 @@ class CircuitBreaker:
 
         logger.info(f"Circuit {task_id}: triggering REPLAN via architect agent")
 
+        from the_architect.core.provider_setup import provider_uses_architect_config
+
         # ── Resolve provider ────────────────────────────────────────────
+        # ``self._provider`` is threaded through from the run's actual
+        # active provider by every real caller (``load_circuit_state`` via
+        # ``core/runner.py``). The ``None``-defaults-to-OpenCode fallback
+        # below only applies to genuinely standalone/test invocations that
+        # construct a ``CircuitBreaker`` without a provider.
         if self._provider is not None:
             provider = self._provider
         else:
@@ -963,13 +970,27 @@ class CircuitBreaker:
             project_root=self._project_root,
         )
 
-        # For Claude Code: prepend architect prompt (no named agents)
-        if not provider.supports_agents():
-            from the_architect.core.claude_code_provider import ClaudeCodeProvider
+        # ``supports_agents()`` alone is not enough to decide whether the
+        # OpenCode-style ``--agent architect`` + ``.architect/architect.json``
+        # routing applies — Claude Code also supports ``--agent``, but with
+        # its own agent names (``claude``, ``Explore``, ``general-purpose``,
+        # ``Plan``, ``statusline-setup``), not OpenCode's ``"architect"``.
+        # ``provider_uses_architect_config`` is the same check used by
+        # ``core/retrospective.py`` for the identical reviewer/architect
+        # routing decision — mirror it here so replan behaves consistently.
+        uses_architect_config = provider.supports_agents() and provider_uses_architect_config(
+            provider
+        )
 
-            if isinstance(provider, ClaudeCodeProvider):
-                architect_prompt = provider.get_architect_prompt()
-                instruction = f"{architect_prompt}\n\n---\n\n{instruction}"
+        # For providers that don't use OpenCode's named-agent routing
+        # (Claude Code, Codex CLI, Gemini CLI): prepend the architect role
+        # prompt directly instead of passing an OpenCode-specific agent name.
+        if not uses_architect_config:
+            architect_prompt_getter = getattr(provider, "get_architect_prompt", None)
+            if callable(architect_prompt_getter):
+                architect_prompt = str(architect_prompt_getter()).strip()
+                if architect_prompt:
+                    instruction = f"{architect_prompt}\n\n---\n\n{instruction}"
 
         # ── Call the architect via the active provider ──────────────────
         try:
@@ -981,7 +1002,7 @@ class CircuitBreaker:
             # Config override and agent override only apply to OpenCode
             config_override = None
             agent_override = None
-            if provider.supports_agents():
+            if uses_architect_config:
                 config_override = self._project_root / ".architect" / "architect.json"
                 agent_override = "architect"
 

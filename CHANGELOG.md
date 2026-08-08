@@ -11,6 +11,13 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ## [Unreleased]
 
+## [1.4.6] (build 10673) — 2026-08-08
+
+### Fixed
+
+- **Infinite Loop / persistent mode dropped the selected provider on re-planning iterations** — `config.provider` (persisted to `architect.toml`) was only ever synced with the process's actual active provider (CLI flag, env var, or interactive selection) by the interactive tabbed pre-run screen — which explicitly refuses to run once Infinite Loop / persistent mode is active. As a result `config.provider` stayed stuck at its stale `architect.toml` default (typically `"opencode"`) for the whole run, causing a subsequent re-resolution check to silently override the process's real active provider (e.g. Claude Code) back to OpenCode the moment a re-planning pass ran — and, if the OpenCode account/quota was unavailable, the resulting health-check failure raised `SystemExit`, which the Infinite Loop driver absorbs and restarts the same broken iteration, stalling the loop indefinitely. `config.provider` is now kept in sync with the actually-resolved provider at every resolution point (config-driven, env-driven, single-install, headless, and interactive selection) via a new `_sync_active_provider_to_config()` helper, and persisted to `architect.toml` immediately when it changes — the same way `last_scope` and `architect_model` already are — instead of being gated behind the TUI-only write path (build 10672).
+- **Circuit-breaker replan sent an OpenCode-only agent name to Claude Code** — `CircuitBreaker.attempt_replan()` decided whether to use OpenCode's named-agent routing (`--agent architect` + `.architect/architect.json`) based on `provider.supports_agents()` alone. Claude Code also returns `True` from `supports_agents()` (it does support `--agent`, just with its own agent names — `claude`, `Explore`, `general-purpose`, `Plan`, `statusline-setup` — not OpenCode's `"architect"`), so a circuit-triggered replan against Claude Code invoked `claude --agent architect`, which always failed with `--agent 'architect' not found`. The replan path now uses `provider.supports_agents() and provider_uses_architect_config(provider)` — the same check already used by `core/retrospective.py` for the identical reviewer/architect routing decision — and falls back to prepending the provider's own architect role prompt for every non-OpenCode provider (build 10672).
+
 ## [1.4.5] (build 10671) — 2026-08-05
 
 ### Fixed

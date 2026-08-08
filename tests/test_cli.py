@@ -6535,6 +6535,99 @@ class TestCheckProviderUpdateBeforeModelWork:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# _sync_active_provider_to_config tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestSyncActiveProviderToConfig:
+    """Tests for _sync_active_provider_to_config().
+
+    Regression coverage for the Infinite Loop bug where ``config.provider``
+    (persisted to ``architect.toml``) never reflected the provider actually
+    selected for the process (CLI flag / env var / interactive prompt),
+    causing re-planning / reassessment / circuit-replan passes to silently
+    fall back to OpenCode instead of the active provider.
+    """
+
+    def _make_provider(self, name: str) -> MagicMock:
+        provider = MagicMock()
+        provider.name = name
+        return provider
+
+    def test_none_provider_is_a_noop(self, tmp_path: Path) -> None:
+        """When active_provider is None (resolution still deferred), nothing changes."""
+        from the_architect.cli import _sync_active_provider_to_config
+
+        config = ArchitectConfig()
+        config.provider = "opencode"
+
+        _sync_active_provider_to_config(tmp_path, config, None)
+
+        assert config.provider == "opencode"
+
+    def test_matching_provider_is_a_noop(self, tmp_path: Path) -> None:
+        """When config.provider already matches, no write_config call is made."""
+        from the_architect.cli import _sync_active_provider_to_config
+
+        config = ArchitectConfig()
+        config.provider = "claude-code"
+        provider = self._make_provider("claude-code")
+
+        with patch("the_architect.cli.write_config") as mock_write:
+            _sync_active_provider_to_config(tmp_path, config, provider)
+
+        mock_write.assert_not_called()
+        assert config.provider == "claude-code"
+
+    def test_mismatched_provider_updates_config_and_persists(self, tmp_path: Path) -> None:
+        """A stale config.provider (e.g. leftover 'opencode') is corrected and persisted.
+
+        This is the exact scenario from the bug report: architect.toml still
+        says 'opencode' but the process actually selected Claude Code.
+        """
+        from the_architect.cli import _sync_active_provider_to_config
+
+        config = ArchitectConfig()
+        config.provider = "opencode"
+        provider = self._make_provider("claude-code")
+
+        with patch("the_architect.cli.write_config") as mock_write:
+            _sync_active_provider_to_config(tmp_path, config, provider)
+
+        assert config.provider == "claude-code"
+        mock_write.assert_called_once_with(tmp_path, {"provider": "claude-code"})
+
+    def test_write_config_failure_does_not_raise(self, tmp_path: Path) -> None:
+        """A persistence failure is logged, not raised — must never crash the run."""
+        from the_architect.cli import _sync_active_provider_to_config
+
+        config = ArchitectConfig()
+        config.provider = "opencode"
+        provider = self._make_provider("claude-code")
+
+        with patch("the_architect.cli.write_config", side_effect=OSError("disk full")):
+            _sync_active_provider_to_config(tmp_path, config, provider)
+
+        # config is still updated in-memory even though persistence failed
+        assert config.provider == "claude-code"
+
+    def test_real_write_config_persists_to_architect_toml(self, tmp_path: Path) -> None:
+        """End-to-end: the provider value actually lands in architect.toml on disk."""
+        from the_architect.cli import _sync_active_provider_to_config
+        from the_architect.config import load_config
+
+        (tmp_path / ".architect").mkdir()
+        config = load_config(tmp_path)
+        config.provider = "opencode"
+        provider = self._make_provider("claude-code")
+
+        _sync_active_provider_to_config(tmp_path, config, provider)
+
+        reloaded = load_config(tmp_path)
+        assert reloaded.provider == "claude-code"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Infinite Loop idle-timeout reset tests
 # ═══════════════════════════════════════════════════════════════════════════
 

@@ -4066,6 +4066,51 @@ def _provider_install_hint() -> str:
 _opencode_install_hint = _provider_install_hint
 
 
+def _sync_active_provider_to_config(
+    project: Path,
+    config: ArchitectConfig,
+    active_provider: ArchitectProvider | None,
+) -> None:
+    """Keep ``config.provider`` in sync with the process's actual active provider.
+
+    ``config.provider`` is the persisted source of truth in ``architect.toml``
+    that downstream layers (health checks, re-planning, retrospective review,
+    circuit-breaker replans) fall back to when they need their own provider
+    handle. Historically the only code that kept it in sync with whatever
+    provider actually won CLI-flag / env-var / interactive resolution was the
+    interactive tabbed pre-run screen — which explicitly refuses to run once
+    Infinite Loop / persistent mode is active. That left ``config.provider``
+    stuck at its stale ``architect.toml`` default (usually ``"opencode"``)
+    for the entire run, causing re-planning passes to silently fall back to
+    OpenCode instead of the provider actually selected for the process.
+
+    This helper is called at every point where ``active_provider`` is
+    resolved or re-resolved (Phase 1 config/env detection, Phase 2
+    single-provider/headless detection, interactive selection) so
+    ``config.provider`` always reflects reality — not just the initial CLI
+    selection — regardless of which mode is active. When the value actually
+    changes, it is also persisted to ``architect.toml`` immediately, the same
+    way ``last_scope`` and ``architect_model`` already are, instead of being
+    gated behind the TUI-only write path.
+
+    Args:
+        project: The project root directory (for persisting to architect.toml).
+        config: The active ``ArchitectConfig`` — mutated in place.
+        active_provider: The provider actually resolved for this process, or
+            ``None`` if resolution has not completed yet (e.g. deferred to an
+            interactive prompt).
+    """
+    if active_provider is None:
+        return
+    if config.provider == active_provider.name:
+        return
+    config.provider = active_provider.name
+    try:
+        write_config(project, {"provider": config.provider})
+    except Exception as exc:
+        logger.debug(f"Failed to persist active provider {config.provider!r}: {exc!r}")
+
+
 def _render_dry_run_summary(
     tasks: list[Task],
     config: ArchitectConfig,
@@ -4601,6 +4646,13 @@ def main(
         console.print(f"[red]Error: {_pnfe}[/red]")
         raise SystemExit(1)
 
+    # Keep architect.toml's provider field in sync with whatever actually
+    # resolved above (config-driven, env-driven, or single-install) — not
+    # just the value the user typed into architect.toml last time. See
+    # ``_sync_active_provider_to_config`` for why this matters during
+    # Infinite Loop / persistent mode.
+    _sync_active_provider_to_config(resolved_project, config, _active_provider)
+
     # ── Provider usability check (non-blocking, only when already resolved) ─
     # Only warn when the provider appears to have no models/API key configured.
     # Skip when _active_provider is None (both installed, selection deferred).
@@ -4798,6 +4850,7 @@ def main(
             _provider_candidates = _available_post
         if _active_provider is not None:
             os.environ["ARCHITECT_PROVIDER"] = _active_provider.name
+            _sync_active_provider_to_config(resolved_project, config, _active_provider)
 
             # Usability check for the newly selected provider
             if not _active_provider.has_any_models():
@@ -4904,6 +4957,7 @@ def main(
             if _needs_interactive_provider_selection:
                 _active_provider = _prompt_provider_selection(_provider_candidates)
                 os.environ["ARCHITECT_PROVIDER"] = _active_provider.name
+                _sync_active_provider_to_config(resolved_project, config, _active_provider)
                 # Usability check for the newly selected provider.
                 if not _active_provider.has_any_models():
                     user_cfg = _active_provider.find_user_config(resolved_project)
@@ -4956,6 +5010,7 @@ def main(
                     try:
                         _active_provider = detect_provider(_selected_provider_name)
                         os.environ["ARCHITECT_PROVIDER"] = _active_provider.name
+                        _sync_active_provider_to_config(resolved_project, config, _active_provider)
                     except Exception as _rp_exc:
                         logger.debug(
                             f"Could not re-resolve provider {_selected_provider_name!r}: "
@@ -5018,6 +5073,7 @@ def main(
                         "validation_gate": config.validation_gate,
                         "last_scope": scope_text,
                         "architect_model": architect_model,
+                        "provider": config.provider,
                     },
                 )
 
