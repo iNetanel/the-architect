@@ -1288,7 +1288,11 @@ async def run_planner(
     tasks_before = {s.name for s in discover_tasks(tasks_dir)}
 
     # Ensure prompts (and provider-specific planning config) are written
-    from the_architect.core.provider_setup import ensure_provider_setup
+    from the_architect.core.provider_setup import (
+        ensure_provider_setup,
+        prepend_provider_role_prompt,
+        uses_architect_agent_routing,
+    )
 
     ensure_provider_setup(provider, project_dir, config)
 
@@ -1303,13 +1307,18 @@ async def run_planner(
     ws_context = gather_workspace_context(project_dir)
     instruction = build_planning_instruction(request, context, ws_context)
 
-    # For Claude Code: prepend the architect prompt since there are no named agents
-    if not provider.supports_agents():
-        from the_architect.core.claude_code_provider import ClaudeCodeProvider
+    # ``uses_architect_agent_routing`` is the single shared check (see
+    # ``core/provider_setup.py``) used by every meta-role call site
+    # (planner, intelligence, retrospective, circuit) so planning behaves
+    # consistently across every provider, including future ones.
+    uses_architect_config = uses_architect_agent_routing(provider)
 
-        if isinstance(provider, ClaudeCodeProvider):
-            architect_prompt = provider.get_architect_prompt()
-            instruction = f"{architect_prompt}\n\n---\n\n{instruction}"
+    # For providers that don't use OpenCode's named-agent routing (Claude
+    # Code, Codex CLI, Gemini CLI, and any future provider): prepend the
+    # architect role prompt directly instead of passing an OpenCode-specific
+    # agent name.
+    if not uses_architect_config:
+        instruction = prepend_provider_role_prompt(provider, instruction, "get_architect_prompt")
 
     logger.info(f"Running architect agent via {provider.display_name} for planning")
 
@@ -1327,11 +1336,14 @@ async def run_planner(
     )
     logger.info(f"Architect (planning) model resolved to: {_model_label}")
 
-    # Config override for OpenCode planning (points to .architect/architect.json)
-    # For Claude Code this is None (ignored by the provider)
+    # Config override for OpenCode planning (points to .architect/architect.json).
+    # ``uses_architect_config`` was already resolved above — for any provider
+    # that doesn't use OpenCode's named-agent routing (Claude Code, Codex CLI,
+    # Gemini CLI), both stay None and are ignored by the provider's command
+    # builder; the architect role was already prepended into ``instruction``.
     config_override: Path | None = None
     agent_override: str | None = None
-    if provider.supports_agents():
+    if uses_architect_config:
         config_override = project_dir / ".architect" / "architect.json"
         agent_override = "architect"
 

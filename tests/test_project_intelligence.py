@@ -317,10 +317,18 @@ async def test_refresh_skips_when_quality_gate_passes(tmp_path: Path) -> None:
 async def test_refresh_runs_with_agent_override_when_provider_supports_agents(
     tmp_path: Path,
 ) -> None:
-    """Provider agent support should use the intelligence agent override."""
+    """OpenCode-identity provider agent support should use the intelligence agent override.
+
+    ``supports_agents()`` alone is not sufficient — the OpenCode-style
+    ``--agent intelligence`` + ``.architect/architect.json`` routing also
+    requires ``provider.name == "opencode"`` (see
+    ``core.provider_setup.uses_architect_agent_routing``). Setting ``.name``
+    here mirrors a real ``OpenCodeProvider`` instance.
+    """
     config = ArchitectConfig().resolve(tmp_path)
     provider = MagicMock()
     provider.supports_agents.return_value = True
+    provider.name = "opencode"
 
     mock_result = MagicMock()
     mock_result.exit_code = 0
@@ -347,6 +355,53 @@ async def test_refresh_runs_with_agent_override_when_provider_supports_agents(
     call_kwargs = mock_stream.call_args.kwargs
     assert call_kwargs["agent_override"] == "intelligence"
     assert call_kwargs["config_override"] == tmp_path / ".architect" / "architect.json"
+
+
+async def test_refresh_prepends_prompt_when_provider_supports_agents_but_not_opencode(
+    tmp_path: Path,
+) -> None:
+    """Regression test: a provider that supports ``--agent`` but isn't OpenCode
+
+    (e.g. Claude Code, which supports ``--agent`` for its own built-in agent
+    names like ``claude``/``Explore``/``general-purpose``/``Plan``, but has no
+    ``"intelligence"`` agent) must NOT get ``agent_override="intelligence"`` —
+    it must fall back to prompt-prepending instead. This is the exact bug
+    class that caused ``--agent 'architect' not found`` against real Claude
+    Code for the planning entrypoint; this test locks in the fix for the
+    intelligence entrypoint too.
+    """
+    config = ArchitectConfig().resolve(tmp_path)
+    provider = MagicMock()
+    provider.supports_agents.return_value = True
+    provider.name = "claude-code"
+
+    mock_result = MagicMock()
+    mock_result.exit_code = 0
+
+    with (
+        patch(
+            "the_architect.core.intelligence.stream_provider",
+            new=AsyncMock(return_value=mock_result),
+        ) as mock_stream,
+        patch(
+            "the_architect.core.planner.gather_project_context",
+            return_value="## File Tree\nFile tree:",
+        ),
+    ):
+        assessment = await refresh_project_intelligence(
+            project_dir=tmp_path,
+            config=config,
+            provider=provider,
+            structure_report=_make_structure_report(),
+        )
+
+    assert assessment.should_run is True
+    mock_stream.assert_called_once()
+    call_kwargs = mock_stream.call_args.kwargs
+    assert call_kwargs["agent_override"] is None
+    assert call_kwargs["config_override"] is None
+    instruction = call_kwargs["instruction"]
+    assert "ARCHITECT.md" in instruction
 
 
 async def test_refresh_uses_standalone_mode_as_model_override(

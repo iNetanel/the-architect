@@ -27,6 +27,7 @@ from the_architect.core.progress import reconcile_progress_with_task_files, task
 from the_architect.core.provider_setup import (
     ensure_provider_setup,
     existing_provider_setup_is_usable,
+    prepend_provider_role_prompt,
     provider_uses_architect_config,
 )
 from the_architect.core.runner import StreamRenderer, stream_provider
@@ -140,16 +141,14 @@ def _prepend_provider_prompt(
     instruction: str,
     prompt_getter_name: str,
 ) -> str:
-    """Prepend a packaged provider role prompt when named agents are not used."""
-    if prompt_getter_name not in dir(provider):
-        return instruction
-    getter = getattr(provider, prompt_getter_name, None)
-    if not callable(getter):
-        return instruction
-    prompt = str(getter()).strip()
-    if not prompt:
-        return instruction
-    return f"{prompt}\n\n---\n\n{instruction}"
+    """Prepend a packaged provider role prompt when named agents are not used.
+
+    Thin wrapper kept for backward compatibility (this module's public name is
+    exercised directly by tests) — canonical implementation now lives in
+    ``core/provider_setup.py`` so every call site (planner, intelligence,
+    retrospective, circuit) shares one agnostic implementation.
+    """
+    return prepend_provider_role_prompt(provider, instruction, prompt_getter_name)
 
 
 # ---------------------------------------------------------------------------

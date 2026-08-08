@@ -186,7 +186,10 @@ async def refresh_project_intelligence(
         return assessment
 
     from the_architect.core.planner import gather_project_context
-    from the_architect.core.provider_setup import ensure_provider_setup
+    from the_architect.core.provider_setup import (
+        ensure_provider_setup,
+        uses_architect_agent_routing,
+    )
 
     logger.info(f"Running project intelligence pass: {', '.join(assessment.reasons)}")
     ensure_provider_setup(provider, project_dir, config)
@@ -202,9 +205,15 @@ async def refresh_project_intelligence(
         structured_intelligence_content=structured_intelligence_content,
     )
 
+    # ``uses_architect_agent_routing`` is the single shared check (see
+    # ``core/provider_setup.py``) used by every meta-role call site
+    # (planner, intelligence, retrospective, circuit) so this stays
+    # consistent across every provider, including future ones.
+    uses_architect_config = uses_architect_agent_routing(provider)
+
     config_override: Path | None = None
     agent_override: str | None = None
-    if provider.supports_agents():
+    if uses_architect_config:
         config_override = project_dir / ".architect" / "architect.json"
         agent_override = "intelligence"
     else:

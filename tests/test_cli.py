@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -6481,6 +6481,70 @@ class TestCheckProviderUpdateBeforeModelWork:
         health_check.assert_called_once()
         warning.assert_called_once_with("quota exceeded")
         assert getattr(config, "_provider_health_checked", None) is True
+
+    def test_health_probe_skips_architect_agent_for_claude_code(self, tmp_path: Path) -> None:
+        """Regression test: the pre-planning live health probe must NOT send
+
+        OpenCode's ``--agent architect`` to a provider that supports
+        ``--agent`` but isn't OpenCode (e.g. Claude Code — real agent names
+        ``claude``/``Explore``/``general-purpose``/``Plan``, no
+        ``"architect"``). Before the fix, this probe used
+        ``provider.supports_agents()`` alone, so it sent
+        ``--agent architect`` to Claude Code and failed the probe with
+        ``--agent 'architect' not found`` even when the provider itself was
+        perfectly healthy — the same bug class as the planning entrypoint.
+        """
+        from the_architect.cli import _check_provider_update_before_model_work
+
+        provider = self._make_provider(update_msg="")
+        provider.name = "claude-code"
+        provider.display_name = "Claude Code"
+        provider.supports_agents.return_value = True
+        config = ArchitectConfig()
+
+        with patch(
+            "the_architect.core.provider_health.check_provider_health",
+            new_callable=AsyncMock,
+        ) as health_check:
+            _check_provider_update_before_model_work(
+                provider,
+                config,
+                headless=False,
+                project=tmp_path,
+                model_override=None,
+            )
+
+        health_check.assert_called_once()
+        call_kwargs = health_check.call_args.kwargs
+        assert call_kwargs["agent_override"] is None
+        assert call_kwargs["config_override"] is None
+
+    def test_health_probe_uses_architect_agent_for_opencode(self, tmp_path: Path) -> None:
+        """OpenCode identity should still get the real ``--agent architect`` probe."""
+        from the_architect.cli import _check_provider_update_before_model_work
+
+        provider = self._make_provider(update_msg="")
+        provider.name = "opencode"
+        provider.display_name = "OpenCode"
+        provider.supports_agents.return_value = True
+        config = ArchitectConfig()
+
+        with patch(
+            "the_architect.core.provider_health.check_provider_health",
+            new_callable=AsyncMock,
+        ) as health_check:
+            _check_provider_update_before_model_work(
+                provider,
+                config,
+                headless=False,
+                project=tmp_path,
+                model_override=None,
+            )
+
+        health_check.assert_called_once()
+        call_kwargs = health_check.call_args.kwargs
+        assert call_kwargs["agent_override"] == "architect"
+        assert call_kwargs["config_override"] == tmp_path / ".architect" / "architect.json"
 
     def test_infinite_loop_health_warning_skips_modal(self, tmp_path: Path) -> None:
         """When Infinite Loop is active, a health error prints a warning

@@ -1306,16 +1306,24 @@ def _check_provider_update_before_model_work(
     config._provider_health_checked = True  # type: ignore[attr-defined]
 
     from the_architect.core.provider_health import ProviderHealthError, check_provider_health
+    from the_architect.core.provider_setup import uses_architect_agent_routing
 
+    # Probe with the same "architect" agent/config routing that planning will
+    # actually use — gated by ``uses_architect_agent_routing`` (not
+    # ``supports_agents()`` alone) so this doesn't send OpenCode's
+    # ``--agent architect`` to Claude Code, Codex CLI, or Gemini CLI, which
+    # would fail the probe with ``--agent 'architect' not found`` even though
+    # the provider itself is perfectly healthy.
+    _probe_uses_architect_config = uses_architect_agent_routing(provider)
     try:
         asyncio.run(
             check_provider_health(
                 provider=provider,
                 project_dir=project,
                 model_override=model_override or None,
-                agent_override="architect" if provider.supports_agents() else None,
+                agent_override="architect" if _probe_uses_architect_config else None,
                 config_override=(project / ".architect" / "architect.json")
-                if provider.supports_agents()
+                if _probe_uses_architect_config
                 else None,
             )
         )
@@ -5450,30 +5458,34 @@ def _run_main(
         # ── Guard: standalone_mode must be compatible with the active provider ─
         # standalone_mode is persisted to architect.toml.  If it was set during
         # a previous OpenCode/free-mode run (e.g. "openrouter/z-ai/glm-5.1"),
-        # it will be silently passed to Claude Code on the next run — which
-        # doesn't understand OpenRouter model IDs and will fail.
+        # it will be silently passed to any direct-API provider (Claude Code,
+        # Codex CLI, Gemini CLI) on the next run — none of which understand
+        # OpenRouter's slash-namespaced model IDs, and it will fail.
         # Clear it and warn rather than let it poison the run.
-        if config.standalone_mode and provider is not None:
-            from the_architect.core.claude_code_provider import ClaudeCodeProvider
-
-            if isinstance(provider, ClaudeCodeProvider):
-                sm = config.standalone_mode
-                # OpenRouter model IDs always start with "openrouter/"
-                # or contain a "/" that indicates a non-Anthropic namespace.
-                is_openrouter = sm.startswith("openrouter/") or (
-                    "/" in sm and not sm.startswith("claude")
+        #
+        # Gated on ``supports_free_tier()`` (agnostic capability check) rather
+        # than ``isinstance(provider, ClaudeCodeProvider)`` — every provider
+        # other than OpenCode returns False here, so this guard automatically
+        # covers Codex CLI and Gemini CLI too, and any future provider.
+        if config.standalone_mode and provider is not None and not provider.supports_free_tier():
+            sm = config.standalone_mode
+            # OpenRouter model IDs are always slash-namespaced (e.g.
+            # "openrouter/...", "anthropic/...", "openai/..."). None of the
+            # direct-API providers (Claude Code, Codex CLI, Gemini CLI) use
+            # slash-namespaced flat model IDs, so any "/" here is a reliable
+            # OpenRouter signal regardless of which direct-API provider is active.
+            is_openrouter = "/" in sm
+            if is_openrouter:
+                console.print(
+                    f"[yellow]⚠  standalone_mode '{sm}' is an OpenRouter model — "
+                    f"not compatible with {provider.display_name}. Clearing it.[/yellow]"
                 )
-                if is_openrouter:
-                    console.print(
-                        f"[yellow]⚠  standalone_mode '{sm}' is an OpenRouter model — "
-                        f"not compatible with Claude Code. Clearing it.[/yellow]"
-                    )
-                    logger.warning(
-                        f"standalone_mode '{sm}' is incompatible with Claude Code "
-                        f"(OpenRouter model ID) — clearing for this run"
-                    )
-                    config.standalone_mode = ""
-                    write_config(project, {"standalone_mode": ""})
+                logger.warning(
+                    f"standalone_mode '{sm}' is incompatible with {provider.display_name} "
+                    f"(OpenRouter model ID) — clearing for this run"
+                )
+                config.standalone_mode = ""
+                write_config(project, {"standalone_mode": ""})
 
         # ── Interactive mode selection (only when no mode flags passed) ─────
         # Power users who pass --free or --persistent skip the prompt entirely.
