@@ -11,6 +11,13 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ## [Unreleased]
 
+## [1.4.8] (build 10675) — 2026-08-24
+
+### Changed
+
+- **Infinite Loop (non-headless) no longer re-prompts or resets scope/model/execution-agent on each iteration** — `run_planning_mode()` previously only skipped the interactive pending-task confirmation, scope prompt, architect-model prompt, and execution-agent prompt when `headless` was explicitly set; a non-headless Infinite Loop run would hit these interactive prompts on every re-planning iteration, which either blocked in a non-TTY context or silently reset the scope to `TaskScope.STANDARD` and the architect model to the provider default instead of the values already configured. All four gates now also check `_infinite_loop_active(config)`, honor `config.last_scope` / `config.architect_model` / `config.execution_agent` when set, and the `main()` Infinite Loop driver now seeds `scope_text`, `architect_model`, and `execution_model_resolved` from config when reusing the goal for the next iteration — so scope, model, and execution agent stay stable across loop iterations instead of drifting to defaults or blocking on a prompt.
+- **`execution.md` execution protocol prompt generalized to be fully agent-agnostic** — reworded the introductory framing and the "what The Architect expects from you" checklist so the protocol explicitly defers to each execution agent's own system prompt, role instructions, and workflow (planning, delegation, tool use) rather than referencing "your agent prompt's workflow for delegation" or prescribing a fixed "follow the task's Exploration Plan before editing" step. The Architect's monitoring/completion contract (PROGRESS.md, promise tags) is unchanged; only the wording that could imply The Architect dictates the executor's internal process was generalized.
+
 ## [1.4.7] (build 10674) — 2026-08-08
 
 ### Fixed

@@ -1305,7 +1305,10 @@ def _check_provider_update_before_model_work(
         return
     config._provider_health_checked = True  # type: ignore[attr-defined]
 
-    from the_architect.core.provider_health import ProviderHealthError, check_provider_health
+    from the_architect.core.provider_health import (
+        ProviderHealthError,
+        check_provider_health,
+    )
     from the_architect.core.provider_setup import uses_architect_agent_routing
 
     # Probe with the same "architect" agent/config routing that planning will
@@ -1742,7 +1745,12 @@ def _prompt_mode_selection(
                 lines.append(("", "    "))
                 lines.append(("", f"[{ck}] "))
             lines.append(("", "Free Tier"))
-            lines.append(("class:dim", "        (OpenRouter free models, rotate on rate limit)\n"))
+            lines.append(
+                (
+                    "class:dim",
+                    "        (OpenRouter free models, rotate on rate limit)\n",
+                )
+            )
 
         # Persistent (universal)
         ck = "x" if persistent else " "
@@ -1782,7 +1790,10 @@ def _prompt_mode_selection(
         lines.append(("", "\n"))
         if focused == IDX_BUDGET:
             lines.append(
-                ("class:dim", "  ↑↓ navigate   Type amount   Backspace delete   Enter confirm")
+                (
+                    "class:dim",
+                    "  ↑↓ navigate   Type amount   Backspace delete   Enter confirm",
+                )
             )
         else:
             lines.append(("class:dim", "  ↑↓ navigate   Space toggle   Enter confirm"))
@@ -2076,7 +2087,10 @@ def _prompt_resume_screen(
         lines.append(("", "\n"))
         if focused == IDX_BUDGET:
             lines.append(
-                ("class:dim", "  ↑↓ navigate   Type amount   Backspace delete   Enter execute")
+                (
+                    "class:dim",
+                    "  ↑↓ navigate   Type amount   Backspace delete   Enter execute",
+                )
             )
         elif focused == IDX_REPLAN:
             lines.append(("class:dim", "  ↑↓ navigate   Space/Enter to replan"))
@@ -2438,11 +2452,11 @@ def run_planning_mode(
         progress_file = config.progress_file
         pending = check_pending_tasks(tasks_dir, progress_file)
         if pending:
-            if headless:
-                # In headless mode, log the warning and continue automatically
+            if headless or _infinite_loop_active(config):
+                # In headless or Infinite Loop mode, log the warning and continue automatically
                 logger.warning(
                     f"Found {len(pending)} unfinished task(s) — "
-                    "archiving and continuing in headless mode"
+                    "archiving and continuing automatically"
                 )
             else:
                 # TUI fast-path — Phase 14. Render the pending-task
@@ -2500,7 +2514,10 @@ def run_planning_mode(
     context_content = ""
     context_labelled: list[tuple[str, str]] = []
     if context_paths:
-        from the_architect.core.context import format_context_for_prompt, load_context_paths
+        from the_architect.core.context import (
+            format_context_for_prompt,
+            load_context_paths,
+        )
 
         try:
             context_labelled = load_context_paths(list(context_paths))
@@ -2549,8 +2566,8 @@ def run_planning_mode(
     # ── Scope resolution ───────────────────────────────────────────────
     if scope_text:
         scope = TaskScope(scope_text)
-    elif headless:
-        scope = TaskScope.STANDARD  # Default in headless mode
+    elif headless or _infinite_loop_active(config):
+        scope = TaskScope(config.last_scope or "standard")
     else:
         scope_result = _prompt_scope(initial_scope=config.last_scope or "standard")
         if scope_result is None:
@@ -2572,9 +2589,12 @@ def run_planning_mode(
         # explicitly here so downstream status lines still show the model.
         resolved = provider.get_resolved_model(project, "architect") if provider else ""
         architect_model = resolved if resolved else None
-    elif headless:
-        # In headless mode, resolve the provider's default model explicitly.
-        resolved = provider.get_resolved_model(project, "architect")
+    elif headless or _infinite_loop_active(config):
+        # In headless or Infinite Loop mode, resolve the configured or
+        # provider's default model explicitly.
+        resolved = config.architect_model or (
+            provider.get_resolved_model(project, "architect") if provider else ""
+        )
         architect_model = resolved if resolved else None
     else:
         architect_model = _prompt_architect_model(project, provider=provider)
@@ -2584,6 +2604,9 @@ def run_planning_mode(
         # _collect_planning_prompts).  An empty string means the user chose
         # the provider default — still skip the prompt.
         config.execution_agent = execution_model_override
+    elif headless or _infinite_loop_active(config):
+        # In headless or Infinite Loop mode, keep config.execution_agent as configured
+        pass
     elif not headless:
         exec_agent = _prompt_exec_agent(project, provider=provider)
         config.execution_agent = exec_agent or ""
@@ -2632,7 +2655,10 @@ def run_planning_mode(
         read_project_intelligence,
         write_project_intelligence,
     )
-    from the_architect.core.structure import detect_structure, format_structure_for_prompt
+    from the_architect.core.structure import (
+        detect_structure,
+        format_structure_for_prompt,
+    )
 
     # The Textual splash / planning wait screen is the loading indicator.
     structure_report = detect_structure(project)
@@ -2935,7 +2961,12 @@ def _collect_planning_prompts(
                 except Exception as exc:
                     logger.debug(f"Failed to persist pre-run values: {exc!r}")
 
-                return goal_text, scope_text, architect_model_override, execution_model_override
+                return (
+                    goal_text,
+                    scope_text,
+                    architect_model_override,
+                    execution_model_override,
+                )
         except SystemExit:
             raise
         except Exception as exc:
@@ -4540,7 +4571,11 @@ def main(
 
     # Resolve headless from env var if flag not set
     if not headless:
-        headless = os.environ.get("ARCHITECT_HEADLESS", "").lower() in ("true", "1", "yes")
+        headless = os.environ.get("ARCHITECT_HEADLESS", "").lower() in (
+            "true",
+            "1",
+            "yes",
+        )
 
     # Resolve goal from env var if flag not set
     if not goal_text:
@@ -4584,7 +4619,9 @@ def main(
         if not _is_claude_code_hint:
             # Try to detect from installed binaries
             try:
-                from the_architect.core.claude_code_provider import ClaudeCodeProvider as _CCP
+                from the_architect.core.claude_code_provider import (
+                    ClaudeCodeProvider as _CCP,
+                )
 
                 _det = detect_provider(_provider_hint if _provider_hint != "auto" else "auto")
                 _is_claude_code_hint = isinstance(_det, _CCP)
@@ -5275,6 +5312,13 @@ def main(
                     )
                     raise SystemExit(1)
                 goal_text = loop_goal
+                scope_text = scope_text or config.last_scope or "standard"
+                architect_model = architect_model or config.architect_model or ""
+                execution_model_resolved = (
+                    execution_model_resolved
+                    if execution_model_resolved is not None
+                    else (config.execution_agent or "")
+                )
                 logger.info(
                     f"Infinite Loop driver: reusing goal for next iteration ({loop_goal!r:.80})"
                 )
@@ -6688,7 +6732,10 @@ def retry(
         if not failed:
             if as_json:
                 click.echo(
-                    json.dumps({"project": str(proj), "error": "No failed tasks found"}, indent=2)
+                    json.dumps(
+                        {"project": str(proj), "error": "No failed tasks found"},
+                        indent=2,
+                    )
                 )
             else:
                 console.print("[yellow]No failed tasks found.[/yellow]")
@@ -6724,7 +6771,8 @@ def retry(
             if as_json:
                 click.echo(
                     json.dumps(
-                        {"project": str(proj), "error": "No failed tasks to reset"}, indent=2
+                        {"project": str(proj), "error": "No failed tasks to reset"},
+                        indent=2,
                     )
                 )
             else:
@@ -6834,7 +6882,10 @@ def retry(
     except ProviderNotFoundError:
         if as_json:
             click.echo(
-                json.dumps({"project": str(proj), "error": "No supported AI CLI found"}, indent=2)
+                json.dumps(
+                    {"project": str(proj), "error": "No supported AI CLI found"},
+                    indent=2,
+                )
             )
         else:
             console.print("[red]Error: No supported AI CLI found.[/red]")
@@ -6847,7 +6898,10 @@ def retry(
 @main.command()
 @click.option("--task", "-t", default=None, help="Task prefix to skip (e.g. T03)")
 @click.option(
-    "--last", "skip_last", is_flag=True, help="Skip the last failed task (highest plan order)"
+    "--last",
+    "skip_last",
+    is_flag=True,
+    help="Skip the last failed task (highest plan order)",
 )
 @click.option(
     "--failed",
@@ -7093,7 +7147,11 @@ def reset(project: Path | None, as_json: bool, force: bool) -> None:
         if as_json:
             click.echo(
                 json.dumps(
-                    {"project": str(proj), "reset": False, "error": "PROGRESS.md not found"},
+                    {
+                        "project": str(proj),
+                        "reset": False,
+                        "error": "PROGRESS.md not found",
+                    },
                     indent=2,
                 )
             )
@@ -7379,7 +7437,13 @@ def _format_status_json(project: Path, config: ArchitectConfig) -> str:
         "running": False,
         "pid": None,
         "tasks": [],
-        "task_summary": {"total": 0, "done": 0, "failed": 0, "pending": 0, "blocked": 0},
+        "task_summary": {
+            "total": 0,
+            "done": 0,
+            "failed": 0,
+            "pending": 0,
+            "blocked": 0,
+        },
         "circuit_breakers": [],
         "token_budget": None,
         "log_dir": None,
@@ -7414,7 +7478,11 @@ def _format_status_json(project: Path, config: ArchitectConfig) -> str:
         for task in tasks:
             status = task_status(progress_file, task.prefix)
             task_list.append(
-                {"prefix": task.prefix, "title": task.title or task.name, "status": status}
+                {
+                    "prefix": task.prefix,
+                    "title": task.title or task.name,
+                    "status": status,
+                }
             )
             summary["total"] += 1
             if status == "Done":
@@ -10953,7 +11021,10 @@ def preset_create(
             if as_json:
                 click.echo(
                     json.dumps(
-                        {"project": str(proj), "error": f"field must be KEY=VALUE, got: {raw}"},
+                        {
+                            "project": str(proj),
+                            "error": f"field must be KEY=VALUE, got: {raw}",
+                        },
                         indent=2,
                     )
                 )
@@ -10988,7 +11059,10 @@ def preset_create(
             if as_json:
                 click.echo(
                     json.dumps(
-                        {"project": str(proj), "error": f"unknown config field '{key}'"},
+                        {
+                            "project": str(proj),
+                            "error": f"unknown config field '{key}'",
+                        },
                         indent=2,
                     )
                 )
@@ -11209,7 +11283,10 @@ def preset_apply(project: Path | None, name: str, as_json: bool) -> None:
     if not preset:
         if as_json:
             click.echo(
-                json.dumps({"project": str(proj), "error": f"preset '{name}' not found"}, indent=2)
+                json.dumps(
+                    {"project": str(proj), "error": f"preset '{name}' not found"},
+                    indent=2,
+                )
             )
         else:
             console.print(f"[red]Error: preset '{name}' not found.[/red]")

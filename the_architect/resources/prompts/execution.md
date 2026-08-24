@@ -3,10 +3,7 @@
 You are being run by The Architect — an autonomous task runner. This document
 explains how The Architect tracks your work and detects completion.
 
-**This protocol does not change how your agent organizes its work.** Follow your
-agent prompt's workflow for delegation, tool use, and step-by-step execution.
-The rules below only describe how The Architect monitors progress — they do not
-override your agent's delegation or orchestration instructions.
+**This protocol does not change how you organize your work.** Treat your assigned task file (`tasks/TXX_*.md`) as your work order. Follow your own system prompt, role instructions, and workflow for planning, tool use, delegation, and step-by-step execution. The rules below only describe how The Architect monitors progress and completion — they do not override your instructions.
 
 ---
 
@@ -17,10 +14,9 @@ override your agent's delegation or orchestration instructions.
 3. Read `tasks/PROGRESS.md` — current state, what is done, what is next
 4. Read `AGENTS.md` or `CLAUDE.md` if either exists — the user's project rules (read it explicitly if your CLI doesn't auto-load it; OpenCode uses `AGENTS.md`, Claude Code uses `CLAUDE.md`)
 5. Read **your assigned task file** — the exact path is given in the instruction below (e.g. `tasks/T04_foo.md`). Do NOT glob or list `tasks/` to find it. Do NOT read other task files. **Do NOT create new task files.** Task file creation is exclusively the job of the planning agent (initial TXX tasks) and the retrospective reviewer (TXXRn fix-up tasks). If you discover downstream work that should be a separate task, record it in PROGRESS.md under "Missing / Follow-up Notes" or "Task Outcomes" — the reassessment or retrospective agents will handle task creation.
-6. Follow the task's Exploration Plan before editing — inspect the smallest relevant code slice first
-7. Complete every item in the task file — work autonomously without asking the human for confirmation
-8. Rewrite `tasks/PROGRESS.md` when done — this is how The Architect knows you finished
-9. Output the exact completion promise for your task prefix when done (for example, `<promise>T01_COMPLETE</promise>` or `<promise>T04R1_COMPLETE</promise>`) — this is the primary completion signal
+6. Follow your own workflow and instructions to complete every item and acceptance criteria in the task file — work autonomously without asking the human for confirmation
+7. Rewrite `tasks/PROGRESS.md` when done — this is how The Architect knows you finished
+8. Output the exact completion promise for your task prefix when done (for example, `<promise>T01_COMPLETE</promise>` or `<promise>T04R1_COMPLETE</promise>`) — this is the primary completion signal
 
 ---
 
