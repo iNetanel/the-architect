@@ -11,6 +11,14 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ## [Unreleased]
 
+## [1.4.9] (build 10676) — 2026-08-24
+
+### Changed
+
+- **`execution.md` execution protocol is now delegation-agnostic about discovery and verification** — the "Focused Codebase Discovery Before Implementation" and "Verification Discipline" sections no longer phrase focused discovery and verification as something "you" (a single agent) must personally do. Both now state that the work happens whether done directly or through your own workflow (e.g. delegated to a discovery/QA role), so structured multi-agent execution setups that delegate internally are no longer contradicted by prompt wording that implies a lone agent must do everything itself. This continues the agent-agnostic generalization shipped in 1.4.8; The Architect's monitoring/completion contract (PROGRESS.md, promise tags) is unchanged.
+- **Validation gate fix-up instruction reworded from prescribed steps to stated standards** — `_build_fixup_instruction()` in `core/validation_gate.py` now emits a "STANDARDS:" list stating the outcomes that must hold (each failing check resolved at its root cause; flaky tests or short timeouts fixed as test issues rather than masked; changes scoped to what the gate reported; work complete only when the gate passes) instead of an imperative numbered "INSTRUCTIONS:" list prescribing a fixed step order — same delegation-agnostic wording style.
+- **`runner.py` task-instruction text reworded in the same standards style, plus ruff-format line wrapping** — `build_instruction()`'s injected FILE INTEGRITY PROTOCOL block is now phrased as declarative standards (snapshot placement, validation outcome, no leftover snapshots) rather than a numbered step list, and the retry/failure-reporting wording states outcomes ("Retry standards:" bullets, passive-voice failure-report rules) instead of prescribing a fixed sequence. The file was also reformatted for line-length/style consistency (ruff format). No behavior change — the same instruction blocks are injected in the same situations.
+
 ## [1.4.8] (build 10675) — 2026-08-24
 
 ### Changed

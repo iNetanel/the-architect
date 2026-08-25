@@ -1549,7 +1549,7 @@ class TestBuildFixupInstruction:
         assert "[FAIL] lint" in instruction
         assert "took 1.2s" in instruction
         assert "E501 line too long" in instruction
-        assert "INSTRUCTIONS:" in instruction
+        assert "STANDARDS:" in instruction
 
     def test_multiple_failed_checks(self) -> None:
         from the_architect.core.validation_gate import _build_fixup_instruction

@@ -23,10 +23,12 @@ explains how The Architect tracks your work and detects completion.
 ## Focused Codebase Discovery Before Implementation
 
 Task files define outcomes and focused exploration lanes. They may intentionally
-avoid prescribing exact internals. Before editing files, use the task's
-Exploration Plan to inspect the smallest relevant part of the codebase.
+avoid prescribing exact internals. Code changes are preceded by focused discovery —
+the task's Exploration Plan identifies the smallest relevant part of the codebase
+to understand first, whether that discovery is done directly or through your own
+workflow (e.g. delegated to a discovery role).
 
-You are expected to discover:
+Discovery is expected to cover:
 
 - Existing files, modules, routes, components, providers, or config patterns related to the task
 - Naming conventions and data shapes already used by the project
@@ -307,35 +309,36 @@ focused codebase discovery to choose the correct local implementation.
 
 ## Verification Discipline — No Assumed Success
 
-Do not assume anything works. You must prove it with the strongest practical
+Nothing is assumed to work — success is proven with the strongest practical
 verification available for the project and the task.
 
-Before marking Done:
+Verification evidence required before marking Done (whether produced directly or
+through your own workflow, e.g. implementation/QA roles whose reports confirm it):
 
-1. Identify the relevant verification commands from project docs, package
+1. The relevant verification commands are identified from project docs, package
    scripts, Makefiles, CI config, or existing tests.
-2. Run focused tests for the code you changed.
-3. Run broader validation when the change affects shared behaviour, public APIs,
-   build configuration, routing, state management, or UI flows.
-4. Run lint/typecheck/build commands when the project provides them and they are
-   relevant to the changed area.
-5. Read the command output and fix failures. A command that starts but reports
-   failures is not a pass.
+2. Focused tests for the changed code have been run and pass.
+3. Broader validation has happened when the change affects shared behaviour,
+   public APIs, build configuration, routing, state management, or UI flows.
+4. Lint/typecheck/build commands have been run where the project provides them
+   and they are relevant to the changed area.
+5. Command output has been read; a command that starts but reports failures is
+   not a pass.
 
-If a required verification tool or dependency is missing, do not skip testing by
-default. Use the project's package manager and documented setup commands to
-install what is needed when it is safe and local to the project. Examples:
-`npm install`, `pnpm install`, `pip install -e .`, `pip install -r requirements.txt`,
-or browser/test tooling such as Playwright dependencies when the repo already uses
-that stack. Do not add new runtime dependencies just to make testing easier unless
-the task requires them; if you add or install anything, record what you did in
-PROGRESS.md and include it in your final verification summary.
+When a required verification tool or dependency is missing, testing is not
+skipped by default — the project's package manager and documented setup commands
+provide it when safe and local to the project (e.g. `npm install`, `pnpm install`,
+`pip install -e .`, `pip install -r requirements.txt`, or browser/test tooling
+such as Playwright dependencies when the repo already uses that stack). New
+runtime dependencies are not added just to make testing easier unless the task
+requires them; anything installed is recorded in PROGRESS.md and included in the
+final verification summary.
 
 ### UI and Frontend Changes
 
 UI work is especially easy to complete only partially. For UI, frontend, TUI, or
-visual interaction tasks, do the best practical verification available instead of
-stopping at typechecks:
+visual interaction tasks, the best practical verification available is expected
+instead of stopping at typechecks:
 
 - Run component/unit tests, browser/E2E tests, snapshot tests, or TUI tests when
   the project has them.

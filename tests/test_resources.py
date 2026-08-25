@@ -86,8 +86,8 @@ def test_execution_protocol_requires_strong_verification() -> None:
 
     prompt = get_prompt("execution.md")
     assert "Verification Discipline" in prompt
-    assert "Do not assume anything works" in prompt
-    assert "If a required verification tool or dependency is missing" in prompt
+    assert "Nothing is assumed to work" in prompt
+    assert "When a required verification tool or dependency is missing" in prompt
     assert "UI and Frontend Changes" in prompt
     assert "leave the task Pending if the unverified behaviour is central" in prompt
 

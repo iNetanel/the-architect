@@ -377,20 +377,29 @@ def _build_fixup_instruction(
 
     for check in gate_result.checks:
         if check.status != "pass":
-            lines.append(f"  [{check.status.upper()}] {check.name} (took {check.duration}s)")
+            lines.append(
+                f"  [{check.status.upper()}] {check.name} (took {check.duration}s)"
+            )
             # Include only the last ~200 chars of output to keep instruction small
-            output_snippet = check.output[-200:] if len(check.output) > 200 else check.output
+            output_snippet = (
+                check.output[-200:] if len(check.output) > 200 else check.output
+            )
             lines.append(f"    Output: {output_snippet}")
             lines.append("")
 
-    lines.append("INSTRUCTIONS:")
-    lines.append("1. Diagnose the root cause of each failing check")
-    lines.append("2. Fix the code, tests, or configuration to resolve the failures")
+    lines.append("STANDARDS:")
     lines.append(
-        "3. If a test is flaky or the timeout is too short, fix the test or adjust the timeout"
+        "- Each failing check is resolved at its root cause — in code, tests, or configuration."
     )
-    lines.append("4. Do NOT modify unrelated code — only fix what the gate reported")
-    lines.append("5. When done, the validation gate (lint, test, typecheck) must pass")
+    lines.append(
+        "- Flaky tests or timeouts that are too short are fixed as test issues, not masked."
+    )
+    lines.append(
+        "- Changes stay scoped to what the gate reported; unrelated code is untouched."
+    )
+    lines.append(
+        "- The work is complete when the validation gate (lint, test, typecheck) passes."
+    )
 
     return "\n".join(lines)
 

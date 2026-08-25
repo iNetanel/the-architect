@@ -339,14 +339,20 @@ _PROGRESS_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"(\d+) tests? (passing|passed|green)", re.IGNORECASE),
     re.compile(r"no (errors|failures|issues) (found|remaining)", re.IGNORECASE),
     re.compile(r"task (is |)(complete|done|finished)", re.IGNORECASE),
-    re.compile(r"all (items|sub-?tasks|requirements) (complete|done|implemented)", re.IGNORECASE),
+    re.compile(
+        r"all (items|sub-?tasks|requirements) (complete|done|implemented)",
+        re.IGNORECASE,
+    ),
     re.compile(r"successfully (implemented|created|wrote|fixed)", re.IGNORECASE),
 ]
 
 _SELF_ASSESSMENT_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"task (is |)(complete|done|finished)", re.IGNORECASE), "complete"),
     (re.compile(r"I('m| am) (stuck|blocked|unable to)", re.IGNORECASE), "stuck"),
-    (re.compile(r"I can't (proceed|continue|figure out|resolve)", re.IGNORECASE), "stuck"),
+    (
+        re.compile(r"I can't (proceed|continue|figure out|resolve)", re.IGNORECASE),
+        "stuck",
+    ),
     (re.compile(r"still (working|need to|have to|must)", re.IGNORECASE), "in_progress"),
     (
         re.compile(r"(remaining|outstanding) (work|items|tasks|issues)", re.IGNORECASE),
@@ -677,7 +683,13 @@ def build_opencode_command(
         List of command components ready for subprocess execution.
     """
     opencode_bin = opencode_path_for_command()
-    cmd: list[str] = [opencode_bin, "run", "--format", "json", "--dangerously-skip-permissions"]
+    cmd: list[str] = [
+        opencode_bin,
+        "run",
+        "--format",
+        "json",
+        "--dangerously-skip-permissions",
+    ]
 
     if model_override:
         cmd.extend(["--model", model_override])
@@ -2337,59 +2349,32 @@ def build_instruction(
     if config.integrity:
         lines.append("=== FILE INTEGRITY PROTOCOL ===")
         lines.append(
-            "Before modifying any existing file, create a snapshot named "
-            "architect_eval_<original_filename> in THE EXACT SAME DIRECTORY as the original. "
-            "This is mandatory for existing files and is how you protect against truncated "
-            "mid-write corruption."
-        )
-        lines.append("")
-        lines.append(
-            "PLACEMENT RULE — the snapshot MUST live in the same directory as the file it "
-            "backs up. Examples:\n"
-            "  the_architect/core/runner.py      → the_architect/core/architect_eval_runner.py\n"
-            "  tests/test_planner.py             → tests/architect_eval_test_planner.py\n"
-            "  version.py                        → architect_eval_version.py\n"
-            "NEVER place a snapshot at the project root unless the original file is also at the "
-            "project root. A snapshot in the wrong directory is worse than no snapshot."
-        )
-        lines.append("")
-        lines.append(
-            "EXEMPT FILES — do NOT create architect_eval snapshots for these; "
-            "they are managed by The Architect itself and must never be snapshotted:\n"
-            "  - tasks/PROGRESS.md\n"
-            "  - ARCHITECT.md\n"
-            "  - Any file inside the tasks/ directory (task files, INSTRUCTIONS.md, GOAL.md, etc.)"
-        )
-        lines.append("")
-        lines.append("Follow this protocol exactly:")
-        lines.append(
-            "1. Before editing an existing file (other than exempt files above), copy it to "
-            "architect_eval_<filename> in the same directory as the original. "
-            "Do not create snapshots for brand-new files."
+            "File modifications follow snapshot integrity to protect against truncated "
+            "mid-write corruption. The standard for any existing file that is modified:"
         )
         lines.append(
-            "2. Make your change to the original file normally. Never create snapshots for "
-            "architect_eval_* files themselves."
+            "- A snapshot named architect_eval_<original_filename> exists in the SAME directory as "
+            "the original before modification (brand-new files are not snapshotted; "
+            "architect_eval_* files themselves are never snapshotted)."
         )
         lines.append(
-            "3. Validate the rewritten file against the snapshot before considering the edit "
-            "complete. Check for obvious truncation, incomplete endings, missing major sections, "
-            "and any large unexpected size shrinkage. Size is a warning signal, "
-            "not an absolute rule."
+            "- The modified file is validated against its snapshot — truncation, incomplete "
+            "endings, missing major sections, or large unexpected size shrinkage indicate a "
+            "failed write. A passing validation removes the snapshot; a failing one restores "
+            "from it and retries."
         )
         lines.append(
-            "4. If validation passes, delete the architect_eval_* snapshot immediately. A deleted "
-            "snapshot means the file was verified clean."
+            "- No architect_eval_* snapshots remain after a successful task — "
+            "leftovers are treated by The Architect as corruption signals during "
+            "reassessment and retrospective review."
         )
         lines.append(
-            "5. If validation fails, restore from the snapshot, diagnose the problem, retry the "
-            "write, and only delete the snapshot after a clean validation."
+            "Placement: the snapshot lives in the same directory as the file it backs up "
+            "(e.g. src/app.py → src/architect_eval_app.py); never at the project root unless the "
+            "original is also at the root."
         )
-        lines.append("")
         lines.append(
-            "Never leave architect_eval_* files behind after a successful task. Any leftover "
-            "snapshot will be treated by The Architect as a corruption signal during reassessment "
-            "and retrospective review."
+            "Exempt from snapshots: tasks/* and ARCHITECT.md — managed by The Architect itself."
         )
         lines.append("=== END FILE INTEGRITY PROTOCOL ===")
         lines.append("")
@@ -2399,13 +2384,12 @@ def build_instruction(
         lines.append(
             f"Read tasks/INSTRUCTIONS.md for project context, "
             f"then read {progress_rel}, then read {task_rel} "
-            "and complete every task in it — work autonomously without asking "
-            "the human for confirmation."
+            "— work autonomously to fulfill the task requirements."
         )
     else:
         lines.append(
-            f"Read {progress_rel} then read {task_rel} and complete every task in it "
-            "— work autonomously without asking the human for confirmation."
+            f"Read {progress_rel} then read {task_rel} "
+            "— work autonomously to fulfill the task requirements."
         )
 
     lines.append("")
@@ -2426,32 +2410,28 @@ def build_instruction(
         lines.append("")
         lines.append(f"🔄 RETRY ATTEMPT {attempt}/{config.max_retries}")
         lines.append(
-            "Your previous work persists in files on disk. "
-            "Do NOT assume the code is in its original state — read the current "
-            "state of each file before touching it."
+            "Previous work persists in files on disk — the current state of the codebase, "
+            "not a clean slate, is the starting point for this attempt."
         )
 
-        # retry_prompt_mode="focused" (default) — structured step-by-step guidance
+        # retry_prompt_mode="focused" (default) — standards for resuming work
         # retry_prompt_mode="same" — minimal note, Ralph-style identical prompt
         if config.retry_prompt_mode != "same":
             lines.append("")
-            lines.append("BEFORE writing any code, do this in order:")
+            lines.append("Retry standards:")
+            lines.append("- Sub-tasks already marked Done in PROGRESS.md are not redone.")
             lines.append(
-                "1. Read PROGRESS.md — check which sub-tasks are already marked Done. "
-                "Do NOT redo them."
+                "- Failures are diagnosed from the current state of the code and actual test "
+                "results, not guessed at."
+            )
+            lines.append("- Only what is broken is fixed; working parts are left untouched.")
+            lines.append(
+                f"- A complete task (all items done, tests passing) is reflected in an updated "
+                f"PROGRESS.md and the exact promise tag <promise>{task.prefix}_COMPLETE</promise>."
             )
             lines.append(
-                "2. Run the test suite — diagnose what is actually failing right now. Do not guess."
-            )
-            lines.append("3. Fix only what is broken. Skip everything that already works.")
-            lines.append(
-                "4. When ALL items are complete and tests pass: update PROGRESS.md, "
-                f"then output <promise>{task.prefix}_COMPLETE</promise>."
-            )
-            lines.append(
-                "If the task is already fully complete (tests pass, nothing left to do): "
-                "mark it Done in PROGRESS.md immediately and output the promise tag — "
-                "do not redo work just because this is a retry."
+                "- If the task is already fully complete, it is marked Done in PROGRESS.md and "
+                "the promise tag is output — work is not redone just because this is a retry."
             )
 
             # Failure reporting — injected only on retry, not in the static prompt
@@ -2460,18 +2440,17 @@ def build_instruction(
                 "FAILURE REPORTING (this attempt is a retry — previous attempt(s) failed):"
             )
             lines.append(
-                "If you cannot complete this task, you MUST write a `## Failure Report` "
-                "section in PROGRESS.md. This is mandatory — the reviewer and future planner "
-                "depend on it."
+                "An incomplete attempt carries a `## Failure Report` section in PROGRESS.md — "
+                "the reviewer and future planner depend on it."
             )
             lines.append(
-                "The Failure Report must include: What Was Tried, Root Cause, Technical Errors "
+                "The Failure Report includes: What Was Tried, Root Cause, Technical Errors "
                 "(exact messages), Environment State, What Has NOT Been Tried, "
-                "Blocking Dependencies. Use bullet points — keep it scannable."
+                "Blocking Dependencies. Bullet points — scannable."
             )
             lines.append(
-                "If a `## Failure Report` already exists from a previous attempt, read it "
-                "and try a DIFFERENT approach. Do not repeat what already failed."
+                "When a `## Failure Report` already exists from a previous attempt, it is read "
+                "first and this attempt takes a different approach than what already failed."
             )
 
         if previous_summary:
@@ -2479,7 +2458,8 @@ def build_instruction(
             lines.append("=== PREVIOUS ATTEMPT CONTEXT ===")
             lines.append(previous_summary)
             lines.append(
-                "Focus on fixing the errors above. Do not redo work that is already complete."
+                "The focus of this attempt is the errors above; work that is already complete "
+                "is not redone."
             )
 
     # Note: opencode reads AGENTS.md automatically from the project root.
@@ -2885,7 +2865,10 @@ async def run_task_once(
             # Also check for rate-limit or model-not-found in the accumulated text
             # (belt-and-suspenders with the mid-stream detection — some errors
             # only appear in text output)
-            from the_architect.core.free_models import is_model_not_found_error, is_rate_limit_error
+            from the_architect.core.free_models import (
+                is_model_not_found_error,
+                is_rate_limit_error,
+            )
 
             rl_hit = (
                 stream_result.rate_limit_hit
@@ -2940,7 +2923,10 @@ async def run_task_once(
         # Check for rate-limit or model-not-found even on exit_code=0 (some
         # providers return rate-limit info in the text output without a non-zero
         # exit code, and model-not-found errors can also appear with exit_code=0)
-        from the_architect.core.free_models import is_model_not_found_error, is_rate_limit_error
+        from the_architect.core.free_models import (
+            is_model_not_found_error,
+            is_rate_limit_error,
+        )
 
         rl_hit = (
             stream_result.rate_limit_hit
@@ -3302,7 +3288,10 @@ async def run_task(
         success = result.status == "done"
 
         if not success:
-            from the_architect.core.circuit import ProviderErrorKind, detect_provider_error
+            from the_architect.core.circuit import (
+                ProviderErrorKind,
+                detect_provider_error,
+            )
 
             provider_error = detect_provider_error(result.accumulated_text, result.exit_code)
             if provider_error is not None and provider_error.kind in (
@@ -3426,7 +3415,10 @@ async def run_task(
                             pass
                     _set_renderer_footer(
                         renderer,
-                        _footer_text(f"{task.prefix} {task.title or task.name}", "replanning task"),
+                        _footer_text(
+                            f"{task.prefix} {task.title or task.name}",
+                            "replanning task",
+                        ),
                     )
                     try:
                         await cb.attempt_replan(
@@ -3445,7 +3437,10 @@ async def run_task(
                             pass
                     _set_renderer_footer(
                         renderer,
-                        _footer_text(f"{task.prefix} {task.title or task.name}", "replan complete"),
+                        _footer_text(
+                            f"{task.prefix} {task.title or task.name}",
+                            "replan complete",
+                        ),
                     )
             except Exception as cb_exc:
                 # Circuit breaker errors must NEVER crash the run
@@ -3711,7 +3706,10 @@ async def run_task(
 
             # Check for actionable provider errors (update required, etc.)
             # Retrying won't fix these — fail fast with a clear message.
-            from the_architect.core.circuit import ProviderErrorKind, detect_provider_error
+            from the_architect.core.circuit import (
+                ProviderErrorKind,
+                detect_provider_error,
+            )
 
             provider_error = detect_provider_error(
                 result.accumulated_text,
