@@ -11,6 +11,8 @@ Full rules in [`documentation/PRACTICES.md`](documentation/PRACTICES.md).
 
 ## [Unreleased]
 
+## [1.4.10] (build 10678) — 2026-09-02
+
 ### Fixed
 
 - **TUI pause-menu "Exit" (and Ctrl+C) left the process running in the background** — selecting "Exit" from the ESC pause menu (or pressing Ctrl+C while the TUI was open) tore down the Textual screen and killed the currently active provider subprocess via `kill_active_subprocesses()`, but never told the underlying task retry/scheduling loop in `core/runner.py` that the user wanted to stop. Since that loop has no other way to detect a hard exit, it simply treated the killed subprocess as one failed attempt and retried it (or moved on to the next task / next Infinite Loop iteration), spawning a brand new subprocess — keeping the always-non-daemon worker thread, and therefore the whole process, alive after the TUI had visually closed. Only a second, forced Ctrl+C (`os._exit(130)`) actually ended it. Added a cooperative `request_run_shutdown()` / `is_run_shutdown_requested()` signal in `core/runner.py`, checked by `run_task`'s retry loop, `_run_all_inner`'s scheduling loop, and the Infinite Loop driver loop in `cli.py`; `ArchitectApp.begin_shutdown()` now sets it alongside `kill_active_subprocesses()`. Also fixed a second, compounding bug in `tui/runner.py`'s `ArchitectAppRunner.run()`: persistent/Infinite-Loop runs skipped waiting for and joining the worker thread on ANY exit, treating a deliberate "Exit" exactly like "Detach" even though the pause menu documents Exit as a hard kill — that gating is now scoped correctly so only genuine detach/SIGHUP paths skip the join (build 10678).
