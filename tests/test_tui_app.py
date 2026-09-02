@@ -702,6 +702,27 @@ class TestBeginShutdown:
             app.begin_shutdown()
             assert app.shutdown_started is True
 
+    @pytest.mark.asyncio
+    async def test_begin_shutdown_requests_run_shutdown(self) -> None:
+        """begin_shutdown must signal the run loop, not just kill the subprocess.
+
+        Regression test: killing the active subprocess alone does not stop
+        the retry/scheduling loops in core.runner — they just treat it as a
+        failed attempt and retry or move to the next task. Without also
+        setting this flag, a pause-menu "Exit" (or Ctrl+C) leaves the
+        non-daemon worker thread running in the background after the TUI
+        has visually closed, and the process only truly dies on a second,
+        forced Ctrl+C.
+        """
+        from the_architect.core.runner import is_run_shutdown_requested
+
+        app = ArchitectApp()
+        assert is_run_shutdown_requested() is False
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            app.begin_shutdown()
+            assert is_run_shutdown_requested() is True
+
 
 class TestSplashSubtitle:
     """Tests for SplashScreen.set_subtitle."""

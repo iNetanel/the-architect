@@ -5133,6 +5133,20 @@ def main(
                 f"(active={infinite_loop_chain_enabled}, plan={plan_local['v']})"
             )
             while True:
+                # A hard exit (TUI pause-menu "Exit" or Ctrl+C) sets this
+                # flag. Without checking it here, the driver just treats
+                # the interrupted iteration as "done" and starts planning
+                # or executing the next one — the Infinite Loop would
+                # never actually stop.
+                from the_architect.core.runner import is_run_shutdown_requested
+
+                if is_run_shutdown_requested():
+                    logger.info(
+                        "Infinite Loop driver: shutdown requested — stopping "
+                        f"before iteration {loop_iteration}"
+                    )
+                    return
+
                 if infinite_loop_chain_enabled:
                     config._infinite_loop_enabled = True  # type: ignore[attr-defined]
                     config._infinite_loop_chain_enabled = True  # type: ignore[attr-defined]

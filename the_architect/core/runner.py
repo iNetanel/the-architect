@@ -942,6 +942,48 @@ def kill_active_subprocesses() -> int:
     return len(procs)
 
 
+# Cooperative shutdown signal for the task retry/scheduling loops below.
+#
+# Killing the active subprocess (``kill_active_subprocesses``) only ends
+# the current attempt — on its own it is NOT enough to stop a run. Without
+# this flag, ``run_task``'s retry loop and ``_run_all_inner``'s scheduling
+# loop simply see the killed subprocess as a normal failed attempt and
+# either retry it or move on to the next task, spawning a brand new
+# subprocess. Since the worker thread driving these loops is always
+# non-daemon (see ``the_architect.tui.runner``), that keeps the whole
+# process alive long after the TUI has visually exited — the process only
+# actually dies when the user forces it with a second Ctrl+C.
+_RUN_SHUTDOWN_REQUESTED = threading.Event()
+
+
+def request_run_shutdown() -> None:
+    """Ask every in-flight run loop to stop as soon as possible.
+
+    Must be called *in addition to* (not instead of)
+    :func:`kill_active_subprocesses` from any hard-exit path (TUI pause
+    menu "Exit", Ctrl+C) — this flag is what makes the retry/scheduling
+    loops give up instead of starting a new attempt or the next task once
+    the current subprocess dies.
+    """
+    _RUN_SHUTDOWN_REQUESTED.set()
+
+
+def is_run_shutdown_requested() -> bool:
+    """Return True once :func:`request_run_shutdown` has been called."""
+    return _RUN_SHUTDOWN_REQUESTED.is_set()
+
+
+def reset_run_shutdown() -> None:
+    """Clear the shutdown flag.
+
+    Called at the start of every :func:`run_all` invocation. The flag is
+    process-global, so without a reset a later run started in the same
+    process (tests, or a fresh Infinite Loop iteration) would immediately
+    see a stale shutdown request left over from a previous run.
+    """
+    _RUN_SHUTDOWN_REQUESTED.clear()
+
+
 def _provider_idle_timeout_seconds() -> float:
     """Return provider stdout idle timeout, allowing env override for long runs."""
     raw = os.environ.get("ARCHITECT_PROVIDER_IDLE_TIMEOUT_SECONDS", "").strip()
@@ -3287,6 +3329,17 @@ async def run_task(
 
         success = result.status == "done"
 
+        # A hard exit (TUI pause-menu "Exit" or Ctrl+C) kills the
+        # subprocess and sets this flag. Without checking it here, a
+        # failed attempt just triggers a normal retry — spawning a new
+        # subprocess as if nothing happened — instead of actually
+        # stopping the run.
+        if not success and is_run_shutdown_requested():
+            logger.info(
+                f"Task {task.prefix}: stopping after attempt {attempt} — shutdown requested"
+            )
+            break
+
         if not success:
             from the_architect.core.circuit import (
                 ProviderErrorKind,
@@ -4185,6 +4238,10 @@ async def run_all(
             "or wait for the other process to complete."
         )
 
+    # Clear any shutdown request left over from a previous run in this
+    # process (tests, or a fresh Infinite Loop iteration) before starting.
+    reset_run_shutdown()
+
     # Load circuit breaker state once per run, passing free_rotator so it
     # can check whether free mode still has models available.
     circuit_breaker: object | None = None
@@ -4738,6 +4795,10 @@ async def _run_all_inner(
     # 4. Check token budgets and inter-task pause
     # 5. Repeat until all tasks are terminal
     while scheduler.has_remaining_work():
+        if is_run_shutdown_requested():
+            logger.warning("Run shutdown requested — stopping before starting a new task batch")
+            break
+
         # Get next batch of ready tasks (dependencies satisfied)
         batch = scheduler.get_next_batch()
         if not batch:

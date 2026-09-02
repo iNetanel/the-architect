@@ -388,6 +388,20 @@ class ArchitectApp(App[None]):
         self._shutdown_started = True
         self._quit_event.set()
 
+        # Tell the run loop itself to stop, not just the current
+        # subprocess. Without this, killing the subprocess below just
+        # fails the current attempt — the retry/scheduling loop in
+        # core.runner treats that as a normal failure and starts a new
+        # attempt or the next task, which keeps the (always non-daemon)
+        # worker thread — and therefore the whole process — alive long
+        # after this screen has visually closed.
+        try:
+            from the_architect.core.runner import request_run_shutdown
+
+            request_run_shutdown()
+        except Exception as exc:
+            logger.warning(f"begin_shutdown request_run_shutdown failed: {exc!r}")
+
         # Unblock any worker threads stuck in push_and_wait.
         # They will detect _quit_event.is_set() and return None.
         with self._push_waits_lock:

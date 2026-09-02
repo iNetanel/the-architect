@@ -408,24 +408,37 @@ class ArchitectAppRunner:
                             "Architect TUI exited unexpectedly before the CLI flow completed"
                         )
 
+            # NOTE: this branch (``not unexpected_app_exit``) is ONLY reached
+            # for a deliberate shutdown (pause-menu "Exit" / Ctrl+C, both of
+            # which route through ``begin_shutdown()`` and set
+            # ``shutdown_started``) or a normal successful completion.
+            # "Detach" and SIGHUP never set ``shutdown_started`` and are
+            # handled entirely by the ``unexpected_app_exit`` branch above.
+            # So — unlike that branch — there is no "the worker should keep
+            # running headless" case here: gating on ``self._persistent``
+            # incorrectly treated every persistent/Infinite-Loop "Exit" as
+            # if it were a "Detach", returning immediately without waiting
+            # for the worker and leaving it running in the background —
+            # exactly the "still needs Ctrl+C to really close it" bug.
             if not unexpected_app_exit:
                 worker_still_running = (
                     self._worker is not None
                     and self._worker.is_alive()
                     and not self._flow_done.is_set()
                 )
-                if worker_still_running and not self._persistent:
-                    # User quit the TUI (Ctrl+C / q) while a task was running.
-                    # Kill the active provider subprocess so the worker
-                    # unblocks and can finish cleanly. Without this the
-                    # non-daemon worker keeps the process alive forever.
+                if worker_still_running:
+                    # User quit the TUI (Ctrl+C / pause-menu Exit) while a
+                    # task was running. Kill the active provider subprocess
+                    # so the worker unblocks and can finish cleanly. Without
+                    # this the non-daemon worker keeps the process alive
+                    # forever.
                     try:
                         from the_architect.core.runner import kill_active_subprocesses
 
                         kill_active_subprocesses()
                     except Exception as exc:
                         logger.warning(f"kill_active_subprocesses on user quit failed: {exc!r}")
-                elif not worker_still_running:
+                else:
                     # Worker already done — kill any leftover subprocess.
                     try:
                         from the_architect.core.runner import kill_active_subprocesses
@@ -434,14 +447,15 @@ class ArchitectAppRunner:
                     except Exception as exc:
                         logger.warning(f"kill_active_subprocesses cleanup failed: {exc!r}")
 
-            # Wait for the worker to finish so flow_exception /
-            # flow_return are fully populated.
-            # For persistent runs where the user detached and the worker
-            # is still running, we do NOT join — just return so the
-            # terminal is freed immediately.
-            if not unexpected_app_exit and not self._persistent:
+            # Wait for the worker to finish so flow_exception / flow_return
+            # are fully populated. ``request_run_shutdown()`` (set by
+            # ``begin_shutdown()`` before this point) makes the run loop
+            # give up promptly once its current subprocess dies, so this
+            # bounded wait is normally enough for a deliberate Exit to
+            # actually finish — not just appear to.
+            if not unexpected_app_exit:
                 self._flow_done.wait(timeout=5.0)
-            if self._worker is not None and self._worker.is_alive() and not self._persistent:
+            if self._worker is not None and self._worker.is_alive():
                 self._worker.join(timeout=1.0)
 
             # Only clear _TUI_SUPPRESSED_AFTER_EXIT once the worker has
@@ -512,8 +526,9 @@ def _atexit_kill_subprocesses() -> None:
     """atexit hook — kill every registered provider subprocess on exit."""
     _restore_terminal_input_modes()
     try:
-        from the_architect.core.runner import kill_active_subprocesses
+        from the_architect.core.runner import kill_active_subprocesses, request_run_shutdown
 
+        request_run_shutdown()
         kill_active_subprocesses()
     except Exception as exc:
         logger.warning(f"atexit kill_active_subprocesses failed: {exc!r}")
@@ -572,8 +587,9 @@ def _sigint_kill_handler(signum: int, frame: Any) -> None:
     # First Ctrl+C — graceful cleanup then raise KeyboardInterrupt.
     _restore_terminal_input_modes()
     try:
-        from the_architect.core.runner import kill_active_subprocesses
+        from the_architect.core.runner import kill_active_subprocesses, request_run_shutdown
 
+        request_run_shutdown()
         kill_active_subprocesses()
     except Exception as exc:
         logger.warning(f"SIGINT graceful kill_active_subprocesses failed: {exc!r}")

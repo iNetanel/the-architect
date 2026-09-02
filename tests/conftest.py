@@ -95,3 +95,23 @@ def reset_sigint_counter() -> None:
 
     runner_mod._SIGINT_COUNT = 0
     runner_mod._SIGINT_FIRST_AT = 0.0
+
+
+@pytest.fixture(autouse=True)
+def reset_run_shutdown_flag() -> None:
+    """Reset the cooperative run-shutdown flag between tests.
+
+    ``request_run_shutdown()`` sets a module-level ``threading.Event()`` in
+    ``core.runner`` so a hard TUI exit (pause-menu "Exit" / Ctrl+C) can tell
+    the retry/scheduling loops to stop. It is normally cleared at the start
+    of every ``run_all()`` call, but tests that call ``_run_all_inner`` /
+    ``run_task`` directly (bypassing ``run_all``) or that exercise
+    ``begin_shutdown()`` directly can leave it set, incorrectly short-circuiting
+    an unrelated test running later in the same process. Reset before and
+    after every test for isolation.
+    """
+    from the_architect.core.runner import reset_run_shutdown
+
+    reset_run_shutdown()
+    yield
+    reset_run_shutdown()

@@ -2015,6 +2015,146 @@ class TestRunAll:
         assert result is False
 
 
+class TestRunShutdownSignal:
+    """Regression tests for the cooperative run-shutdown flag.
+
+    Killing the active provider subprocess (``kill_active_subprocesses``)
+    only fails the *current* attempt — on its own that is not enough to
+    stop a run. Without ``request_run_shutdown()`` / ``is_run_shutdown_requested()``,
+    ``run_task``'s retry loop and ``_run_all_inner``'s scheduling loop just
+    treat the killed subprocess as a normal failure and retry or move on to
+    the next task, keeping the always-non-daemon worker thread (and the
+    whole process) alive after the TUI has exited.
+    """
+
+    def test_flag_defaults_clear_and_round_trips(self) -> None:
+        from the_architect.core.runner import (
+            is_run_shutdown_requested,
+            request_run_shutdown,
+            reset_run_shutdown,
+        )
+
+        assert is_run_shutdown_requested() is False
+        request_run_shutdown()
+        assert is_run_shutdown_requested() is True
+        reset_run_shutdown()
+        assert is_run_shutdown_requested() is False
+
+    @pytest.mark.asyncio
+    async def test_run_all_resets_shutdown_flag_at_start(self, config, tmp_path):
+        """A fresh run_all() call must not inherit a stale shutdown request."""
+        from the_architect.core.runner import request_run_shutdown
+
+        tasks_dir = tmp_path / "tasks"
+        t1_path = tasks_dir / "T01_first.md"
+        t1_path.parent.mkdir(parents=True, exist_ok=True)
+        t1_path.write_text("# T01\n", encoding="utf-8")
+        tasks = [
+            Task(name="T01_first", prefix="T01", number=1, path=t1_path, status=TaskStatus.PENDING)
+        ]
+        plan = TaskPlan(tasks=tasks)
+
+        async def mock_run_task(**kwargs):
+            return TaskResult(
+                prefix="T01",
+                title="first",
+                status="done",
+                duration_seconds=1.0,
+                attempts=1,
+                tokens=TokenUsage(),
+                model="",
+            )
+
+        # Simulate a previous run's shutdown leaking into this process.
+        request_run_shutdown()
+
+        with patch("the_architect.core.runner.run_task", side_effect=mock_run_task):
+            result = await run_all(plan, config)
+
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_scheduling_loop_stops_when_shutdown_requested(self, config, tmp_path):
+        """_run_all_inner must not start a new batch once shutdown is requested."""
+        from the_architect.core.runner import _run_all_inner, request_run_shutdown
+
+        tasks_dir = tmp_path / "tasks"
+        t1_path = tasks_dir / "T01_first.md"
+        t2_path = tasks_dir / "T02_second.md"
+        tasks_dir.mkdir(parents=True, exist_ok=True)
+        t1_path.write_text("# T01\n", encoding="utf-8")
+        t2_path.write_text("# T02\n", encoding="utf-8")
+        tasks = [
+            Task(name="T01_first", prefix="T01", number=1, path=t1_path, status=TaskStatus.PENDING),
+            Task(
+                name="T02_second", prefix="T02", number=2, path=t2_path, status=TaskStatus.PENDING
+            ),
+        ]
+        plan = TaskPlan(tasks=tasks)
+
+        calls: list[str] = []
+
+        async def mock_run_task(task, **kwargs):
+            calls.append(task.prefix)
+            # First task's subprocess was "killed" by a hard exit — this
+            # is exactly what a pause-menu "Exit" produces: a failed
+            # result plus the shutdown flag already set.
+            request_run_shutdown()
+            return TaskResult(
+                prefix=task.prefix,
+                title=task.title or task.name,
+                status="failed",
+                duration_seconds=0.1,
+                attempts=1,
+                tokens=TokenUsage(),
+                model="",
+            )
+
+        with patch("the_architect.core.runner.run_task", side_effect=mock_run_task):
+            result = await _run_all_inner(plan, config)
+
+        # Only the first task should have run — the scheduler must not
+        # start T02 once the shutdown flag is set.
+        assert calls == ["T01"]
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_retry_loop_stops_on_shutdown_instead_of_retrying(self, task, config):
+        """run_task must give up after a failed attempt when shutdown was requested.
+
+        Without this check, a killed subprocess is just a normal failed
+        attempt and run_task spawns a brand new one for the next retry.
+        """
+        from the_architect.core.runner import request_run_shutdown, run_task
+
+        config.max_retries = 5
+        attempt_count = 0
+
+        async def mock_run_task_once(**kwargs):
+            nonlocal attempt_count
+            attempt_count += 1
+            # Simulate: the subprocess was killed by a hard TUI exit.
+            request_run_shutdown()
+            return TaskResult(
+                prefix=task.prefix,
+                title=task.title,
+                status="failed",
+                duration_seconds=0.1,
+                attempts=1,
+                tokens=TokenUsage(),
+                model="",
+                exit_code=-9,
+            )
+
+        with patch("the_architect.core.runner.run_task_once", side_effect=mock_run_task_once):
+            result = await run_task(task=task, config=config)
+
+        # Exactly one attempt should have run — the loop must break instead
+        # of consuming the remaining 4 configured retries.
+        assert attempt_count == 1
+        assert result.status == "failed"
+
+
 class TestBuildInstructionBudgetContext:
     """Tests for budget context injection in build_instruction (T01 Cycle 9)."""
 
